@@ -1,0 +1,421 @@
+"""ClipCut FastAPI uygulaması."""
+from __future__ import annotations
+
+import logging
+import shutil
+import threading
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal, Optional
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, ValidationError
+from sqlmodel import Session, select
+
+from . import assets, jobs
+from .ai import services as ai
+from .config import get_settings
+from .edit.schema import EditPlan, dsl_reference
+from .edit.templates import TEMPLATES, get_template
+from .ffmpeg import ffmpeg_exe
+from .models import Job, Project, get_session, init_db
+from .subtitles.builder import cues_for_export, map_words, to_srt, to_vtt, transcript_words
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+settings = get_settings()
+VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    threading.Thread(target=assets.ensure_assets, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="ClipCut API", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware, allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+)
+settings.assets_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=settings.storage_dir), name="media")
+app.mount("/assets", StaticFiles(directory=settings.assets_dir), name="assets")
+
+
+# ------------------------------------------------------------------ yardımcılar ----
+
+def serialize(p: Project, full: bool = True) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "id": p.id, "name": p.name, "status": p.status, "origin": p.origin,
+        "created_at": p.created_at.isoformat(), "updated_at": p.updated_at.isoformat(),
+        "duration": p.duration, "width": p.width, "height": p.height, "has_audio": p.has_audio,
+        "source_url": jobs.media_url(p.id, p.source_file), "thumbnail_url": jobs.media_url(p.id, p.thumbnail_file),
+        "output_url": jobs.media_url(p.id, p.output_file), "subtitle_language": p.subtitle_language,
+        "has_transcript": bool(p.transcript), "operation_count": len(p.plan.get("operations", [])),
+    }
+    if full:
+        data.update({
+            "generation_prompt": p.generation_prompt, "transcript_language": (p.transcript or {}).get("language"),
+            "subtitles": p.subtitles, "plan": p.plan, "can_undo": bool(p.plan_history), "chat": p.chat,
+            "output_meta": p.output_meta,
+        })
+    return data
+
+
+def get_project(project_id: str, session: Session) -> Project:
+    p = session.get(Project, project_id)
+    if not p:
+        raise HTTPException(404, "Proje bulunamadı")
+    return p
+
+
+def touch(p: Project) -> None:
+    p.updated_at = datetime.now(timezone.utc)
+
+
+def job_dict(j: Job) -> dict[str, Any]:
+    return j.model_dump(mode="json")
+
+
+# ------------------------------------------------------------------ genel ----
+
+@app.get("/api/health")
+def health() -> dict:
+    try:
+        ff = ffmpeg_exe()
+    except Exception as exc:
+        ff = f"HATA: {exc}"
+    return {"ok": True, "mock": settings.is_mock, "ffmpeg": ff, "veo_model": settings.veo_model, "text_model": settings.gemini_text_model}
+
+
+@app.get("/api/library")
+def library() -> dict:
+    return {
+        "music": assets.list_library("music"), "sfx": assets.list_library("sfx"), "fonts": assets.FONT_FAMILIES,
+        "languages": [{"code": k, "name": v} for k, v in ai.LANGUAGES.items()],
+        "subtitle_styles": ["karaoke", "word_pop", "classic", "boxed", "minimal"],
+        "color_presets": ["none", "cinematic", "vibrant", "warm", "cool", "bw", "vintage", "moody", "bright"],
+        "transitions": ["fade", "dissolve", "fadeblack", "wipeleft", "wiperight", "slideleft", "slideright", "circleopen", "smoothleft", "zoomin"],
+        "dsl": dsl_reference(),
+    }
+
+
+@app.get("/api/templates")
+def list_templates() -> list[dict]:
+    return TEMPLATES
+
+
+@app.post("/api/projects/{project_id}/apply-template/{template_id}")
+def apply_template(project_id: str, template_id: str, session: Session = Depends(get_session)) -> dict:
+    tmpl = get_template(template_id)
+    if not tmpl:
+        raise HTTPException(404, "Şablon bulunamadı")
+    p = get_project(project_id, session)
+    if p.status != "ready":
+        raise HTTPException(409, "Video henüz hazır değil.")
+    plan = EditPlan.model_validate(tmpl["plan"])
+    _set_plan(p, plan)
+    now = datetime.now(timezone.utc).isoformat()
+    summary = f"'{tmpl['name']}' şablonu uygulandı: {tmpl['description']}"
+    p.chat = [*p.chat, {"role": "assistant", "text": summary, "at": now, "changed": True}][-100:]
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return {"summary": summary, "project": serialize(p)}
+
+
+# ------------------------------------------------------------------ projeler ----
+
+@app.get("/api/projects")
+def list_projects(session: Session = Depends(get_session)) -> list[dict]:
+    rows = session.exec(select(Project).order_by(Project.updated_at.desc())).all()  # type: ignore[attr-defined]
+    return [serialize(p, full=False) for p in rows]
+
+
+@app.post("/api/projects/upload")
+def upload_project(file: UploadFile = File(...), name: str = Form(""), session: Session = Depends(get_session)) -> dict:
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in VIDEO_EXT:
+        raise HTTPException(400, f"Desteklenmeyen dosya türü: {ext or '?'}")
+    p = Project(name=name.strip() or Path(file.filename or "Video").stem, origin="upload")
+    pdir = jobs.project_dir(p.id)
+    dst = pdir / f"source{ext}"
+    with dst.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+    try:
+        jobs.ingest_source(p, dst)
+    except Exception as exc:
+        shutil.rmtree(pdir, ignore_errors=True)
+        raise HTTPException(400, f"Video okunamadı: {exc}") from exc
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return serialize(p)
+
+
+class GenerateBody(BaseModel):
+    prompt: str = Field(..., min_length=3, max_length=2000)
+    name: str = ""
+    aspect_ratio: Literal["16:9", "9:16"] = "16:9"
+    duration: int = Field(8, ge=4, le=8)
+    negative_prompt: Optional[str] = None
+
+
+@app.post("/api/projects/generate")
+def generate_project(body: GenerateBody, session: Session = Depends(get_session)) -> dict:
+    p = Project(name=body.name.strip() or body.prompt[:48], origin="veo", status="generating", generation_prompt=body.prompt)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    job = jobs.submit(p.id, "generate", jobs.task_generate, p.id, body.prompt, body.aspect_ratio, body.duration, body.negative_prompt)
+    return {"project": serialize(p), "job": job_dict(job)}
+
+
+@app.get("/api/projects/{project_id}")
+def read_project(project_id: str, session: Session = Depends(get_session)) -> dict:
+    return serialize(get_project(project_id, session))
+
+
+class PatchBody(BaseModel):
+    name: Optional[str] = None
+
+
+@app.patch("/api/projects/{project_id}")
+def patch_project(project_id: str, body: PatchBody, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    if body.name:
+        p.name = body.name.strip()[:120]
+    touch(p)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return serialize(p)
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    session.delete(p)
+    for j in session.exec(select(Job).where(Job.project_id == project_id)).all():
+        session.delete(j)
+    session.commit()
+    shutil.rmtree(settings.storage_dir / "projects" / project_id, ignore_errors=True)
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ işler ----
+
+@app.get("/api/jobs/{job_id}")
+def read_job(job_id: str, session: Session = Depends(get_session)) -> dict:
+    j = session.get(Job, job_id)
+    if not j:
+        raise HTTPException(404, "İş bulunamadı")
+    return job_dict(j)
+
+
+@app.get("/api/projects/{project_id}/jobs")
+def project_jobs(project_id: str, session: Session = Depends(get_session)) -> list[dict]:
+    rows = session.exec(select(Job).where(Job.project_id == project_id).order_by(Job.created_at.desc()).limit(20)).all()  # type: ignore[attr-defined]
+    return [job_dict(j) for j in rows]
+
+
+# ------------------------------------------------------------------ altyazı ----
+
+class TranscribeBody(BaseModel):
+    target_language: Optional[str] = None
+
+
+@app.post("/api/projects/{project_id}/transcribe")
+def transcribe(project_id: str, body: TranscribeBody, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    if p.status != "ready":
+        raise HTTPException(409, "Video henüz hazır değil.")
+    return job_dict(jobs.submit(p.id, "transcribe", jobs.task_transcribe, p.id, body.target_language))
+
+
+class TranslateBody(BaseModel):
+    target_language: str
+
+
+@app.post("/api/projects/{project_id}/translate")
+def translate(project_id: str, body: TranslateBody, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    if not p.transcript:
+        raise HTTPException(409, "Önce altyazı oluşturun.")
+    return job_dict(jobs.submit(p.id, "translate", jobs.task_translate, p.id, body.target_language))
+
+
+class SubtitleSegment(BaseModel):
+    id: int
+    start: float = Field(..., ge=0)
+    end: float = Field(..., ge=0)
+    text: str
+
+
+class SubtitlesBody(BaseModel):
+    segments: list[SubtitleSegment]
+
+
+@app.put("/api/projects/{project_id}/subtitles")
+def update_subtitles(project_id: str, body: SubtitlesBody, session: Session = Depends(get_session)) -> dict:
+    """Elle düzenlenen altyazı metinlerini kaydeder; metni değişen segmentin kelime zamanları yeniden dağıtılır."""
+    from .subtitles.builder import distribute_words
+
+    p = get_project(project_id, session)
+    old = {s["id"]: s for s in (p.subtitles or {}).get("segments", [])}
+    segments = []
+    for seg in sorted(body.segments, key=lambda s: s.start):
+        prev = old.get(seg.id)
+        end = max(seg.end, seg.start + 0.2)
+        same = prev and prev["text"] == seg.text and prev["start"] == seg.start and prev["end"] == end
+        words = prev["words"] if same else [w.__dict__ for w in distribute_words(seg.text, seg.start, end)]
+        segments.append({"id": seg.id, "start": seg.start, "end": end, "text": seg.text.strip(), "words": words})
+    p.subtitles = {"language": p.subtitle_language or "und", "segments": segments, "edited": True}
+    touch(p)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return serialize(p)
+
+
+@app.get("/api/projects/{project_id}/subtitles.{fmt}")
+def export_subtitles(project_id: str, fmt: Literal["srt", "vtt"], edited: bool = True, session: Session = Depends(get_session)):
+    p = get_project(project_id, session)
+    if not p.subtitles:
+        raise HTTPException(404, "Altyazı yok.")
+    words = transcript_words(p.subtitles)
+    if edited:
+        words = map_words(words, jobs.project_timeline(p))
+    cues = cues_for_export(words)
+    body = to_srt(cues) if fmt == "srt" else to_vtt(cues)
+    filename = f"{p.name}_{p.subtitle_language or 'sub'}.{fmt}".replace(" ", "_")
+    return PlainTextResponse(body, media_type="text/plain; charset=utf-8",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+# ------------------------------------------------------------------ edit planı ----
+
+class EditBody(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=2000)
+
+
+def _context(p: Project) -> dict:
+    tl = jobs.project_timeline(p)
+    segs = (p.subtitles or p.transcript or {}).get("segments", [])
+    return {
+        "duration": round(p.duration, 2), "output_duration": round(tl.output_duration, 2),
+        "width": p.width, "height": p.height, "has_audio": p.has_audio,
+        "transcript": [{"start": round(s["start"], 2), "end": round(s["end"], 2), "text": s["text"]} for s in segs][:400],
+        "music_library": [{"id": m["id"], "mood": m["mood"]} for m in assets.list_library("music")],
+        "sfx_library": [m["id"] for m in assets.list_library("sfx")],
+        "project_audio": [f"project:{f.name}" for f in (jobs.project_dir(p.id) / "audio").glob("*")] if (jobs.project_dir(p.id) / "audio").exists() else [],
+        "fonts": assets.FONT_FAMILIES,
+    }
+
+
+def _set_plan(p: Project, plan: EditPlan) -> None:
+    p.plan_history = [*p.plan_history, p.plan][-50:]
+    p.plan = plan.model_dump()
+    touch(p)
+
+
+@app.post("/api/projects/{project_id}/edit")
+def edit_with_prompt(project_id: str, body: EditBody, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    if p.status != "ready":
+        raise HTTPException(409, "Video henüz hazır değil.")
+    current = EditPlan.model_validate(p.plan)
+    try:
+        plan, summary = ai.plan_edit(body.prompt, current, _context(p))
+    except Exception as exc:
+        raise HTTPException(502, f"Planlayıcı hatası: {exc}") from exc
+    changed = plan.model_dump() != current.model_dump()
+    if changed:
+        _set_plan(p, plan)
+    now = datetime.now(timezone.utc).isoformat()
+    p.chat = [*p.chat, {"role": "user", "text": body.prompt, "at": now},
+              {"role": "assistant", "text": summary, "at": now, "changed": changed}][-100:]
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return {"summary": summary, "changed": changed, "project": serialize(p)}
+
+
+class PlanBody(BaseModel):
+    plan: dict[str, Any]
+
+
+@app.put("/api/projects/{project_id}/plan")
+def put_plan(project_id: str, body: PlanBody, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    try:
+        plan = EditPlan.model_validate(body.plan)
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_url=False)) from exc
+    _set_plan(p, plan)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return serialize(p)
+
+
+@app.post("/api/projects/{project_id}/plan/undo")
+def undo_plan(project_id: str, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    if not p.plan_history:
+        raise HTTPException(409, "Geri alınacak adım yok.")
+    history = list(p.plan_history)
+    p.plan = history.pop()
+    p.plan_history = history
+    touch(p)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return serialize(p)
+
+
+@app.get("/api/projects/{project_id}/timeline")
+def timeline(project_id: str, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    if p.status != "ready":
+        raise HTTPException(409, "Video henüz hazır değil.")
+    return jobs.project_timeline(p).to_dict()
+
+
+@app.post("/api/projects/{project_id}/audio")
+def upload_audio(project_id: str, file: UploadFile = File(...), session: Session = Depends(get_session)) -> dict:
+    get_project(project_id, session)
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in assets.AUDIO_EXT:
+        raise HTTPException(400, "Desteklenmeyen ses dosyası.")
+    d = jobs.project_dir(project_id) / "audio"
+    d.mkdir(exist_ok=True)
+    safe = "".join(c for c in Path(file.filename or "muzik").stem if c.isalnum() or c in "-_")[:60] or "muzik"
+    dst = d / f"{safe}{ext}"
+    with dst.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+    return {"id": f"project:{dst.name}", "label": dst.stem, "url": jobs.media_url(project_id, f"audio/{dst.name}")}
+
+
+@app.get("/api/projects/{project_id}/audio")
+def list_project_audio(project_id: str) -> list[dict]:
+    d = jobs.project_dir(project_id) / "audio"
+    if not d.exists():
+        return []
+    return [{"id": f"project:{f.name}", "label": f.stem, "url": jobs.media_url(project_id, f"audio/{f.name}")}
+            for f in sorted(d.iterdir()) if f.suffix.lower() in assets.AUDIO_EXT]
+
+
+# ------------------------------------------------------------------ render ----
+
+@app.post("/api/projects/{project_id}/render")
+def start_render(project_id: str, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    if p.status != "ready":
+        raise HTTPException(409, "Video henüz hazır değil.")
+    return job_dict(jobs.submit(p.id, "render", jobs.task_render, p.id))
