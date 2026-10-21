@@ -87,6 +87,7 @@ def job_dict(j: Job) -> dict[str, Any]:
 # ------------------------------------------------------------------ genel ----
 
 @app.get("/api/health")
+@app.get("/health")
 def health() -> dict:
     try:
         ff = ffmpeg_exe()
