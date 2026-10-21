@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, text
 from sqlmodel import Field, Session, SQLModel, create_engine
 
 from .config import get_settings
@@ -31,6 +31,7 @@ class Project(SQLModel, table=True):
 
     source_file: Optional[str] = None  # proje klasörüne göre
     thumbnail_file: Optional[str] = None
+    voiceover_file: Optional[str] = None
     duration: float = 0.0
     width: int = 0
     height: int = 0
@@ -66,6 +67,13 @@ engine = create_engine(get_settings().db_url, connect_args={"check_same_thread":
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
+    # Kolon göçü
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE project ADD COLUMN voiceover_file VARCHAR"))
+            conn.commit()
+        except Exception:
+            pass
     # Yarım kalmış işleri başarısız işaretle (sunucu yeniden başlatıldıysa)
     with Session(engine) as s:
         for job in s.query(Job).filter(Job.status.in_(["queued", "running"])).all():  # type: ignore[attr-defined]

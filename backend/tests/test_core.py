@@ -122,3 +122,17 @@ def test_end_to_end_render(tmp_path: Path):
     assert (res.width, res.height) == (1080, 1920)
     assert res.has_audio
     assert abs(res.duration - meta["duration"]) < 0.4
+
+
+def test_voiceover_generation(tmp_path: Path):
+    from app.ai import tts
+
+    voices = tts.list_voices()
+    assert len(voices) >= 3
+    out_audio = tmp_path / "vo.mp3"
+    result = tts.generate_voiceover("ClipCut yapay zeka seslendirme testi.", voice_id="tr-TR-EmelNeural", out_path=out_audio)
+    assert out_audio.exists()
+    assert result["duration"] > 0
+    assert len(result["words"]) >= 4
+    assert result["words"][0]["start"] >= 0
+

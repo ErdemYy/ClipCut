@@ -12,11 +12,13 @@ import SubtitlePanel from "@/components/editor/SubtitlePanel";
 import AudioPanel from "@/components/editor/AudioPanel";
 import ExportPanel from "@/components/editor/ExportPanel";
 import TemplatesPanel from "@/components/editor/TemplatesPanel";
+import VoiceoverPanel from "@/components/editor/VoiceoverPanel";
 import styles from "./editor.module.css";
 
-type PanelTab = "templates" | "edit" | "subtitles" | "audio" | "export";
+type PanelTab = "templates" | "voiceover" | "edit" | "subtitles" | "audio" | "export";
 const TABS: { id: PanelTab; label: string; icon: string }[] = [
   { id: "templates", label: "Şablonlar", icon: "⚡" },
+  { id: "voiceover", label: "Seslendirme", icon: "🎙️" },
   { id: "edit", label: "AI Edit", icon: "✨" },
   { id: "subtitles", label: "Altyazı", icon: "💬" },
   { id: "audio", label: "Ses", icon: "🎵" },
@@ -220,6 +222,9 @@ export default function EditorPage() {
           <div className={styles.panelBody}>
             {tab === "templates" && (
               <TemplatesPanel project={project} setProject={setProject} notify={notify} disabled={project.status !== "ready"} />
+            )}
+            {tab === "voiceover" && (
+              <VoiceoverPanel project={project} setProject={setProject} notify={notify} disabled={project.status !== "ready"} />
             )}
             {tab === "edit" && <EditPanel project={project} setProject={setProject} notify={notify} disabled={project.status !== "ready"} />}
             {tab === "subtitles" && (

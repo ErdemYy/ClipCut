@@ -752,3 +752,116 @@
 .resultHead small {
   color: var(--text-faint);
 }
+
+/* ---------- Voiceover ---------- */
+.voiceGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.voiceCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+  text-align: left;
+}
+.voiceCard:hover {
+  border-color: var(--border-bright);
+  background: hsla(250, 40%, 15%, 0.4);
+}
+.voiceCardActive {
+  border-color: var(--cyan);
+  background: hsla(186, 100%, 50%, 0.08);
+  box-shadow: 0 0 16px -4px hsla(186, 100%, 50%, 0.25);
+}
+.voiceInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.voiceTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.voiceName {
+  font-weight: 700;
+  font-size: 0.92rem;
+  color: #fff;
+}
+.voiceAccent {
+  font-size: 0.72rem;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+}
+.voiceDesc {
+  font-size: 0.76rem;
+  color: var(--text-faint);
+  line-height: 1.25;
+}
+.scriptBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.scriptMeta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+.presetChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.presetChip {
+  font-size: 0.74rem;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.presetChip:hover {
+  color: #fff;
+  border-color: var(--cyan);
+  background: rgba(0, 240, 255, 0.08);
+}
+.previewPlayer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: hsla(262, 60%, 20%, 0.3);
+  border: 1px solid hsla(262, 60%, 50%, 0.3);
+}
+.currentVoBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: hsla(152, 65%, 52%, 0.1);
+  border: 1px solid hsla(152, 65%, 52%, 0.3);
+  font-size: 0.85rem;
+}
+

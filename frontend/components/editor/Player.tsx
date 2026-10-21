@@ -1,7 +1,7 @@
 "use client";
 
-import { type Ref, useEffect, useMemo, useState } from "react";
-import type { Operation, Project, Word } from "@/lib/api";
+import { type Ref, useEffect, useMemo, useRef, useState } from "react";
+import { type Operation, type Project, type Word, mediaUrl } from "@/lib/api";
 import styles from "./editor-parts.module.css";
 
 const ASPECTS: Record<string, string> = { "9:16": "9 / 16", "1:1": "1 / 1", "16:9": "16 / 9", "4:5": "4 / 5" };
@@ -36,6 +36,33 @@ export default function Player({ ref, project, view, src, onTime }: Props) {
   const sub = preview ? find(ops, "subtitles") : undefined;
   const reframe = preview ? find(ops, "reframe") : undefined;
   const color = preview ? find(ops, "color_grade") : undefined;
+  const voUrl = preview && project.voiceover_url ? mediaUrl(project.voiceover_url) : undefined;
+  const voAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    const video = document.getElementById("editor-video") as HTMLVideoElement | null;
+    if (!video || !voUrl) return;
+
+    const onPlay = () => {
+      if (voAudioRef.current) {
+        voAudioRef.current.currentTime = video.currentTime;
+        voAudioRef.current.play().catch(() => {});
+      }
+    };
+    const onPause = () => voAudioRef.current?.pause();
+    const onSeeking = () => {
+      if (voAudioRef.current) voAudioRef.current.currentTime = video.currentTime;
+    };
+
+    video.addEventListener("play", onPlay);
+    video.addEventListener("pause", onPause);
+    video.addEventListener("seeking", onSeeking);
+    return () => {
+      video.removeEventListener("play", onPlay);
+      video.removeEventListener("pause", onPause);
+      video.removeEventListener("seeking", onSeeking);
+    };
+  }, [voUrl]);
 
   const aspect =
     view === "output" && project.output_meta
@@ -60,12 +87,14 @@ export default function Player({ ref, project, view, src, onTime }: Props) {
           className={styles.video}
           style={{ objectFit: fit as "cover" | "contain", filter }}
           onTimeUpdate={(e) => onTime(e.currentTarget.currentTime)}
+          muted={Boolean(voUrl)}
           id="editor-video"
         />
+        {voUrl && <audio ref={voAudioRef} src={voUrl} preload="auto" />}
         {color?.vignette ? <div className={styles.vignette} /> : null}
         {sub && sub.enabled !== false && project.subtitles && <SubtitleOverlay sub={sub} project={project} />}
       </div>
-      {preview && (sub || reframe || color) && (
+      {preview && (sub || reframe || color || voUrl) && (
         <p className={styles.previewNote}>Canlı önizleme yaklaşık bir görünümdür; kesin sonuç için render alın.</p>
       )}
     </div>

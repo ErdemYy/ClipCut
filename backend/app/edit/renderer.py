@@ -42,6 +42,7 @@ class RenderRequest:
     output: Path
     fonts_dir: Path
     resolve_track: TrackResolver
+    voiceover: Optional[Path] = None
 
 
 def even(n: float) -> int:
@@ -100,8 +101,15 @@ def build_command(req: RenderRequest) -> tuple[list[str], float]:
     inputs: list[str] = ["-i", str(req.source)]
     next_input = 1
 
+    has_vo = bool(req.voiceover and req.voiceover.exists())
+    vo_index = None
+    if has_vo:
+        inputs += ["-i", str(req.voiceover)]
+        vo_index = next_input
+        next_input += 1
+
     audio_label = "0:a"
-    if not info.has_audio:
+    if not info.has_audio and not has_vo:
         inputs += ["-f", "lavfi", "-t", f"{info.duration:.3f}", "-i", "anullsrc=r=48000:cl=stereo"]
         audio_label = f"{next_input}:a"
         next_input += 1
@@ -109,29 +117,43 @@ def build_command(req: RenderRequest) -> tuple[list[str], float]:
     f: list[str] = []
     n = len(tl.segments)
 
-    # 1) Kaynak normalizasyonu + parçalara bölme
+    # 1) Kaynak normalizasyonu + video parçalama
     f.append(f"[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,fps={FPS},format=yuv420p,setsar=1,split={n}" + "".join(f"[vs{i}]" for i in range(n)))
-    f.append(f"[{audio_label}]aresample=48000,aformat=channel_layouts=stereo,asplit={n}" + "".join(f"[as{i}]" for i in range(n)))
     for i, (s, e) in enumerate(tl.segments):
         f.append(f"[vs{i}]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS,settb=AVTB,fps={FPS}[v{i}]")
-        f.append(f"[as{i}]atrim=start={s:.3f}:end={e:.3f},asetpts=PTS-STARTPTS[a{i}]")
 
-    # 2) Birleştirme (geçişli veya düz)
+    # 2) Video birleştirme (geçişli veya düz)
     if n == 1:
         f.append("[v0]null[vj]")
-        f.append("[a0]anull[aj]")
     elif tl.crossfade > 0:
         style = plan.first("transition").style
         d = tl.crossfade
-        prev_v, prev_a = "v0", "a0"
+        prev_v = "v0"
         for i in range(1, n):
             out_v = "vj" if i == n - 1 else f"vx{i}"
-            out_a = "aj" if i == n - 1 else f"ax{i}"
             f.append(f"[{prev_v}][v{i}]xfade=transition={style}:duration={d:.3f}:offset={tl.offsets[i]:.3f}[{out_v}]")
-            f.append(f"[{prev_a}][a{i}]acrossfade=d={d:.3f}:c1=tri:c2=tri[{out_a}]")
-            prev_v, prev_a = out_v, out_a
+            prev_v = out_v
     else:
-        f.append("".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vj][aj]")
+        f.append("".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[vj]")
+
+    # 2b) Ses hazırlama: AI seslendirme varsa doğrudan o kullanılır, yoksa video parçaları birleştirilir
+    if has_vo:
+        f.append(f"[{vo_index}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{T:.3f},asetpts=PTS-STARTPTS[aj]")
+    else:
+        f.append(f"[{audio_label}]aresample=48000,aformat=channel_layouts=stereo,asplit={n}" + "".join(f"[as{i}]" for i in range(n)))
+        for i, (s, e) in enumerate(tl.segments):
+            f.append(f"[as{i}]atrim=start={s:.3f}:end={e:.3f},asetpts=PTS-STARTPTS[a{i}]")
+        if n == 1:
+            f.append("[a0]anull[aj]")
+        elif tl.crossfade > 0:
+            d = tl.crossfade
+            prev_a = "a0"
+            for i in range(1, n):
+                out_a = "aj" if i == n - 1 else f"ax{i}"
+                f.append(f"[{prev_a}][a{i}]acrossfade=d={d:.3f}:c1=tri:c2=tri[{out_a}]")
+                prev_a = out_a
+        else:
+            f.append("".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[aj]")
 
     # 3) Video sonrası işlemler
     vchain: list[str] = []

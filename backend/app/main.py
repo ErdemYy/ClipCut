@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import shutil
 import threading
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,9 +18,9 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session, select
 
 from . import assets, jobs
-from .ai import services as ai
+from .ai import services as ai, tts
 from .config import get_settings
-from .edit.schema import EditPlan, dsl_reference
+from .edit.schema import EditPlan, SubtitlesOp, dsl_reference
 from .edit.templates import TEMPLATES, get_template
 from .ffmpeg import ffmpeg_exe
 from .models import Job, Project, get_session, init_db
@@ -55,6 +56,7 @@ def serialize(p: Project, full: bool = True) -> dict[str, Any]:
         "created_at": p.created_at.isoformat(), "updated_at": p.updated_at.isoformat(),
         "duration": p.duration, "width": p.width, "height": p.height, "has_audio": p.has_audio,
         "source_url": jobs.media_url(p.id, p.source_file), "thumbnail_url": jobs.media_url(p.id, p.thumbnail_file),
+        "voiceover_url": jobs.media_url(p.id, p.voiceover_file), "has_voiceover": bool(p.voiceover_file),
         "output_url": jobs.media_url(p.id, p.output_file), "subtitle_language": p.subtitle_language,
         "has_transcript": bool(p.transcript), "operation_count": len(p.plan.get("operations", [])),
     }
@@ -108,6 +110,11 @@ def library() -> dict:
 @app.get("/api/templates")
 def list_templates() -> list[dict]:
     return TEMPLATES
+
+
+@app.get("/api/voices")
+def list_voices() -> list[dict]:
+    return tts.list_voices()
 
 
 @app.post("/api/projects/{project_id}/apply-template/{template_id}")
@@ -409,6 +416,108 @@ def list_project_audio(project_id: str) -> list[dict]:
         return []
     return [{"id": f"project:{f.name}", "label": f.stem, "url": jobs.media_url(project_id, f"audio/{f.name}")}
             for f in sorted(d.iterdir()) if f.suffix.lower() in assets.AUDIO_EXT]
+
+
+# ------------------------------------------------------------------ seslendirme (tts) ----
+
+class VoiceoverPreviewBody(BaseModel):
+    text: str
+    voice: str = "tr-TR-EmelNeural"
+    speed: float = 1.0
+
+
+class VoiceoverApplyBody(BaseModel):
+    text: str
+    voice: str = "tr-TR-EmelNeural"
+    speed: float = 1.0
+    auto_subtitles: bool = True
+    subtitle_style: str = "karaoke"
+
+
+@app.post("/api/voiceover/preview")
+def voiceover_preview(body: VoiceoverPreviewBody) -> dict:
+    if not body.text.strip():
+        raise HTTPException(400, "Metin boş olamaz.")
+    tmp_name = f"preview_{uuid.uuid4().hex[:8]}.mp3"
+    tmp_path = settings.storage_dir / "temp" / tmp_name
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    res = tts.generate_voiceover(body.text, voice_id=body.voice, speed=body.speed, out_path=tmp_path)
+    return {
+        "url": f"/media/temp/{tmp_name}",
+        "duration": res["duration"],
+        "words": res["words"],
+        "segments": res["segments"],
+    }
+
+
+@app.post("/api/projects/{project_id}/voiceover")
+def apply_voiceover(project_id: str, body: VoiceoverApplyBody, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    if p.status != "ready":
+        raise HTTPException(409, "Video henüz hazır değil.")
+    if not body.text.strip():
+        raise HTTPException(400, "Metin boş olamaz.")
+
+    pdir = jobs.project_dir(p.id)
+    vo_file = "voiceover.mp3"
+    vo_path = pdir / vo_file
+
+    res = tts.generate_voiceover(body.text, voice_id=body.voice, speed=body.speed, out_path=vo_path)
+    p.voiceover_file = vo_file
+
+    transcript_data = {
+        "language": res["language"],
+        "segments": res["segments"],
+        "words": res["words"],
+    }
+    p.transcript = transcript_data
+    p.subtitles = transcript_data
+    p.subtitle_language = res["language"]
+
+    voice_info = tts.get_voice(body.voice)
+    voice_name = voice_info["name"] if voice_info else body.voice
+
+    if body.auto_subtitles:
+        plan = EditPlan.model_validate(p.plan)
+        sub_op = plan.first("subtitles")
+        if not sub_op:
+            plan.operations.append(SubtitlesOp(style=body.subtitle_style, font_size=56, animation=True))
+        else:
+            sub_op.enabled = True
+            if body.subtitle_style:
+                sub_op.style = body.subtitle_style
+        _set_plan(p, plan)
+
+    now = datetime.now(timezone.utc).isoformat()
+    clean_preview = body.text.strip()[:60]
+    msg = f"🎙️ AI Seslendirme uygulandı ({voice_name}, {res['duration']}s): \"{clean_preview}{'...' if len(body.text.strip()) > 60 else ''}\". Altyazılar senkronize edildi."
+    p.chat = [*p.chat, {"role": "assistant", "text": msg, "at": now, "changed": True}][-100:]
+
+    touch(p)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return {"summary": msg, "project": serialize(p)}
+
+
+@app.delete("/api/projects/{project_id}/voiceover")
+def delete_voiceover(project_id: str, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    if p.voiceover_file:
+        vo_path = jobs.project_dir(p.id) / p.voiceover_file
+        if vo_path.exists():
+            try:
+                vo_path.unlink()
+            except Exception:
+                pass
+        p.voiceover_file = None
+        now = datetime.now(timezone.utc).isoformat()
+        p.chat = [*p.chat, {"role": "assistant", "text": "🎙️ AI Seslendirme kaldırıldı.", "at": now, "changed": True}][-100:]
+        touch(p)
+        session.add(p)
+        session.commit()
+        session.refresh(p)
+    return {"summary": "Seslendirme kaldırıldı.", "project": serialize(p)}
 
 
 # ------------------------------------------------------------------ render ----

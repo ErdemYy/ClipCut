@@ -210,10 +210,12 @@ def task_render(progress, project_id: str) -> dict:
     timeline = project_timeline(p, plan)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_rel = f"outputs/clipcut_{stamp}.mp4"
+    voiceover_path = (pdir / p.voiceover_file) if p.voiceover_file and (pdir / p.voiceover_file).exists() else None
     req = RenderRequest(
         source=pdir / p.source_file, info=media_info(p), plan=plan, timeline=timeline,
         transcript=p.subtitles, work_dir=pdir / "work" / stamp, output=pdir / out_rel,
         fonts_dir=assets.fonts_dir(), resolve_track=lambda t: assets.resolve_track(t, pdir),
+        voiceover=voiceover_path,
     )
     progress(0.06, "Render ediliyor")
     meta = render(req, lambda v: progress(0.06 + v * 0.92, "Render ediliyor"))
