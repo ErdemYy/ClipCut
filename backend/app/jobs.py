@@ -216,6 +216,7 @@ def task_render(progress, project_id: str) -> dict:
         transcript=p.subtitles, work_dir=pdir / "work" / stamp, output=pdir / out_rel,
         fonts_dir=assets.fonts_dir(), resolve_track=lambda t: assets.resolve_track(t, pdir),
         voiceover=voiceover_path,
+        resolve_overlay=lambda t: assets.resolve_overlay(t, pdir),
     )
     progress(0.06, "Render ediliyor")
     meta = render(req, lambda v: progress(0.06 + v * 0.92, "Render ediliyor"))

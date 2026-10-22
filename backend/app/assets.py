@@ -15,6 +15,7 @@ from .ffmpeg import run_ffmpeg
 log = logging.getLogger("clipcut.assets")
 
 AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".mov"}
 
 FONTS = {
     "Montserrat-Variable.ttf": "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf",
@@ -88,6 +89,10 @@ def sfx_dir() -> Path:
     return get_settings().assets_dir / "sfx"
 
 
+def broll_dir() -> Path:
+    return get_settings().assets_dir / "broll"
+
+
 def fonts_dir() -> Path:
     return get_settings().assets_dir / "fonts"
 
@@ -127,6 +132,11 @@ def ensure_audio_library() -> None:
 def ensure_assets() -> None:
     ensure_fonts()
     ensure_audio_library()
+    try:
+        from .ai import broll
+        broll.ensure_broll_stock(broll_dir())
+    except Exception as exc:
+        log.warning("B-Roll stok görselleri üretilemedi: %s", exc)
 
 
 def list_library(kind: str) -> list[dict]:
@@ -154,3 +164,29 @@ def resolve_track(track: str, project_dir: Path | None) -> Path | None:
             if f.suffix.lower() in AUDIO_EXT:
                 return f
     return None
+
+
+def resolve_overlay(track: str, project_dir: Path | None) -> Path | None:
+    """Overlay / B-Roll yolunu çözer: 'asset:broll:tech', 'project:broll/xyz.png' veya yerel dosya."""
+    if track.startswith("asset:broll:"):
+        b_id = track.split(":")[-1]
+        target = broll_dir() / f"{b_id}.jpg"
+        if target.exists():
+            return target
+    if track.startswith("project:") and project_dir:
+        rel = track.split(":", 1)[1].lstrip("/\\")
+        for cand in (project_dir / rel, project_dir / "broll" / Path(rel).name, project_dir / Path(rel).name):
+            if cand.exists():
+                return cand
+    p = Path(track)
+    if p.is_file():
+        return p
+    if project_dir:
+        for cand in (project_dir / p.name, project_dir / "broll" / p.name):
+            if cand.exists():
+                return cand
+    for f in broll_dir().glob(f"{p.stem}.*"):
+        if f.suffix.lower() in IMAGE_EXT:
+            return f
+    return None
+

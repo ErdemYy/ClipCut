@@ -13,12 +13,14 @@ import AudioPanel from "@/components/editor/AudioPanel";
 import ExportPanel from "@/components/editor/ExportPanel";
 import TemplatesPanel from "@/components/editor/TemplatesPanel";
 import VoiceoverPanel from "@/components/editor/VoiceoverPanel";
+import BrollPanel from "@/components/editor/BrollPanel";
 import styles from "./editor.module.css";
 
-type PanelTab = "templates" | "voiceover" | "edit" | "subtitles" | "audio" | "export";
+type PanelTab = "templates" | "voiceover" | "broll" | "edit" | "subtitles" | "audio" | "export";
 const TABS: { id: PanelTab; label: string; icon: string }[] = [
   { id: "templates", label: "Şablonlar", icon: "⚡" },
   { id: "voiceover", label: "Seslendirme", icon: "🎙️" },
+  { id: "broll", label: "B-Roll", icon: "🖼️" },
   { id: "edit", label: "AI Edit", icon: "✨" },
   { id: "subtitles", label: "Altyazı", icon: "💬" },
   { id: "audio", label: "Ses", icon: "🎵" },
@@ -225,6 +227,16 @@ export default function EditorPage() {
             )}
             {tab === "voiceover" && (
               <VoiceoverPanel project={project} setProject={setProject} notify={notify} disabled={project.status !== "ready"} />
+            )}
+            {tab === "broll" && (
+              <BrollPanel
+                project={project}
+                setProject={setProject}
+                notify={notify}
+                disabled={project.status !== "ready"}
+                time={time}
+                seek={seek}
+              />
             )}
             {tab === "edit" && <EditPanel project={project} setProject={setProject} notify={notify} disabled={project.status !== "ready"} />}
             {tab === "subtitles" && (

@@ -136,3 +136,30 @@ def test_voiceover_generation(tmp_path: Path):
     assert len(result["words"]) >= 4
     assert result["words"][0]["start"] >= 0
 
+
+def test_broll_suggestions_and_overlay_plan(tmp_path: Path):
+    from app.ai import broll
+    from app.edit.schema import EditPlan, OverlayOp
+
+    stock = broll.list_stock_broll()
+    assert len(stock) >= 5
+
+    transcript = {
+        "language": "tr",
+        "segments": [
+            {"id": 0, "start": 0.5, "end": 3.0, "text": "Yapay zeka teknolojisi cok hizli gelisiyor.", "words": []},
+            {"id": 1, "start": 3.5, "end": 6.0, "text": "Bu yontemle para ve finans kazanclari artiyor.", "words": []},
+        ],
+    }
+    suggs = broll.suggest_broll_for_transcript(transcript, 8.0)
+    assert len(suggs) >= 1
+    assert suggs[0]["type"] == "overlay"
+    assert "asset:broll:" in suggs[0]["track"]
+
+    plan = EditPlan.model_validate({"operations": [
+        {"type": "overlay", "track": "asset:broll:tech", "start": 1.0, "duration": 2.5, "mode": "pip", "position": "top_right"},
+    ]})
+    assert len(plan.all("overlay")) == 1
+    assert plan.all("overlay")[0].mode == "pip"
+
+

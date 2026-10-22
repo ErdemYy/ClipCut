@@ -1,7 +1,7 @@
 "use client";
 
 import { type Ref, useEffect, useMemo, useRef, useState } from "react";
-import { type Operation, type Project, type Word, mediaUrl } from "@/lib/api";
+import { API_URL, type Operation, type OverlayOp, type Project, type Word, mediaUrl } from "@/lib/api";
 import styles from "./editor-parts.module.css";
 
 const ASPECTS: Record<string, string> = { "9:16": "9 / 16", "1:1": "1 / 1", "16:9": "16 / 9", "4:5": "4 / 5" };
@@ -36,6 +36,7 @@ export default function Player({ ref, project, view, src, onTime }: Props) {
   const sub = preview ? find(ops, "subtitles") : undefined;
   const reframe = preview ? find(ops, "reframe") : undefined;
   const color = preview ? find(ops, "color_grade") : undefined;
+  const overlays = preview ? ((ops?.filter((o) => o.type === "overlay") || []) as OverlayOp[]) : [];
   const voUrl = preview && project.voiceover_url ? mediaUrl(project.voiceover_url) : undefined;
   const voAudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -92,9 +93,10 @@ export default function Player({ ref, project, view, src, onTime }: Props) {
         />
         {voUrl && <audio ref={voAudioRef} src={voUrl} preload="auto" />}
         {color?.vignette ? <div className={styles.vignette} /> : null}
+        {overlays.length > 0 && <BrollOverlays overlays={overlays} project={project} />}
         {sub && sub.enabled !== false && project.subtitles && <SubtitleOverlay sub={sub} project={project} />}
       </div>
-      {preview && (sub || reframe || color || voUrl) && (
+      {preview && (sub || reframe || color || voUrl || overlays.length > 0) && (
         <p className={styles.previewNote}>Canlı önizleme yaklaşık bir görünümdür; kesin sonuç için render alın.</p>
       )}
     </div>
@@ -164,3 +166,59 @@ function SubtitleOverlay({ sub, project }: { sub: Record<string, unknown>; proje
     </div>
   );
 }
+
+function BrollOverlays({ overlays, project }: { overlays: OverlayOp[]; project: Project }) {
+  const [t, setT] = useState(0);
+  useEffect(() => {
+    let raf = 0;
+    const loop = () => {
+      const v = document.getElementById("editor-video") as HTMLVideoElement | null;
+      if (v) setT(v.currentTime);
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  const active = overlays.filter((o) => t >= o.start && t <= o.start + o.duration);
+  if (active.length === 0) return null;
+
+  return (
+    <>
+      {active.map((ov, i) => {
+        const url = resolveOverlayUrl(ov.track, project.id);
+        const posClass = styles[`ov_${ov.position}`] || styles.ov_top_right;
+        const modeClass = styles[`ov_${ov.mode}`] || styles.ov_pip;
+        const animClass = styles[`anim_${ov.animation || "pop"}`] || styles.anim_pop;
+        const widthPct = ov.mode === "fullscreen" ? 100 : ov.mode === "sticker" ? 28 : (ov.scale ? ov.scale * 100 : 42);
+
+        return (
+          <div
+            key={i}
+            className={`${styles.overlayWrap} ${posClass} ${modeClass} ${animClass}`}
+            style={{ width: `${widthPct}%` }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={url} alt={ov.label || "B-Roll"} className={styles.ovImg} />
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function resolveOverlayUrl(track: string, projectId: string) {
+  if (track.startsWith("asset:broll:")) {
+    const id = track.split(":").pop();
+    return `${API_URL}/assets/broll/${id}.jpg`;
+  }
+  if (track.startsWith("project:")) {
+    const rel = track.split(":", 2)[1].replace(/^broll\//, "broll/");
+    return `${API_URL}/media/projects/${projectId}/${rel}`;
+  }
+  if (track.startsWith("http://") || track.startsWith("https://")) {
+    return track;
+  }
+  return `${API_URL}/assets/broll/${track}.jpg`;
+}
+

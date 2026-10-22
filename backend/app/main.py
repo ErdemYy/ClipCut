@@ -18,9 +18,9 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session, select
 
 from . import assets, jobs
-from .ai import services as ai, tts
+from .ai import broll, services as ai, tts
 from .config import get_settings
-from .edit.schema import EditPlan, SubtitlesOp, dsl_reference
+from .edit.schema import EditPlan, OverlayOp, SubtitlesOp, dsl_reference
 from .edit.templates import TEMPLATES, get_template
 from .ffmpeg import ffmpeg_exe
 from .models import Job, Project, get_session, init_db
@@ -100,6 +100,7 @@ def health() -> dict:
 def library() -> dict:
     return {
         "music": assets.list_library("music"), "sfx": assets.list_library("sfx"), "fonts": assets.FONT_FAMILIES,
+        "broll": broll.list_stock_broll(),
         "languages": [{"code": k, "name": v} for k, v in ai.LANGUAGES.items()],
         "subtitle_styles": ["karaoke", "word_pop", "classic", "boxed", "minimal"],
         "color_presets": ["none", "cinematic", "vibrant", "warm", "cool", "bw", "vintage", "moody", "bright"],
@@ -519,6 +520,103 @@ def delete_voiceover(project_id: str, session: Session = Depends(get_session)) -
         session.commit()
         session.refresh(p)
     return {"summary": "Seslendirme kaldırıldı.", "project": serialize(p)}
+
+
+# ------------------------------------------------------------------ B-Roll & Görsel Katmanları ----
+
+class BrollGenerateBody(BaseModel):
+    prompt: str
+
+
+@app.get("/api/broll/library")
+def get_broll_library() -> list[dict]:
+    return broll.list_stock_broll()
+
+
+@app.get("/api/projects/{project_id}/broll")
+def list_project_broll(project_id: str) -> list[dict]:
+    d = jobs.project_dir(project_id) / "broll"
+    if not d.exists():
+        return []
+    items = []
+    for f in sorted(d.iterdir()):
+        if f.suffix.lower() in assets.IMAGE_EXT:
+            items.append({
+                "id": f"project:broll/{f.name}",
+                "label": f.stem,
+                "url": jobs.media_url(project_id, f"broll/{f.name}"),
+            })
+    return items
+
+
+@app.post("/api/projects/{project_id}/broll/suggest")
+def suggest_broll(project_id: str, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    transcript = p.subtitles or p.transcript
+    suggestions = broll.suggest_broll_for_transcript(transcript, p.duration)
+    return {"suggestions": suggestions}
+
+
+@app.post("/api/projects/{project_id}/broll/apply-auto")
+def apply_auto_broll(project_id: str, session: Session = Depends(get_session)) -> dict:
+    p = get_project(project_id, session)
+    if p.status != "ready":
+        raise HTTPException(409, "Video henüz hazır değil.")
+    transcript = p.subtitles or p.transcript
+    suggestions = broll.suggest_broll_for_transcript(transcript, p.duration)
+    if not suggestions:
+        raise HTTPException(400, "Uygun B-Roll eşleşmesi bulunamadı.")
+
+    plan = EditPlan.model_validate(p.plan)
+    for s in suggestions:
+        plan.operations.append(OverlayOp.model_validate(s))
+    _set_plan(p, plan)
+
+    now = datetime.now(timezone.utc).isoformat()
+    msg = f"🖼️ {len(suggestions)} adet AI B-Roll görsel katmanı otomatik olarak yerleştirildi."
+    p.chat = [*p.chat, {"role": "assistant", "text": msg, "at": now, "changed": True}][-100:]
+
+    touch(p)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return {"summary": msg, "count": len(suggestions), "project": serialize(p)}
+
+
+@app.post("/api/projects/{project_id}/broll/generate")
+def generate_broll_endpoint(project_id: str, body: BrollGenerateBody, session: Session = Depends(get_session)) -> dict:
+    get_project(project_id, session)
+    if not body.prompt.strip():
+        raise HTTPException(400, "Prompt boş olamaz.")
+    broll_dir = jobs.project_dir(project_id) / "broll"
+    safe_name = f"ai_{uuid.uuid4().hex[:8]}.jpg"
+    out_file = broll_dir / safe_name
+    broll.generate_broll_image(body.prompt, out_file)
+    return {
+        "id": f"project:broll/{safe_name}",
+        "label": body.prompt[:30],
+        "url": jobs.media_url(project_id, f"broll/{safe_name}"),
+    }
+
+
+@app.post("/api/projects/{project_id}/broll/upload")
+def upload_broll(project_id: str, file: UploadFile = File(...), session: Session = Depends(get_session)) -> dict:
+    get_project(project_id, session)
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in assets.IMAGE_EXT:
+        raise HTTPException(400, f"Desteklenmeyen dosya türü: {ext}")
+    broll_dir = jobs.project_dir(project_id) / "broll"
+    broll_dir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(c for c in Path(file.filename or "broll").stem if c.isalnum() or c in "-_")[:50] or "broll"
+    filename = f"{safe}_{uuid.uuid4().hex[:6]}{ext}"
+    dst = broll_dir / filename
+    with dst.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+    return {
+        "id": f"project:broll/{filename}",
+        "label": safe,
+        "url": jobs.media_url(project_id, f"broll/{filename}"),
+    }
 
 
 # ------------------------------------------------------------------ render ----

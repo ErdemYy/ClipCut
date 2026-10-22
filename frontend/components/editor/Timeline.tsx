@@ -10,6 +10,7 @@ export default function Timeline({ project, timeline, time, onSeek }: Props) {
   const pct = (t: number) => `${(t / total) * 100}%`;
   const segments = project.subtitles?.segments ?? [];
   const texts = (project.plan?.operations ?? []).filter((o) => o.type === "text") as unknown as { text: string; start: number; duration: number }[];
+  const overlays = (project.plan?.operations ?? []).filter((o) => o.type === "overlay") as unknown as { track: string; label?: string; start: number; duration: number }[];
   const music = project.plan?.operations.find((o) => o.type === "music");
   const removed = total - timeline.segments.reduce((a, [s, e]) => a + (e - s), 0);
 
@@ -47,6 +48,16 @@ export default function Timeline({ project, timeline, time, onSeek }: Props) {
         <div className={styles.trackLabel}>Katman</div>
         <div className={styles.track}>
           {music && <div className={styles.musicBar} title={`Müzik: ${String(music.track)}`}>♪ {String(music.track).replace("project:", "")}</div>}
+          {overlays.map((ov, i) => (
+            <div
+              key={`ov-${i}`}
+              className={styles.brollBar}
+              style={{ left: pct(Math.min(ov.start, total)), width: pct(Math.min(ov.duration, total)) }}
+              title={`B-Roll: ${ov.label || ov.track}`}
+            >
+              🖼️ {ov.label || "B-Roll"}
+            </div>
+          ))}
           {texts.map((t, i) => (
             <div key={i} className={styles.textBar} style={{ left: pct(Math.min(t.start, total)), width: pct(Math.min(t.duration, total)) }} title={t.text}>
               T {t.text}

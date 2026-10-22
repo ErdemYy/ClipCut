@@ -138,10 +138,29 @@ class TextOp(_Op):
     background: bool = False
 
 
+OverlayMode = Literal["pip", "fullscreen", "sticker"]
+OverlayPosition = Literal["top_right", "top_left", "bottom_right", "bottom_left", "center"]
+OverlayAnimation = Literal["pop", "fade", "slide", "none"]
+
+
+class OverlayOp(_Op):
+    """Görsel / Video / B-Roll katmanı (çıktı zaman çizelgesinde)."""
+    type: Literal["overlay"] = "overlay"
+    track: str = Field(..., min_length=1)
+    label: Optional[str] = None
+    start: float = Field(0.0, ge=0)
+    duration: float = Field(3.0, gt=0, le=600)
+    mode: OverlayMode = "pip"
+    position: OverlayPosition = "top_right"
+    scale: float = Field(0.42, ge=0.15, le=1.0)
+    animation: OverlayAnimation = "pop"
+    border_radius: int = Field(16, ge=0, le=60)
+
+
 Operation = Annotated[
     Union[
         TrimOp, CutRangeOp, RemoveSilenceOp, ReframeOp, SpeedOp, ColorGradeOp, SubtitlesOp,
-        MusicOp, SfxOp, VolumeOp, TransitionOp, FadeOp, TextOp,
+        MusicOp, SfxOp, VolumeOp, TransitionOp, FadeOp, TextOp, OverlayOp,
     ],
     Field(discriminator="type"),
 ]

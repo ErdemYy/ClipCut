@@ -43,6 +43,7 @@ class RenderRequest:
     fonts_dir: Path
     resolve_track: TrackResolver
     voiceover: Optional[Path] = None
+    resolve_overlay: Optional[TrackResolver] = None
 
 
 def even(n: float) -> int:
@@ -174,6 +175,61 @@ def build_command(req: RenderRequest) -> tuple[list[str], float]:
     else:
         f.append(f"[vsp]scale={W}:{H}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black[vfr]")
 
+    # 3b) B-Roll ve Görsel Katmanları (Overlays)
+    curr_v = "vfr"
+    overlays = plan.all("overlay")
+    resolver = req.resolve_overlay or req.resolve_track
+    for k, ov in enumerate(overlays):
+        ov_path = resolver(ov.track) if resolver else None
+        if not ov_path or ov.start >= T:
+            continue
+
+        is_video = ov_path.suffix.lower() in {".mp4", ".mov", ".webm", ".mkv"}
+        if is_video:
+            inputs += ["-ss", "0", "-t", f"{ov.duration:.3f}", "-i", str(ov_path)]
+        else:
+            inputs += ["-loop", "1", "-t", f"{ov.duration:.3f}", "-i", str(ov_path)]
+
+        oi = next_input
+        next_input += 1
+
+        if ov.mode == "fullscreen":
+            scale_filter = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
+        elif ov.mode == "sticker":
+            sw = even(W * 0.28)
+            scale_filter = f"scale={sw}:{sw}:force_original_aspect_ratio=decrease:force_divisible_by=2"
+        else:  # pip
+            target_w = even(W * ov.scale)
+            scale_filter = f"scale={target_w}:{target_w}:force_original_aspect_ratio=decrease:force_divisible_by=2"
+
+        pad_x = 36
+        pad_y = 100
+        if ov.position == "top_left":
+            pos_expr = f"{pad_x}:{pad_y}"
+        elif ov.position == "bottom_right":
+            pos_expr = f"W-w-{pad_x}:H-h-220"
+        elif ov.position == "bottom_left":
+            pos_expr = f"{pad_x}:H-h-220"
+        elif ov.position == "center":
+            pos_expr = "(W-w)/2:(H-h)/2"
+        else:  # top_right
+            pos_expr = f"W-w-{pad_x}:{pad_y}"
+
+        ov_label = f"ov{k}"
+        trans_filters = [scale_filter, "format=rgba"]
+        if ov.animation in ("fade", "pop"):
+            fade_in = 0.25
+            fade_out = max(0.1, ov.duration - 0.25)
+            trans_filters.append(f"fade=t=in:st=0:d={fade_in:.2f}:alpha=1")
+            trans_filters.append(f"fade=t=out:st={fade_out:.2f}:d=0.25:alpha=1")
+
+        f.append(f"[{oi}:v]{','.join(trans_filters)}[{ov_label}]")
+        next_v = f"vov{k}"
+        start_t = ov.start
+        end_t = min(T, ov.start + ov.duration)
+        f.append(f"[{curr_v}][{ov_label}]overlay={pos_expr}:enable='between(t,{start_t:.3f},{end_t:.3f})'[{next_v}]")
+        curr_v = next_v
+
     post: list[str] = color_filters(plan.first("color_grade"))
     fade = plan.first("fade")
     if fade and fade.fade_in > 0:
@@ -190,7 +246,7 @@ def build_command(req: RenderRequest) -> tuple[list[str], float]:
         (req.work_dir / "subs.ass").write_text(ass, encoding="utf-8")
         post.append(f"subtitles=subs.ass:fontsdir={_rel(req.fonts_dir, req.work_dir)}")
     post.append("format=yuv420p")
-    f.append(f"[vfr]{','.join(post)}[vout]")
+    f.append(f"[{curr_v}]{','.join(post)}[vout]")
 
     # 4) Ses sonrası işlemler
     achain: list[str] = []
