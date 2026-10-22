@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import { api, formatTime, type Job, type Library, type Operation, type Project } from "@/lib/api";
@@ -6,16 +6,19 @@ import type { JobMap } from "@/lib/api";
 import styles from "./editor-parts.module.css";
 
 const STYLE_INFO: Record<string, { label: string; hint: string }> = {
-  karaoke: { label: "Karaoke", hint: "KonuÅŸuldukÃ§a renklenir" },
-  word_pop: { label: "Pop", hint: "Aktif kelime bÃ¼yÃ¼r" },
-  classic: { label: "Klasik", hint: "Sinema altyazÄ±sÄ±" },
-  boxed: { label: "Kutulu", hint: "Arka planlÄ±" },
+  hormozi: { label: "Hormozi", hint: "Viral kinetik zıplama & emojiler" },
+  neon: { label: "Neon", hint: "Siber parlama ve renkli kontur" },
+  karaoke: { label: "Karaoke", hint: "Konuşuldukça renklenir" },
+  word_pop: { label: "Pop", hint: "Aktif kelime büyür" },
+  classic: { label: "Klasik", hint: "Sinema altyazısı" },
+  boxed: { label: "Kutulu", hint: "Arka planlı" },
   minimal: { label: "Minimal", hint: "Sade ve ince" },
 };
 
 const DEFAULT_SUB: Operation = {
-  type: "subtitles", enabled: true, style: "karaoke", font: "Montserrat", size: "medium",
-  primary_color: "#FFFFFF", highlight_color: "#FFD400", outline_color: "#000000", position: "bottom", uppercase: false, max_words_per_line: 0,
+  type: "subtitles", enabled: true, style: "hormozi", font: "Montserrat", size: "medium",
+  primary_color: "#FFFFFF", highlight_color: "#FFE600", outline_color: "#000000", position: "bottom", uppercase: true, max_words_per_line: 0,
+  auto_emojis: true, bounce: true,
 };
 
 type Props = {
@@ -42,7 +45,7 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
   const transcribe = async () => {
     try {
       const job = await api.transcribe(project.id, target);
-      track(job, () => notify("AltyazÄ±lar hazÄ±r"));
+      track(job, () => notify("Altyazılar hazır"));
     } catch (e) {
       notify((e as Error).message, true);
     }
@@ -51,7 +54,7 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
   const translate = async () => {
     try {
       const job = await api.translate(project.id, target);
-      track(job, () => notify(`AltyazÄ± Ã§evrildi â†’ ${target.toUpperCase()}`));
+      track(job, () => notify(`Altyazı çevrildi → ${target.toUpperCase()}`));
     } catch (e) {
       notify((e as Error).message, true);
     }
@@ -70,6 +73,19 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
     }
   };
 
+  const selectStyle = (key: string) => {
+    const patch: Record<string, unknown> = { style: key, enabled: true };
+    if (key === "hormozi") {
+      patch.auto_emojis = true;
+      patch.uppercase = true;
+      patch.highlight_color = "#FFE600";
+    } else if (key === "neon") {
+      patch.highlight_color = "#00F0FF";
+      patch.outline_color = "#FF007F";
+    }
+    updateSub(patch);
+  };
+
   const saveTexts = async () => {
     const segs = project.subtitles?.segments ?? [];
     try {
@@ -78,7 +94,7 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
         segs.map((s) => ({ id: s.id, start: s.start, end: s.end, text: drafts[s.id] ?? s.text })),
       );
       setProject(p);
-      notify("AltyazÄ± metinleri kaydedildi");
+      notify("Altyazı metinleri kaydedildi");
     } catch (e) {
       notify((e as Error).message, true);
     }
@@ -88,11 +104,11 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
     return (
       <div className={styles.section}>
         <div className={styles.hero}>
-          <span>ğŸ’¬</span>
-          <h3>Profesyonel altyazÄ±</h3>
-          <p>Gemini konuÅŸmayÄ± kelime kelime yazÄ±ya dÃ¶ker ve seÃ§tiÄŸin dile Ã§evirir.</p>
+          <span>💬</span>
+          <h3>Profesyonel altyazı</h3>
+          <p>Gemini konuşmayı kelime kelime yazıya döker ve seçtiğin dile çevirir.</p>
         </div>
-        <label className="label" htmlFor="sub-target">AltyazÄ± dili</label>
+        <label className="label" htmlFor="sub-target">Altyazı dili</label>
         <select id="sub-target" className="select" value={target} onChange={(e) => setTarget(e.target.value)}>
           {languages.map((l) => (
             <option key={l.code} value={l.code}>{l.name}</option>
@@ -102,10 +118,10 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
           <JobProgress job={activeJob} />
         ) : (
           <button id="sub-generate" className="btn btn-primary" onClick={transcribe} disabled={project.status !== "ready"}>
-            âœ¦ AltyazÄ± OluÅŸtur
+            ✦ Altyazı Oluştur
           </button>
         )}
-        {!project.has_audio && <p className={styles.muted}>Bu videoda ses kanalÄ± bulunamadÄ±.</p>}
+        {!project.has_audio && <p className={styles.muted}>Bu videoda ses kanalı bulunamadı.</p>}
       </div>
     );
   }
@@ -118,7 +134,7 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
       <div className={styles.row}>
         <div style={{ flex: 1 }}>
           <label className="label" htmlFor="sub-lang">
-            Dil Â· kaynak {project.transcript_language?.toUpperCase()}
+            Dil · kaynak {project.transcript_language?.toUpperCase()}
           </label>
           <select id="sub-lang" className="select" value={target} onChange={(e) => setTarget(e.target.value)}>
             {languages.map((l) => (
@@ -133,19 +149,19 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
           disabled={!!activeJob || target === project.subtitle_language}
           style={{ alignSelf: "flex-end" }}
         >
-          Ã‡evir
+          Çevir
         </button>
       </div>
       {activeJob && <JobProgress job={activeJob} />}
 
-      <span className="label">Stil</span>
+      <span className="label">Altyazı Stili</span>
       <div className={styles.styleCards}>
         {Object.entries(STYLE_INFO).map(([key, info]) => (
           <button
             key={key}
             id={`sub-style-${key}`}
             className={`${styles.styleCard} ${sub?.style === key ? styles.styleCardOn : ""}`}
-            onClick={() => updateSub({ style: key, enabled: true })}
+            onClick={() => selectStyle(key)}
           >
             <strong className={styles[`sample_${key}`]}>Aa</strong>
             <span>{info.label}</span>
@@ -158,7 +174,7 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
         <div>
           <label className="label" htmlFor="sub-font">Font</label>
           <select id="sub-font" className="select" value={String(sub?.font ?? "Montserrat")} onChange={(e) => updateSub({ font: e.target.value })}>
-            {(library?.fonts ?? ["Montserrat"]).map((f) => (
+            {(library?.fonts ?? ["Montserrat", "Poppins", "Inter", "Bebas Neue"]).map((f) => (
               <option key={f}>{f}</option>
             ))}
           </select>
@@ -166,15 +182,15 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
         <div>
           <label className="label" htmlFor="sub-size">Boyut</label>
           <select id="sub-size" className="select" value={String(sub?.size ?? "medium")} onChange={(e) => updateSub({ size: e.target.value })}>
-            <option value="small">KÃ¼Ã§Ã¼k</option>
+            <option value="small">Küçük</option>
             <option value="medium">Orta</option>
-            <option value="large">BÃ¼yÃ¼k</option>
+            <option value="large">Büyük</option>
           </select>
         </div>
         <div>
           <span className="label">Konum</span>
           <div className={styles.segmented}>
-            {[["top", "Ãœst"], ["middle", "Orta"], ["bottom", "Alt"]].map(([v, l]) => (
+            {[["top", "Üst"], ["middle", "Orta"], ["bottom", "Alt"]].map(([v, l]) => (
               <button key={v} id={`sub-pos-${v}`} className={sub?.position === v ? styles.segOn : ""} onClick={() => updateSub({ position: v })}>
                 {l}
               </button>
@@ -188,29 +204,55 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
               <input type="color" value={String(sub?.primary_color ?? "#FFFFFF")} onChange={(e) => updateSub({ primary_color: e.target.value.toUpperCase() })} />
             </label>
             <label title="Vurgu rengi">
-              <input type="color" value={String(sub?.highlight_color ?? "#FFD400")} onChange={(e) => updateSub({ highlight_color: e.target.value.toUpperCase() })} />
+              <input type="color" value={String(sub?.highlight_color ?? "#FFE600")} onChange={(e) => updateSub({ highlight_color: e.target.value.toUpperCase() })} />
             </label>
             <label title="Kontur rengi">
               <input type="color" value={String(sub?.outline_color ?? "#000000")} onChange={(e) => updateSub({ outline_color: e.target.value.toUpperCase() })} />
             </label>
             <button
               id="sub-uppercase"
-              className={`${styles.toggle} ${sub?.uppercase ? styles.toggleOn : ""}`}
+              className={`${styles.toggle} ${sub?.uppercase || sub?.style === "hormozi" ? styles.toggleOn : ""}`}
               onClick={() => updateSub({ uppercase: !sub?.uppercase })}
-              title="BÃ¼yÃ¼k harf"
+              title="Büyük harf"
             >
               AA
             </button>
           </div>
         </div>
       </div>
-      <label className={styles.check}>
-        <input type="checkbox" checked={sub ? sub.enabled !== false : false} onChange={(e) => updateSub({ enabled: e.target.checked })} id="sub-enabled" />
-        AltyazÄ±yÄ± videoya yak
-      </label>
+
+      <div style={{ display: "grid", gap: "8px", margin: "10px 0" }}>
+        <label className={styles.check}>
+          <input
+            type="checkbox"
+            id="sub-auto-emojis"
+            checked={Boolean(sub?.auto_emojis) || sub?.style === "hormozi"}
+            onChange={(e) => updateSub({ auto_emojis: e.target.checked })}
+          />
+          <span>🔥 Otomatik Emojiler (Alex Hormozi & Submagic)</span>
+        </label>
+        <label className={styles.check}>
+          <input
+            type="checkbox"
+            id="sub-bounce"
+            checked={sub?.bounce !== false}
+            onChange={(e) => updateSub({ bounce: e.target.checked })}
+          />
+          <span>⚡ Kinetik Kelime Zıplaması (Pop & Bounce)</span>
+        </label>
+        <label className={styles.check}>
+          <input
+            type="checkbox"
+            checked={sub ? sub.enabled !== false : false}
+            onChange={(e) => updateSub({ enabled: e.target.checked })}
+            id="sub-enabled"
+          />
+          <span>Altyazıyı videoya yak (Render Burn-in)</span>
+        </label>
+      </div>
 
       <div className={styles.planHead}>
-        <h4>Metinler Â· {segs.length}</h4>
+        <h4>Metinler · {segs.length}</h4>
         <div className={styles.row}>
           <a className="btn btn-sm" href={api.subtitleExportUrl(project.id, "srt")} id="sub-export-srt">SRT</a>
           <a className="btn btn-sm" href={api.subtitleExportUrl(project.id, "vtt")} id="sub-export-vtt">VTT</a>
@@ -235,7 +277,7 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
           );
         })}
       </ul>
-      {segs.length === 0 && <p className={styles.muted}>KonuÅŸma bulunamadÄ±.</p>}
+      {segs.length === 0 && <p className={styles.muted}>Konuşma bulunamadı.</p>}
     </div>
   );
 }
@@ -244,7 +286,7 @@ export function JobProgress({ job }: { job: Job }) {
   return (
     <div className={styles.jobBox}>
       <div className={styles.jobHead}>
-        <span>{job.message || "Ã‡alÄ±ÅŸÄ±yor"}</span>
+        <span>{job.message || "Çalışıyor"}</span>
         <span>{Math.round(job.progress * 100)}%</span>
       </div>
       <div className="progress">

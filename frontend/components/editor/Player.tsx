@@ -2,10 +2,19 @@
 
 import { type Ref, useEffect, useMemo, useRef, useState } from "react";
 import { API_URL, type Operation, type OverlayOp, type Project, type Word, mediaUrl } from "@/lib/api";
+import { findEmojiForWord } from "@/lib/emoji";
 import styles from "./editor-parts.module.css";
 
 const ASPECTS: Record<string, string> = { "9:16": "9 / 16", "1:1": "1 / 1", "16:9": "16 / 9", "4:5": "4 / 5" };
-const AUTO_WORDS: Record<string, number> = { classic: 7, karaoke: 4, word_pop: 3, boxed: 6, minimal: 7 };
+const AUTO_WORDS: Record<string, number> = {
+  classic: 7,
+  karaoke: 4,
+  word_pop: 3,
+  boxed: 6,
+  minimal: 7,
+  hormozi: 3,
+  neon: 4,
+};
 const COLOR_FILTERS: Record<string, string> = {
   none: "",
   cinematic: "contrast(1.12) saturate(0.88) sepia(0.08)",
@@ -117,7 +126,10 @@ function SubtitleOverlay({ sub, project }: { sub: Record<string, unknown>; proje
   }, []);
 
   const style = String(sub.style ?? "karaoke");
-  const maxWords = Number(sub.max_words_per_line) || AUTO_WORDS[style] || 5;
+  const maxWords = Number(sub.max_words_per_line) || AUTO_WORDS[style] || 4;
+  const isHormozi = style === "hormozi";
+  const isNeon = style === "neon";
+  const autoEmojis = Boolean(sub.auto_emojis) || isHormozi;
 
   const chunks = useMemo(() => {
     const out: Word[][] = [];
@@ -132,15 +144,18 @@ function SubtitleOverlay({ sub, project }: { sub: Record<string, unknown>; proje
 
   const pos = String(sub.position ?? "bottom");
   const size = { small: 0.75, medium: 1, large: 1.3 }[String(sub.size ?? "medium")] ?? 1;
-  const upper = Boolean(sub.uppercase);
+  const upper = Boolean(sub.uppercase) || isHormozi;
   const primary = String(sub.primary_color ?? "#FFFFFF");
-  const highlight = String(sub.highlight_color ?? "#FFD400");
-  const outline = String(sub.outline_color ?? "#000000");
+  const highlight = String(sub.highlight_color ?? (isNeon ? "#00F0FF" : isHormozi ? "#FFE600" : "#FFD400"));
+  const outline = String(sub.outline_color ?? (isNeon ? "#FF007F" : "#000000"));
 
   return (
     <div
       className={`${styles.subOverlay} ${styles[`pos_${pos}`]}`}
-      style={{ fontFamily: `"${String(sub.font ?? "Montserrat")}", var(--font-display)`, fontSize: `calc(clamp(14px, 3.6cqw, 40px) * ${size})` }}
+      style={{
+        fontFamily: `"${String(sub.font ?? (isHormozi ? "Impact" : "Montserrat"))}", var(--font-display)`,
+        fontSize: `calc(clamp(14px, 3.6cqw, 40px) * ${size * (isHormozi ? 1.15 : 1)})`,
+      }}
     >
       <span
         className={`${styles.subLine} ${styles[`st_${style}`]}`}
@@ -155,9 +170,25 @@ function SubtitleOverlay({ sub, project }: { sub: Record<string, unknown>; proje
         {chunk.map((w, i) => {
           const active = t >= w.start && t < (chunk[i + 1]?.start ?? w.end + 0.25);
           const spoken = t >= w.start;
-          const color = style === "karaoke" ? (spoken ? highlight : primary) : style === "word_pop" && active ? highlight : primary;
+          const emoji = autoEmojis && active ? findEmojiForWord(w.text) : null;
+
+          let color = primary;
+          if (style === "karaoke") {
+            color = spoken ? highlight : primary;
+          } else if ((style === "word_pop" || isHormozi || isNeon) && active) {
+            color = highlight;
+          }
+
+          let wordClass = "";
+          if (active) {
+            if (isHormozi) wordClass = styles.hormoziWordActive;
+            else if (isNeon) wordClass = styles.neonWordActive;
+            else if (style === "word_pop") wordClass = styles.popWord;
+          }
+
           return (
-            <span key={`${w.start}-${i}`} className={active && style === "word_pop" ? styles.popWord : ""} style={{ color }}>
+            <span key={`${w.start}-${i}`} className={wordClass} style={{ color }}>
+              {emoji && <span className={styles.subEmojiBadge}>{emoji}</span>}
               {w.text}{" "}
             </span>
           );

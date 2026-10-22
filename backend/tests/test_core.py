@@ -163,3 +163,41 @@ def test_broll_suggestions_and_overlay_plan(tmp_path: Path):
     assert plan.all("overlay")[0].mode == "pip"
 
 
+def test_emoji_and_hormozi_subtitles():
+    from app.ai import mock
+    from app.edit.schema import EditPlan, SubtitlesOp
+    from app.subtitles.builder import Word, build_ass
+    from app.subtitles.emoji import find_emoji_for_segment, find_emoji_for_word
+
+    # 1. Emoji sözlük doğrulaması
+    assert find_emoji_for_word("ateş") == "🔥"
+    assert find_emoji_for_word("roket") == "🚀"
+    assert find_emoji_for_word("para") == "💰"
+    assert find_emoji_for_word("fikir") == "💡"
+    assert find_emoji_for_word("growth") == "📈"
+    assert find_emoji_for_segment("bu inanılmaz bir teknoloji") in ["🔥", "🤖"]
+
+    # 2. Hormozi & Neon ASS çıktı doğrulaması
+    words = [
+        Word(text="Bu", start=0.0, end=0.4),
+        Word(text="ateş", start=0.4, end=0.8),
+        Word(text="gibi", start=0.8, end=1.2),
+        Word(text="büyük", start=1.2, end=1.5),
+        Word(text="para", start=1.5, end=2.0),
+    ]
+    sub = SubtitlesOp(style="hormozi", auto_emojis=True, uppercase=True, highlight_color="#FFE600")
+    ass = build_ass(1080, 1920, words, sub, [])
+    assert "Sub" in ass
+    assert "Dialogue:" in ass
+    assert "🔥" in ass or "💰" in ass
+    assert r"\fscx" in ass
+
+    # 3. Prompt planlayıcı Hormozi algılama
+    plan, msg = mock.plan_edit("Hormozi tarzı altyazı ekle", EditPlan(), {"duration": 10.0})
+    sub_op = plan.first("subtitles")
+    assert sub_op is not None
+    assert sub_op.style == "hormozi"
+    assert sub_op.auto_emojis is True
+    assert sub_op.uppercase is True
+
+

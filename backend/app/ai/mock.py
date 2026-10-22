@@ -105,16 +105,26 @@ def plan_edit(prompt: str, current: EditPlan, context: dict) -> tuple[EditPlan, 
             prev = current.first("subtitles")
             data = prev.model_dump() if prev else SubtitlesOp().model_dump()
             data["enabled"] = True
-            if _has(p, "karaoke", "vurgu", "tiktok", "highlight"):
+            if _has(p, "hormozi", "submagic", "viral altyazı", "alex hormozi"):
+                data["style"] = "hormozi"
+                data["auto_emojis"] = True
+                data["uppercase"] = True
+                data["highlight_color"] = "#FFE600"
+            elif _has(p, "neon", "siber", "cyber", "parlayan"):
+                data["style"] = "neon"
+                data["highlight_color"] = "#00F0FF"
+            elif _has(p, "karaoke", "vurgu", "tiktok", "highlight"):
                 data["style"] = "karaoke"
-            if _has(p, "kelime kelime", "pop", "zıpla", "word"):
+            elif _has(p, "kelime kelime", "pop", "zıpla", "word"):
                 data["style"] = "word_pop"
-            if _has(p, "kutu", "box", "arka plan"):
+            elif _has(p, "kutu", "box", "arka plan"):
                 data["style"] = "boxed"
-            if _has(p, "sade", "minimal"):
+            elif _has(p, "sade", "minimal"):
                 data["style"] = "minimal"
-            if _has(p, "klasik", "classic", "sinema altyazı", "netflix"):
+            elif _has(p, "klasik", "classic", "sinema altyazı", "netflix"):
                 data["style"] = "classic"
+            if _has(p, "emoji", "emojili", "ikon"):
+                data["auto_emojis"] = True
             for name, hex_ in COLORS.items():
                 if name in p:
                     data["highlight_color"] = hex_
@@ -135,7 +145,7 @@ def plan_edit(prompt: str, current: EditPlan, context: dict) -> tuple[EditPlan, 
                 if font.lower() in p:
                     data["font"] = font
             ops = _replace(ops, SubtitlesOp(**data))
-            done.append(f"altyazı ({data['style']})")
+            done.append(f"altyazı ({data['style']}{', emojili' if data.get('auto_emojis') else ''})")
 
     if _has(p, "müzik", "music", "şarkı", "fon"):
         if removing and _has(p, "müziği", "music"):

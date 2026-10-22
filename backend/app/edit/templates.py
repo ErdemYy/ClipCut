@@ -17,17 +17,17 @@ from .schema import (
 TEMPLATES: list[dict[str, Any]] = [
     {
         "id": "tiktok_viral",
-        "name": "TikTok & Reels Viral",
-        "description": "Dikey format, konuşuldukça parlayan sarı karaoke altyazı, sessizlik temizleme, enerjik fon müziği ve kayma geçişleri.",
+        "name": "TikTok & Reels Viral (Hormozi)",
+        "description": "Dikey format, Alex Hormozi stili zıplayan emojili altyazı, sessizlik temizleme, enerjik fon müziği ve kayma geçişleri.",
         "icon": "🔥",
         "tag": "Viral & Keşfet",
         "badge_color": "var(--amber)",
-        "prompt": "Sessiz yerleri temizle, dikey 9:16 yap, sarı karaoke altyazı ekle, enerjik fon müziği koy, parçalar arasına kayma geçişi ekle",
+        "prompt": "Sessiz yerleri temizle, dikey 9:16 yap, hormozi tarzı emojili zıplayan altyazı ekle, enerjik fon müziği koy, parçalar arasına kayma geçişi ekle",
         "plan": EditPlan(
             operations=[
                 RemoveSilenceOp(threshold_db=-34.0, min_silence_ms=450, padding_ms=100),
                 ReframeOp(aspect_ratio="9:16", mode="blur"),
-                SubtitlesOp(enabled=True, style="karaoke", highlight_color="#FFD400", primary_color="#FFFFFF", size="medium", position="bottom"),
+                SubtitlesOp(enabled=True, style="hormozi", highlight_color="#FFE600", primary_color="#FFFFFF", auto_emojis=True, uppercase=True, size="medium", position="bottom"),
                 MusicOp(track="upbeat_pulse", volume=0.18, ducking=True, fade_in=0.5, fade_out=1.5),
                 TransitionOp(style="slideleft", duration=0.35),
             ]
@@ -101,6 +101,23 @@ TEMPLATES: list[dict[str, Any]] = [
                 VolumeOp(gain=1.35, normalize=True),
                 SubtitlesOp(enabled=True, style="boxed", highlight_color="#3DDC84", outline_color="#18181B", position="bottom"),
                 MusicOp(track="lofi_chill", volume=0.1, ducking=True),
+            ]
+        ).model_dump(),
+    },
+    {
+        "id": "neon_cyber",
+        "name": "Cyberpunk Neon Glow",
+        "description": "Glow efektli neon cyan altyazı, sinematik soğuk ton filtresi, otomatik emojiler ve modern atmosfer.",
+        "icon": "⚡",
+        "tag": "Tech & Cyber",
+        "badge_color": "var(--cyan)",
+        "prompt": "Neon altyazı yap, sinematik soğuk renk filtresi koy, dikey yap, enerjik fon müziği ekle",
+        "plan": EditPlan(
+            operations=[
+                ReframeOp(aspect_ratio="9:16", mode="blur"),
+                ColorGradeOp(preset="cool", vignette=True),
+                SubtitlesOp(enabled=True, style="neon", highlight_color="#00F0FF", outline_color="#FF007F", auto_emojis=True, uppercase=True, position="bottom"),
+                MusicOp(track="upbeat_pulse", volume=0.18, ducking=True),
             ]
         ).model_dump(),
     },

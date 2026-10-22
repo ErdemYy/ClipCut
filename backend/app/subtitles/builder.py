@@ -6,6 +6,7 @@ from typing import Iterable, Optional
 
 from ..edit.schema import SubtitlesOp, TextOp
 from ..edit.timeline import Timeline
+from .emoji import find_emoji_for_segment, find_emoji_for_word
 
 
 @dataclass
@@ -26,7 +27,15 @@ class Cue:
         return " ".join(w.text for w in self.words)
 
 
-AUTO_WORDS = {"classic": 7, "karaoke": 4, "word_pop": 3, "boxed": 6, "minimal": 7}
+AUTO_WORDS = {
+    "classic": 7,
+    "karaoke": 4,
+    "word_pop": 3,
+    "boxed": 6,
+    "minimal": 7,
+    "hormozi": 3,
+    "neon": 4,
+}
 SIZE_FACTOR = {"small": 0.052, "medium": 0.068, "large": 0.088}
 SENTENCE_END = (".", "!", "?", "…", ":", ";")
 
@@ -169,6 +178,12 @@ def build_ass(
             styles.append(_style_line("Sub", sub.font, size, highlight, primary, outline, shadow_col, True, 1, bord, size * 0.04, align, margin_v, margin_h))
         elif sub.style == "word_pop":
             styles.append(_style_line("Sub", sub.font, size, primary, primary, outline, shadow_col, True, 1, bord * 1.1, size * 0.05, align, margin_v, margin_h))
+        elif sub.style == "hormozi":
+            h_size = max(22, int(size * 1.15))
+            styles.append(_style_line("Sub", sub.font, h_size, primary, primary, outline, shadow_col, True, 1, bord * 1.5, h_size * 0.07, align, margin_v, margin_h))
+        elif sub.style == "neon":
+            neon_out = ass_color(sub.outline_color if sub.outline_color != "#000000" else "#00F0FF")
+            styles.append(_style_line("Sub", sub.font, size, primary, primary, neon_out, shadow_col, True, 1, bord * 1.6, size * 0.05, align, margin_v, margin_h))
         elif sub.style == "boxed":
             box = ass_color(sub.outline_color, 0x50)
             styles.append(_style_line("Sub", sub.font, size, primary, primary, box, box, True, 3, size * 0.18, 0, align, margin_v, margin_h))
@@ -181,7 +196,7 @@ def build_ass(
 
         def fmt(t: str) -> str:
             t = ass_escape(t)
-            return t.upper() if sub.uppercase else t
+            return t.upper() if (sub.uppercase or sub.style == "hormozi") else t
 
         for cue in cues:
             if sub.style == "karaoke":
@@ -191,10 +206,11 @@ def build_ass(
                     lead = (w.start - cue.start) if i == 0 else 0.0
                     if lead > 0.01:
                         parts.append(f"{{\\k{int(round(lead * 100))}}}")
-                    parts.append(f"{{\\k{max(1, int(round((nxt - w.start) * 100)))}}}{fmt(w.text)} ")
+                    emo = f"{find_emoji_for_word(w.text)} " if sub.auto_emojis and find_emoji_for_word(w.text) else ""
+                    parts.append(f"{{\\k{max(1, int(round((nxt - w.start) * 100)))}}}{emo}{fmt(w.text)} ")
                 text = "{\\fad(80,60)}" + "".join(parts).rstrip()
                 events.append(f"Dialogue: 0,{ass_time(cue.start)},{ass_time(cue.end)},Sub,,0,0,0,,{text}")
-            elif sub.style == "word_pop":
+            elif sub.style in ("word_pop", "hormozi", "neon"):
                 for i, w in enumerate(cue.words):
                     s = cue.start if i == 0 else w.start
                     e = cue.words[i + 1].start if i + 1 < len(cue.words) else cue.end
@@ -202,16 +218,25 @@ def build_ass(
                         continue
                     chunks = []
                     for j, other in enumerate(cue.words):
+                        emo = find_emoji_for_word(other.text) if (sub.auto_emojis or sub.style == "hormozi") else None
+                        emo_str = f"{emo} " if emo else ""
+                        word_str = fmt(other.text)
                         if j == i:
-                            chunks.append(
-                                f"{{\\c{highlight}\\fscx100\\fscy100\\t(0,90,\\fscx116\\fscy116)}}{fmt(other.text)}{{\\c{primary}\\fscx100\\fscy100}}"
-                            )
+                            if sub.style == "hormozi":
+                                bounce = r"\t(0,60,\fscx126\fscy126)\t(60,130,\fscx116\fscy116)" if sub.bounce else r"\fscx116\fscy116"
+                                chunks.append(f"{{\\c{highlight}\\fscx100\\fscy100{bounce}}}{emo_str}{word_str}{{\\c{primary}\\fscx100\\fscy100}}")
+                            elif sub.style == "neon":
+                                chunks.append(f"{{\\c{highlight}\\fscx112\\fscy112}}{emo_str}{word_str}{{\\c{primary}\\fscx100\\fscy100}}")
+                            else:  # word_pop
+                                chunks.append(f"{{\\c{highlight}\\fscx100\\fscy100\\t(0,90,\\fscx116\\fscy116)}}{emo_str}{word_str}{{\\c{primary}\\fscx100\\fscy100}}")
                         else:
-                            chunks.append(fmt(other.text))
+                            chunks.append(word_str)
                     events.append(f"Dialogue: 0,{ass_time(s)},{ass_time(e)},Sub,,0,0,0,,{' '.join(chunks)}")
             else:
+                cue_emo = find_emoji_for_segment(cue.text) if sub.auto_emojis else None
+                prefix = f"{cue_emo} " if cue_emo else ""
                 tokens = _wrap_two_lines([fmt(w.text) for w in cue.words], max(12, max_chars // 2))
-                text = " ".join(tokens).replace(r"\N ", r"\N")
+                text = prefix + " ".join(tokens).replace(r"\N ", r"\N")
                 fade = "{\\fad(120,80)}" if sub.style == "minimal" else ""
                 events.append(f"Dialogue: 0,{ass_time(cue.start)},{ass_time(cue.end)},Sub,,0,0,0,,{fade}{text}")
 

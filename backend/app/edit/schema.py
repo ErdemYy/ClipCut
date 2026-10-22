@@ -66,7 +66,7 @@ class ColorGradeOp(_Op):
     grain: bool = False
 
 
-SubtitleStyle = Literal["classic", "karaoke", "word_pop", "boxed", "minimal"]
+SubtitleStyle = Literal["classic", "karaoke", "word_pop", "boxed", "minimal", "hormozi", "neon"]
 
 
 class SubtitlesOp(_Op):
@@ -81,6 +81,8 @@ class SubtitlesOp(_Op):
     position: Position = "bottom"
     uppercase: bool = False
     max_words_per_line: int = Field(0, ge=0, le=12, description="0 = stile göre otomatik")
+    auto_emojis: bool = Field(False, description="Metindeki anahtar kelimelere göre dinamik otomatik emoji ekler (Alex Hormozi / Submagic tarzı)")
+    bounce: bool = Field(True, description="Kinetik kelime zıplaması/büyümesi")
 
 
 class MusicOp(_Op):

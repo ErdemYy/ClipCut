@@ -102,7 +102,7 @@ def library() -> dict:
         "music": assets.list_library("music"), "sfx": assets.list_library("sfx"), "fonts": assets.FONT_FAMILIES,
         "broll": broll.list_stock_broll(),
         "languages": [{"code": k, "name": v} for k, v in ai.LANGUAGES.items()],
-        "subtitle_styles": ["karaoke", "word_pop", "classic", "boxed", "minimal"],
+        "subtitle_styles": ["karaoke", "word_pop", "hormozi", "neon", "classic", "boxed", "minimal"],
         "color_presets": ["none", "cinematic", "vibrant", "warm", "cool", "bw", "vintage", "moody", "bright"],
         "transitions": ["fade", "dissolve", "fadeblack", "wipeleft", "wiperight", "slideleft", "slideright", "circleopen", "smoothleft", "zoomin"],
         "dsl": dsl_reference(),
