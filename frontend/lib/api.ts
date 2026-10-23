@@ -11,7 +11,7 @@ export type Project = {
   id: string;
   name: string;
   status: "draft" | "generating" | "ready" | "failed";
-  origin: "upload" | "veo";
+  origin: "upload" | "veo" | "storyboard";
   created_at: string;
   updated_at: string;
   duration: number;
@@ -33,6 +33,7 @@ export type Project = {
   can_undo?: boolean;
   chat?: ChatMessage[];
   output_meta?: { duration: number; width: number; height: number; rendered_at: string; timeline?: TimelineInfo } | null;
+  storyboard?: Storyboard | null;
 };
 
 export type Voice = {
@@ -48,7 +49,7 @@ export type Voice = {
 export type Job = {
   id: string;
   project_id: string;
-  kind: "generate" | "transcribe" | "translate" | "render";
+  kind: "generate" | "storyboard_generate" | "transcribe" | "translate" | "render" | "export_batch" | "clip_analyze" | "clip_render";
   status: "queued" | "running" | "done" | "failed";
   progress: number;
   message: string;
@@ -62,6 +63,36 @@ export type TimelineInfo = {
   speed: number;
   crossfade: number;
   output_duration: number;
+};
+
+export type ExportFormat = "9:16" | "1:1" | "4:5" | "16:9";
+export type RenderOptions = { resolution: "720p" | "1080p" | "4k"; quality: "fast" | "standard" | "high" };
+export type FillMode = "blur" | "fit" | "crop";
+export type PublishResult = {
+  archive: string;
+  outputs: { label: string; aspect_ratio: ExportFormat; output: string; thumbnail: string;
+    width: number; height: number; duration: number; thumbnail_fallback: boolean }[];
+};
+export type ClipCandidate = {
+  id: number; start: number; end: number; duration: number; score: number;
+  speech_ratio: number; words_per_minute: number | null; excerpt: string; reason: string;
+};
+export type ClipAnalysis = { clips: ClipCandidate[]; notice: string; empty_reason: string | null };
+
+export type StoryScene = {
+  id: string; title: string; visual_prompt: string; narration: string; duration: 4 | 6 | 8;
+  status: "pending" | "generating" | "ready" | "failed";
+  video_url: string | null; actual_duration: number | null; error: string | null; mock: boolean | null;
+  thumbnail_url: string | null; trim_start: number; trim_end: number | null; timeline_duration: number;
+  transition: "cut" | "dissolve" | "fade"; transition_duration: number;
+};
+export type Storyboard = {
+  title: string; aspect_ratio: "9:16" | "16:9"; language: "tr" | "en" | "de" | "es";
+  style: string; continuity: string; voiceover: boolean; voice_id: string; auto_subtitles: boolean;
+  scenes: StoryScene[]; revision: string; assembled_revision: string | null; mock_plan: boolean;
+  pending_scenes: number; planned_duration: number; last_error: string | null;
+  timeline_duration: number;
+  previous_versions: { index: number; source_url: string; created_at: string; restorable: boolean; has_plan: boolean }[];
 };
 
 export type LibraryItem = { id: string; label: string; mood?: string; url: string };
@@ -127,9 +158,14 @@ export type Template = {
   plan: Plan;
 };
 
-export type Health = { ok: boolean; mock: boolean; ffmpeg: string; veo_model: string };
+export type Health = { ok: boolean; mock: boolean; ffmpeg: string; veo_model: string; video_durations?: number[]; video_model_warning?: string | null };
 
 export const mediaUrl = (path: string | null | undefined) => (path ? `${API_URL}${path}` : undefined);
+export const downloadUrl = (path: string | null | undefined) => {
+  if (!path) return undefined;
+  const match = path.match(/^\/media\/projects\/([^/]+)\/(.+)$/);
+  return match ? `${API_URL}/api/projects/${match[1]}/download/${match[2]}` : mediaUrl(path);
+};
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
@@ -170,6 +206,14 @@ export const api = {
   },
   generate: (body: { prompt: string; name?: string; aspect_ratio: string; duration: number; negative_prompt?: string }) =>
     request<{ project: Project; job: Job }>("/api/projects/generate", json(body)),
+  createStoryboard: (body: { brief: string; scene_count: number; scene_duration: number; aspect_ratio: string; language: string; style: string; confirm_api_usage: boolean }) =>
+    request<Project>("/api/projects/storyboard", json(body)),
+  saveStoryboard: (id: string, body: Storyboard) => request<Project>(`/api/projects/${id}/storyboard`, { method: "PUT", body: JSON.stringify(body) }),
+  generateStoryboard: (id: string, body: { revision: string; scene_id?: string; confirm_api_usage: boolean; confirm_replace_source: boolean }) =>
+    request<Job>(`/api/projects/${id}/storyboard/generate`, json(body)),
+  cancelJob: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
+  restoreStoryboardVersion: (id: string, body: { version_index: number; confirm: boolean }) =>
+    request<Project>(`/api/projects/${id}/storyboard/restore`, json(body)),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
   jobs: (projectId: string) => request<Job[]>(`/api/projects/${projectId}/jobs`),
   transcribe: (id: string, target_language?: string) => request<Job>(`/api/projects/${id}/transcribe`, json({ target_language })),
@@ -181,7 +225,15 @@ export const api = {
   setPlan: (id: string, plan: Plan) => request<Project>(`/api/projects/${id}/plan`, { method: "PUT", body: JSON.stringify({ plan }) }),
   undo: (id: string) => request<Project>(`/api/projects/${id}/plan/undo`, { method: "POST" }),
   timeline: (id: string) => request<TimelineInfo>(`/api/projects/${id}/timeline`),
-  render: (id: string) => request<Job>(`/api/projects/${id}/render`, { method: "POST" }),
+  render: (id: string, options?: RenderOptions) => request<Job>(`/api/projects/${id}/render`, json(options ?? {})),
+  exportBatch: (id: string, options: RenderOptions & { formats: ExportFormat[]; fill: FillMode; thumbnail_at: number }) =>
+    request<Job>(`/api/projects/${id}/export-batch`, json(options)),
+  selectThumbnail: (id: string, at: number) =>
+    request<Project>(`/api/projects/${id}/thumbnail`, { method: "PUT", body: JSON.stringify({ at }) }),
+  analyzeClips: (id: string, options: { min_duration: number; max_duration: number; max_clips: number }) =>
+    request<Job>(`/api/projects/${id}/clips/analyze`, json(options)),
+  renderClips: (id: string, options: RenderOptions & { analysis_id: string; clip_ids: number[]; aspect_ratio: ExportFormat; fill: FillMode }) =>
+    request<Job>(`/api/projects/${id}/clips/render`, json(options)),
   uploadAudio: (id: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);

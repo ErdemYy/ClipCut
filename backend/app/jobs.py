@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import traceback
+import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from . import assets
 from .ai import services as ai
@@ -22,6 +25,15 @@ from .models import Job, Project, engine
 
 log = logging.getLogger("clipcut.jobs")
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="clipcut-job")
+# Cooperative cancellation: only workers that check the event can be stopped.
+_cancels: dict[str, threading.Event] = {}
+_cancel_lock = threading.Lock()
+# Serializes the active-job check + insert in submit so a double submit cannot slip through.
+_submit_lock = threading.Lock()
+
+
+class DuplicateJobError(RuntimeError):
+    """Raised when the same job kind is already queued or running for the project."""
 
 
 def project_dir(project_id: str) -> Path:
@@ -38,15 +50,15 @@ def media_info(p: Project) -> MediaInfo:
     return MediaInfo(duration=p.duration, width=p.width, height=p.height, fps=30.0, has_audio=p.has_audio, has_video=True)
 
 
-def ingest_source(p: Project, path: Path) -> None:
+def ingest_source(p: Project, path: Path, *, thumbnail_name: str = "thumb.jpg") -> None:
     info = probe(path)
     if not info.has_video:
         raise ValueError("Dosyada video akışı bulunamadı.")
     pdir = project_dir(p.id)
-    thumb = pdir / "thumb.jpg"
+    thumb = pdir / thumbnail_name
     try:
         make_thumbnail(path, thumb, at=min(1.0, info.duration / 3))
-        p.thumbnail_file = "thumb.jpg"
+        p.thumbnail_file = thumbnail_name
     except Exception:
         log.warning("Küçük resim oluşturulamadı", exc_info=True)
     p.source_file = path.relative_to(pdir).as_posix()
@@ -75,16 +87,47 @@ def project_timeline(p: Project, plan: EditPlan | None = None) -> Timeline:
 
 # ------------------------------------------------------------------ altyapı ----
 
-def submit(project_id: str, kind: str, fn: Callable[..., dict | None], *args) -> Job:
-    with Session(engine) as s:
-        job = Job(project_id=project_id, kind=kind, message="Sırada")
-        s.add(job)
-        s.commit()
-        s.refresh(job)
-        job_id = job.id
-    _executor.submit(_run, job_id, fn, *args)
+def submit(project_id: str, kind: str, fn: Callable[..., dict | None], *args, cancellable: bool = False) -> Job:
+    # One active job per project and kind: double submissions would duplicate paid provider
+    # calls (generate/transcribe/translate) or waste long local runs (render/export).
+    with _submit_lock:
+        with Session(engine) as s:
+            active = s.exec(select(Job).where(
+                Job.project_id == project_id, Job.kind == kind,
+                Job.status.in_(("queued", "running")))).first()  # type: ignore[attr-defined]
+            if active is not None:
+                raise DuplicateJobError(
+                    f"Bu proje için '{kind}' işlemi zaten sırada veya sürüyor; bitmesini bekleyin.")
+            cancel_event = threading.Event() if cancellable else None
+            job = Job(project_id=project_id, kind=kind, message="Sırada")
+            s.add(job)
+            s.commit()
+            s.refresh(job)
+            job_id = job.id
+            if cancel_event is not None:
+                with _cancel_lock:
+                    _cancels[job_id] = cancel_event
+    # The event is appended as the last positional argument for cancellable tasks.
+    _executor.submit(_run, job_id, fn, cancel_event, *args)
     with Session(engine) as s:
         return s.get(Job, job_id)
+
+
+def cancel(job_id: str) -> bool:
+    """Request a stop; returns False for unknown, finished or non-cancellable jobs."""
+    with Session(engine) as s:
+        job = s.get(Job, job_id)
+        if not job or job.status not in ("queued", "running"):
+            return False
+        with _cancel_lock:
+            event = _cancels.get(job_id)
+        if not event:
+            return False
+        event.set()
+        job.message = "Durdurma istendi; sürmekte olan adım bitirilir"
+        s.add(job)
+        s.commit()
+        return True
 
 
 def _update(job_id: str, **fields) -> None:
@@ -98,7 +141,7 @@ def _update(job_id: str, **fields) -> None:
         s.commit()
 
 
-def _run(job_id: str, fn: Callable[..., dict | None], *args) -> None:
+def _run(job_id: str, fn: Callable[..., dict | None], cancel_event: threading.Event | None, *args) -> None:
     _update(job_id, status="running", message="Başladı", progress=0.01)
 
     def progress(value: float, message: str | None = None) -> None:
@@ -108,12 +151,18 @@ def _run(job_id: str, fn: Callable[..., dict | None], *args) -> None:
         _update(job_id, **fields)
 
     try:
-        result = fn(progress, *args)
+        if cancel_event is None:
+            result = fn(progress, *args)
+        else:
+            result = fn(progress, *args, cancel_event)
         _update(job_id, status="done", progress=1.0, message="Tamamlandı", result=result,
                 finished_at=datetime.now(timezone.utc))
     except Exception as exc:
         log.error("İş başarısız: %s\n%s", job_id, traceback.format_exc())
         _update(job_id, status="failed", error=str(exc)[:4000], message="Hata", finished_at=datetime.now(timezone.utc))
+    finally:
+        with _cancel_lock:
+            _cancels.pop(job_id, None)
 
 
 def _save_project(project_id: str, mutate: Callable[[Project], None]) -> None:
@@ -200,7 +249,7 @@ def task_translate(progress, project_id: str, target: str) -> dict:
     return {"subtitle_language": target}
 
 
-def task_render(progress, project_id: str) -> dict:
+def task_render(progress, project_id: str, options: dict | None = None) -> dict:
     p = _load(project_id)
     if not p.source_file:
         raise ValueError("Projede video yok.")
@@ -208,7 +257,7 @@ def task_render(progress, project_id: str) -> dict:
     plan = EditPlan.model_validate(p.plan)
     progress(0.03, "Zaman çizelgesi hesaplanıyor")
     timeline = project_timeline(p, plan)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     out_rel = f"outputs/clipcut_{stamp}.mp4"
     voiceover_path = (pdir / p.voiceover_file) if p.voiceover_file and (pdir / p.voiceover_file).exists() else None
     req = RenderRequest(
@@ -217,6 +266,7 @@ def task_render(progress, project_id: str) -> dict:
         fonts_dir=assets.fonts_dir(), resolve_track=lambda t: assets.resolve_track(t, pdir),
         voiceover=voiceover_path,
         resolve_overlay=lambda t: assets.resolve_overlay(t, pdir),
+        **(options or {}),
     )
     progress(0.06, "Render ediliyor")
     meta = render(req, lambda v: progress(0.06 + v * 0.92, "Render ediliyor"))
@@ -229,3 +279,69 @@ def task_render(progress, project_id: str) -> dict:
 
     _save_project(project_id, mutate)
     return {"output": media_url(project_id, out_rel), **meta}
+
+
+def task_analyze_clips(progress, snapshot: dict, options: dict) -> dict:
+    from .publishing import ClipAnalyzeBody, rank_clips
+
+    p = Project.model_validate(snapshot)
+    opts = ClipAnalyzeBody.model_validate(options)
+    progress(0.1, "Kaynak sesteki sessizlikler analiz ediliyor")
+    silences = silence_provider(p)(opts.threshold_db, opts.min_silence_ms / 1000)
+    progress(0.75, "Konuşma yoğunluğuna göre klip adayları sıralanıyor")
+    # A generated voiceover does not describe the source audio being analyzed.
+    transcript = p.transcript if not p.voiceover_file else None
+    clips = rank_clips(p.duration, silences, opts, transcript)
+    return {"clips": clips, "method": "local_speech_activity", "source_file": p.source_file,
+            "notice": "Yerel sessizlik/konuşma yoğunluğu analizi. Viral başarı veya anlamsal önem garantisi değildir.",
+            "empty_reason": None if clips else "Yeterli konuşma içeren 30–60 saniyelik bir aralık bulunamadı."}
+
+
+def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | None = None) -> dict:
+    """Sequential batch with immutable editor snapshot and unique, job-local files."""
+    from .publishing import FORMAT_NAMES, clip_plan, export_plan
+
+    p = Project.model_validate(snapshot)
+    pdir = project_dir(p.id)
+    token = uuid.uuid4().hex
+    out_dir = pdir / "outputs" / token
+    out_dir.mkdir(parents=True)
+    base = EditPlan.model_validate(p.plan)
+    entries = clips if clips is not None else [{"aspect_ratio": f} for f in options["formats"]]
+    outputs = []
+    for i, entry in enumerate(entries):
+        aspect = options["aspect_ratio"] if clips is not None else entry["aspect_ratio"]
+        plan = (clip_plan(base, entry["start"], entry["end"], aspect, options["fill"])
+                if clips is not None else export_plan(base, aspect, options["fill"]))
+        tl = project_timeline(p, plan)
+        stem = f"clip_{i + 1:02d}_{FORMAT_NAMES[aspect]}" if clips is not None else FORMAT_NAMES[aspect]
+        output = out_dir / f"{stem}.mp4"
+        vo = pdir / p.voiceover_file if clips is None and p.voiceover_file else None
+        req = RenderRequest(
+            source=pdir / p.source_file, info=media_info(p), plan=plan, timeline=tl,
+            transcript=p.subtitles if clips is None or not p.voiceover_file else None,
+            work_dir=pdir / "work" / token / stem, output=output,
+            fonts_dir=assets.fonts_dir(), resolve_track=lambda t: assets.resolve_track(t, pdir),
+            resolve_overlay=lambda t: assets.resolve_overlay(t, pdir), voiceover=vo,
+            resolution=options["resolution"], quality=options["quality"],
+        )
+        progress(i / len(entries), f"{i + 1}/{len(entries)} · {aspect} render ediliyor")
+        meta = render(req, lambda value: progress((i + value * 0.95) / len(entries), f"{i + 1}/{len(entries)} · {aspect}"))
+        # Selected frame is in SOURCE time. Map it to each edited output;
+        # if it was cut away, explicitly fall back to that output's first frame.
+        mapped = tl.map_time(options.get("thumbnail_at", entry.get("start", 0)))
+        at = min(max(0, mapped or 0), max(0, tl.output_duration - 0.1))
+        thumb = out_dir / f"{stem}.jpg"
+        make_thumbnail(output, thumb, at=at)
+        outputs.append({"aspect_ratio": aspect, "label": stem, **meta,
+                        "start": entry.get("start"), "end": entry.get("end"),
+                        "output": media_url(p.id, output.relative_to(pdir).as_posix()),
+                        "thumbnail": media_url(p.id, thumb.relative_to(pdir).as_posix()),
+                        "thumbnail_fallback": mapped is None})
+    archive = out_dir / "clipcut_exports.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+        for file in sorted(out_dir.iterdir()):
+            if file.suffix in {".mp4", ".jpg"}:
+                zf.write(file, file.name)
+    return {"outputs": outputs, "archive": media_url(p.id, archive.relative_to(pdir).as_posix()),
+            "rendered_at": datetime.now(timezone.utc).isoformat()}

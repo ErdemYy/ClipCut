@@ -192,6 +192,21 @@ def plan_edit(prompt: str, current: EditPlan, context: dict) -> tuple[EditPlan, 
 
 # ------------------------------------------------------------ Veo video üretimi ----
 
+def video_model_constraints() -> dict:
+    settings = get_settings()
+    legacy = settings.veo_model.startswith("veo-3.0")
+    return {
+        "video_durations": [4, 6, 8] if settings.is_mock or not legacy else [8],
+        "video_model_warning": (
+            "Yapılandırılan Veo 3.0 modeli Google dokümanında deprecated olarak işaretli. "
+            "Gerçek erişim doğrulanmadı; API bağlarken model kullanılabilirliğini kontrol edin. Otomatik model geçişi yapılmaz."
+            if legacy else
+            "Veo 3.1 Preview modelleri 22 Ekim 2026 tarihinde kapatıldı; yapılandırılan modeli güncellemeniz gerekir."
+            if settings.veo_model in {"veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"} else None
+        ),
+    }
+
+
 def generate_video(
     prompt: str, aspect_ratio: str, duration: int, negative_prompt: Optional[str], out_path: Path,
     on_progress: Callable[[float, str], None],
@@ -199,6 +214,8 @@ def generate_video(
     if get_settings().is_mock:
         mock.generate_video(prompt, aspect_ratio, duration, out_path, on_progress)
         return
+    if duration not in video_model_constraints()["video_durations"]:
+        raise AIError("Yapılandırılan Veo 3.0 modeli için 8 saniyelik sahne seçin. Video çağrısı yapılmadı.")
     from google.genai import types
 
     client = _client()
@@ -207,6 +224,7 @@ def generate_video(
         aspect_ratio=aspect_ratio if aspect_ratio in ("16:9", "9:16") else "16:9",
         number_of_videos=1,
         negative_prompt=negative_prompt or None,
+        duration_seconds=duration,
     )
     operation = client.models.generate_videos(model=get_settings().veo_model, prompt=prompt, config=config)
     started = time.time()

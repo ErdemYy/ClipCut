@@ -3,7 +3,7 @@
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, mediaUrl, waitForJob, type Job, type JobMap, type Library, type Project, type TimelineInfo } from "@/lib/api";
+import { api, mediaUrl, waitForJob, type Job, type JobMap, type Library, type Project, type Storyboard, type TimelineInfo } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 import Player from "@/components/editor/Player";
 import Timeline from "@/components/editor/Timeline";
@@ -14,22 +14,29 @@ import ExportPanel from "@/components/editor/ExportPanel";
 import TemplatesPanel from "@/components/editor/TemplatesPanel";
 import VoiceoverPanel from "@/components/editor/VoiceoverPanel";
 import BrollPanel from "@/components/editor/BrollPanel";
+import ClipperPanel from "@/components/editor/ClipperPanel";
+import StoryboardPanel from "@/components/editor/StoryboardPanel";
+import SceneTimeline from "@/components/editor/SceneTimeline";
 import styles from "./editor.module.css";
 
-type PanelTab = "templates" | "voiceover" | "broll" | "edit" | "subtitles" | "audio" | "export";
+type PanelTab = "scenes" | "templates" | "voiceover" | "broll" | "edit" | "subtitles" | "audio" | "clips" | "export";
 const TABS: { id: PanelTab; label: string; icon: string }[] = [
+  { id: "scenes", label: "Sahneler", icon: "▤" },
   { id: "templates", label: "Şablonlar", icon: "⚡" },
   { id: "voiceover", label: "Seslendirme", icon: "🎙️" },
   { id: "broll", label: "B-Roll", icon: "🖼️" },
   { id: "edit", label: "AI Edit", icon: "✨" },
   { id: "subtitles", label: "Altyazı", icon: "💬" },
   { id: "audio", label: "Ses", icon: "🎵" },
+  { id: "clips", label: "Kısa Klipler", icon: "✂" },
   { id: "export", label: "Dışa Aktar", icon: "⬇" },
 ];
 
 export default function EditorPage() {
   const { id } = useParams<{ id: string }>();
-  const [project, setProject] = useState<Project | null>(null);
+  const [project, updateProject] = useState<Project | null>(null);
+  const [storyDraft, setStoryDraft] = useState<Storyboard | null>(null);
+  const [storyPending, setStoryPending] = useState(false);
   const [library, setLibrary] = useState<Library | null>(null);
   const [timeline, setTimeline] = useState<TimelineInfo | null>(null);
   const [tab, setTab] = useState<PanelTab>("templates");
@@ -40,6 +47,10 @@ export default function EditorPage() {
   const [editingName, setEditingName] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const tracking = useRef<Set<string>>(new Set());
+  const setProject = useCallback((p: Project) => {
+    updateProject(p);
+    setStoryDraft((current) => current?.revision === p.storyboard?.revision ? current : p.storyboard ?? null);
+  }, []);
 
   const notify = useCallback((text: string, error = false) => {
     setToast({ text, error });
@@ -50,29 +61,42 @@ export default function EditorPage() {
     const p = await api.project(id);
     setProject(p);
     return p;
-  }, [id]);
+  }, [id, setProject]);
 
   const track = useCallback(
     async (job: Job, onDone?: (job: Job) => void) => {
       if (tracking.current.has(job.id)) return;
       tracking.current.add(job.id);
-      const final = await waitForJob(job.id, (j) => setJobs((m) => ({ ...m, [j.kind]: j })));
-      tracking.current.delete(job.id);
-      await reload();
-      if (final.status === "failed") notify(final.error || "İşlem başarısız.", true);
-      else onDone?.(final);
+      setJobs((m) => ({ ...m, [job.kind]: job }));
+      try {
+        const final = await waitForJob(job.id, (j) => setJobs((m) => ({ ...m, [j.kind]: j })));
+        await reload();
+        if (final.status === "failed") notify(final.error || "İşlem başarısız.", true);
+        else onDone?.(final);
+      } catch (e) {
+        notify((e as Error).message, true);
+        setJobs((m) => {
+          if (m[job.kind]?.id !== job.id) return m;
+          const next = { ...m }; delete next[job.kind]; return next;
+        });
+      } finally { tracking.current.delete(job.id); }
     },
     [reload, notify],
   );
 
   useEffect(() => {
-    reload().catch((e: Error) => notify(e.message, true));
+    api.project(id).then((p) => { setProject(p); if (p.storyboard) setTab("scenes"); }).catch((e: Error) => notify(e.message, true));
     api.library().then(setLibrary).catch(() => {});
     api
       .jobs(id)
-      .then((list) => list.filter((j) => j.status === "queued" || j.status === "running").forEach((j) => track(j)))
+      .then((list) => {
+        const latest: JobMap = {};
+        list.forEach((j) => { if (!latest[j.kind]) latest[j.kind] = j; });
+        setJobs((current) => ({ ...latest, ...current }));
+        list.filter((j) => j.status === "queued" || j.status === "running").forEach((j) => track(j));
+      })
       .catch(() => {});
-  }, [id, reload, track, notify]);
+  }, [id, track, notify, setProject]);
 
   // Üretim sürüyorsa periyodik yenile
   useEffect(() => {
@@ -113,7 +137,7 @@ export default function EditorPage() {
   }
 
   const isGenerating = project.status === "generating";
-  const genJob = jobs.generate;
+  const genJob = project.storyboard ? jobs.storyboard_generate : jobs.generate;
 
   return (
     <main className={styles.page}>
@@ -137,6 +161,7 @@ export default function EditorPage() {
         )}
         <StatusBadge status={project.status} />
         {project.origin === "veo" && <span className="chip">✦ Veo</span>}
+        {project.origin === "storyboard" && <span className="chip">▤ Çok sahneli</span>}
         <div className={styles.topActions}>
           <button
             id="topbar-render"
@@ -151,17 +176,23 @@ export default function EditorPage() {
 
       <div className={styles.workspace}>
         <section className={styles.stage}>
-          {isGenerating || project.status === "failed" ? (
+          {isGenerating || project.status === "failed" || !project.source_url ? (
             <div className={`${styles.generating} glass`}>
               {isGenerating ? (
                 <>
                   <div className={styles.genOrb} />
-                  <h2>Video üretiliyor</h2>
+                  <h2>{project.storyboard ? "Sahneler üretiliyor" : "Video üretiliyor"}</h2>
                   <p>{genJob?.message || "Veo sahneyi oluşturuyor…"}</p>
                   <div className="progress" style={{ width: 320 }}>
                     <span style={{ width: `${Math.max(5, (genJob?.progress ?? 0.05) * 100)}%` }} />
                   </div>
                   {project.generation_prompt && <blockquote>“{project.generation_prompt}”</blockquote>}
+                </>
+              ) : project.storyboard ? (
+                <>
+                  <h2>{project.status === "failed" ? "Sahne üretimi tamamlanamadı" : "Sahne planınız hazır"}</h2>
+                  <p>Sahneler panelinden planı inceleyin, düzenleyin ve üretimi onaylayın. Yükleme yapmanız gerekmez.</p>
+                  <button className="btn btn-primary" onClick={() => setTab("scenes")}>Sahne planını aç</button>
                 </>
               ) : (
                 <>
@@ -205,11 +236,14 @@ export default function EditorPage() {
               )}
             </>
           )}
+          {project.storyboard && storyDraft && <SceneTimeline draft={storyDraft} runtime={project.storyboard} onChange={setStoryDraft}
+            disabled={storyPending || project.status === "generating" || jobs.storyboard_generate?.status === "queued" || jobs.storyboard_generate?.status === "running"}
+            onPreview={() => videoRef.current?.pause()} />}
         </section>
 
         <aside className={`${styles.panel} glass`}>
           <nav className={styles.panelTabs}>
-            {TABS.map((t) => (
+            {TABS.filter((t) => t.id !== "scenes" || project.storyboard).map((t) => (
               <button
                 key={t.id}
                 id={`panel-${t.id}`}
@@ -222,6 +256,7 @@ export default function EditorPage() {
             ))}
           </nav>
           <div className={styles.panelBody}>
+            {tab === "scenes" && project.storyboard && storyDraft && <StoryboardPanel key={project.storyboard.revision} project={project} setProject={setProject} draft={storyDraft} setDraft={setStoryDraft} pending={storyPending} setPending={setStoryPending} jobs={jobs} track={track} notify={notify} />}
             {tab === "templates" && (
               <TemplatesPanel project={project} setProject={setProject} notify={notify} disabled={project.status !== "ready"} />
             )}
@@ -243,9 +278,11 @@ export default function EditorPage() {
               <SubtitlePanel project={project} setProject={setProject} library={library} jobs={jobs} track={track} notify={notify} seek={seek} time={time} />
             )}
             {tab === "audio" && <AudioPanel project={project} setProject={setProject} library={library} notify={notify} />}
+            {tab === "clips" && <ClipperPanel project={project} jobs={jobs} track={track} notify={notify} />}
             {tab === "export" && (
               <ExportPanel
                 project={project}
+                setProject={setProject}
                 jobs={jobs}
                 track={track}
                 notify={notify}

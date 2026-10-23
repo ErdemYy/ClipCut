@@ -1,6 +1,7 @@
 """ClipCut FastAPI uygulaması."""
 from __future__ import annotations
 
+import copy
 import logging
 import shutil
 import threading
@@ -12,7 +13,7 @@ from typing import Any, Literal, Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session, select
@@ -22,13 +23,19 @@ from .ai import broll, services as ai, tts
 from .config import get_settings
 from .edit.schema import EditPlan, OverlayOp, SubtitlesOp, dsl_reference
 from .edit.templates import TEMPLATES, get_template
-from .ffmpeg import ffmpeg_exe
+from .ffmpeg import ffmpeg_exe, make_thumbnail, probe
 from .models import Job, Project, get_session, init_db
+from .publishing import BatchExportBody, ClipAnalyzeBody, ClipExportBody, RenderOptions, ThumbnailBody
+from .storyboard import (StoryboardCreateBody, StoryboardGenerateBody, StoryboardSaveBody,
+                         merge_saved_spec, public_storyboard, scene_ready)
+from .storyboard import scene_file
+from .storyboard_jobs import task_generate_storyboard
 from .subtitles.builder import cues_for_export, map_words, to_srt, to_vtt, transcript_words
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 settings = get_settings()
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+_storyboard_lock = threading.Lock()
 
 
 @asynccontextmanager
@@ -65,6 +72,7 @@ def serialize(p: Project, full: bool = True) -> dict[str, Any]:
             "generation_prompt": p.generation_prompt, "transcript_language": (p.transcript or {}).get("language"),
             "subtitles": p.subtitles, "plan": p.plan, "can_undo": bool(p.plan_history), "chat": p.chat,
             "output_meta": p.output_meta,
+            "storyboard": public_storyboard(p.id, p.storyboard),
         })
     return data
 
@@ -93,7 +101,8 @@ def health() -> dict:
         ff = ffmpeg_exe()
     except Exception as exc:
         ff = f"HATA: {exc}"
-    return {"ok": True, "mock": settings.is_mock, "ffmpeg": ff, "veo_model": settings.veo_model, "text_model": settings.gemini_text_model}
+    return {"ok": True, "mock": settings.is_mock, "ffmpeg": ff, "veo_model": settings.veo_model,
+            "text_model": settings.gemini_text_model, **ai.video_model_constraints()}
 
 
 @app.get("/api/library")
@@ -175,6 +184,12 @@ class GenerateBody(BaseModel):
     negative_prompt: Optional[str] = None
 
 
+@app.exception_handler(jobs.DuplicateJobError)
+async def duplicate_job_handler(_request: Any, exc: jobs.DuplicateJobError) -> PlainTextResponse:
+    # Any double submission (transcribe/translate/render/export/generate) maps to a clean 409.
+    return PlainTextResponse(str(exc), status_code=409, media_type="text/plain; charset=utf-8")
+
+
 @app.post("/api/projects/generate")
 def generate_project(body: GenerateBody, session: Session = Depends(get_session)) -> dict:
     p = Project(name=body.name.strip() or body.prompt[:48], origin="veo", status="generating", generation_prompt=body.prompt)
@@ -188,6 +203,175 @@ def generate_project(body: GenerateBody, session: Session = Depends(get_session)
 @app.get("/api/projects/{project_id}")
 def read_project(project_id: str, session: Session = Depends(get_session)) -> dict:
     return serialize(get_project(project_id, session))
+
+
+# --------------------------------------------------------- senaryodan çok sahne ----
+
+@app.post("/api/projects/storyboard")
+def create_storyboard(body: StoryboardCreateBody, session: Session = Depends(get_session)) -> dict:
+    if not settings.is_mock and not body.confirm_api_usage:
+        raise HTTPException(422, "Gerçek AI planlama çağrısı ücretli olabilir; açık onay gerekli.")
+    if body.scene_duration not in ai.video_model_constraints()["video_durations"]:
+        raise HTTPException(422, "Yapılandırılan video modeli için 8 saniyelik sahne seçin.")
+    from .ai.storyboard import plan_storyboard
+
+    try:
+        spec = plan_storyboard(body)
+    except Exception as exc:
+        raise HTTPException(502, f"Sahne planı oluşturulamadı: {exc}") from exc
+    p = Project(name=spec["title"], origin="storyboard", status="draft", generation_prompt=body.brief, storyboard=spec)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return serialize(p)
+
+
+@app.put("/api/projects/{project_id}/storyboard")
+def save_storyboard(project_id: str, body: StoryboardSaveBody, session: Session = Depends(get_session)) -> dict:
+    with _storyboard_lock:
+        p = get_project(project_id, session)
+        session.refresh(p)
+        if not p.storyboard:
+            raise HTTPException(409, "Projede sahne planı yok.")
+        if p.status == "generating":
+            raise HTTPException(409, "Üretim sürerken sahne planı değiştirilemez.")
+        if body.revision != p.storyboard["revision"]:
+            raise HTTPException(409, "Sahne planı başka bir oturumda değişti; sayfayı yenileyin.")
+        try:
+            p.storyboard = merge_saved_spec(p.storyboard, body)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        p.name = body.title
+        touch(p)
+        session.add(p)
+        session.commit()
+        session.refresh(p)
+        return serialize(p)
+
+
+@app.get("/api/projects/{project_id}/storyboard/scenes/{scene_id}/thumbnail")
+def scene_thumbnail(project_id: str, scene_id: str, session: Session = Depends(get_session)):
+    p = get_project(project_id, session)
+    scene = next((s for s in (p.storyboard or {}).get("scenes", []) if s["id"] == scene_id), None)
+    if not scene or not scene_ready(p.id, p.storyboard, scene):
+        raise HTTPException(404, "Hazır sahne bulunamadı.")
+    source = scene_file(p.id, scene["file"])
+    if source is None:
+        raise HTTPException(404, "Sahne dosyası bulunamadı.")
+    thumb = source.with_suffix(".thumb.jpg")
+    if not thumb.exists():
+        temp = source.parent / f"thumb_{uuid.uuid4().hex}.jpg"
+        try:
+            make_thumbnail(source, temp, at=0)
+            temp.replace(thumb)
+        finally:
+            temp.unlink(missing_ok=True)
+    return FileResponse(thumb, media_type="image/jpeg")
+
+
+@app.post("/api/projects/{project_id}/storyboard/generate")
+def generate_storyboard(project_id: str, body: StoryboardGenerateBody, session: Session = Depends(get_session)) -> dict:
+    with _storyboard_lock:
+        p = get_project(project_id, session)
+        session.refresh(p)
+        spec = p.storyboard
+        if not spec:
+            raise HTTPException(409, "Önce sahne planı oluşturun.")
+        if p.status == "generating":
+            raise HTTPException(409, "Bu proje zaten üretim sırasında.")
+        if spec["revision"] != body.revision:
+            raise HTTPException(409, "Sahne planı değişti; sayfayı yenileyin.")
+        if body.scene_id and body.scene_id not in {s["id"] for s in spec["scenes"]}:
+            raise HTTPException(422, "Seçilen sahne bu projeye ait değil.")
+        pending = [s for s in spec["scenes"] if s["id"] == body.scene_id] if body.scene_id else [s for s in spec["scenes"] if not scene_ready(p.id, spec, s)]
+        if any(s["duration"] not in ai.video_model_constraints()["video_durations"] for s in pending):
+            raise HTTPException(422, "Yapılandırılan video modeli için sahne süresini 8 saniye seçip planı kaydedin.")
+        if pending and not settings.is_mock and not body.confirm_api_usage:
+            raise HTTPException(422, f"{len(pending)} sahne için gerçek video/ses API kullanımı onayı gerekli.")
+        if p.source_file and not body.confirm_replace_source:
+            raise HTTPException(422, "Yeni birleştirme edit kaynağını değiştirir; önceki sürümü koruyarak değiştirme onayı gerekli.")
+        previous_status = p.status
+        p.status = "generating"
+        touch(p)
+        session.add(p)
+        session.commit()
+        try:
+            job = jobs.submit(p.id, "storyboard_generate", task_generate_storyboard, p.id, body.scene_id, cancellable=True)
+        except Exception as exc:
+            p.status = previous_status
+            session.add(p)
+            session.commit()
+            raise HTTPException(503, "Üretim kuyruğu başlatılamadı.") from exc
+        return job_dict(job)
+
+
+class StoryboardRestoreBody(BaseModel):
+    version_index: int
+    confirm: bool
+
+
+@app.post("/api/projects/{project_id}/storyboard/restore")
+def restore_storyboard_version(project_id: str, body: StoryboardRestoreBody, session: Session = Depends(get_session)) -> dict:
+    """Restore a protected version: its source video, editor state and scene plan."""
+    with _storyboard_lock:
+        p = get_project(project_id, session)
+        session.refresh(p)
+        if not p.storyboard:
+            raise HTTPException(409, "Bu projede sahne planı yok.")
+        if p.status == "generating":
+            raise HTTPException(409, "Üretim sürüyor; bitmesini bekleyin.")
+        if not body.confirm:
+            raise HTTPException(422, "Geri yükleme mevcut kaynak ve edit durumunu değiştirir; açık onay gerekli.")
+        spec = copy.deepcopy(p.storyboard)
+        versions = list(spec.get("previous_versions", []))
+        if not 0 <= body.version_index < len(versions):
+            raise HTTPException(404, "Geri yüklenecek sürüm bulunamadı.")
+        target = versions[body.version_index]
+        if not (isinstance(target.get("spec"), dict) and target["spec"].get("scenes")):
+            raise HTTPException(422, "Bu sürüm eski arşiv biçiminde; sadece video bağlantısı kullanılabilir, geri yükleme yapılamaz.")
+        source_path = jobs.project_dir(p.id) / target["source_file"]
+        if not source_path.exists():
+            raise HTTPException(409, "Korunan video dosyası diskte bulunamadı; geri yükleme yapılamaz.")
+        info = probe(source_path)
+        if not info.has_video:
+            raise HTTPException(409, "Korunan video dosyası geçersiz; geri yükleme yapılamaz.")
+
+        # The pre-restore state is archived so the action is reversible.
+        if p.source_file:
+            current = {"created_at": datetime.now(timezone.utc).isoformat(), "source_file": p.source_file,
+                       "plan": p.plan, "plan_history": p.plan_history, "transcript": p.transcript,
+                       "subtitles": p.subtitles, "subtitle_language": p.subtitle_language,
+                       "output_file": p.output_file, "output_meta": p.output_meta,
+                       "thumbnail_file": p.thumbnail_file, "voiceover_file": p.voiceover_file,
+                       "spec": copy.deepcopy(spec.get("source_spec")) if isinstance(spec.get("source_spec"), dict) else None}
+        else:
+            current = None
+        kept = [v for i, v in enumerate(versions) if i != body.version_index]
+        new_versions = [*kept, current][:6] if current else kept
+
+        restored = copy.deepcopy(target["spec"])
+        restored["source_spec"] = copy.deepcopy(restored)  # The media matches this spec again.
+        restored["previous_versions"] = new_versions
+        restored["assembled_revision"] = restored.get("revision")
+        restored["last_error"] = None
+
+        def update(proj: Project):
+            proj.source_file = target["source_file"]
+            proj.thumbnail_file = target.get("thumbnail_file")
+            proj.plan = target.get("plan")
+            proj.plan_history = target.get("plan_history") or []
+            proj.transcript = target.get("transcript")
+            proj.subtitles = target.get("subtitles")
+            proj.subtitle_language = target.get("subtitle_language")
+            proj.output_file = target.get("output_file")
+            proj.output_meta = target.get("output_meta")
+            proj.voiceover_file = target.get("voiceover_file")
+            proj.duration, proj.width, proj.height, proj.has_audio = info.duration, info.width, info.height, info.has_audio
+            proj.status = "ready"
+            proj.storyboard = restored
+
+        jobs._save_project(p.id, update)
+        return serialize(jobs._load(p.id))
 
 
 class PatchBody(BaseModel):
@@ -224,6 +408,22 @@ def read_job(job_id: str, session: Session = Depends(get_session)) -> dict:
     j = session.get(Job, job_id)
     if not j:
         raise HTTPException(404, "İş bulunamadı")
+    return job_dict(j)
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, session: Session = Depends(get_session)) -> dict:
+    j = session.get(Job, job_id)
+    if not j:
+        raise HTTPException(404, "İş bulunamadı")
+    # Other job kinds still run to completion; stopping mid-render would only create orphan files.
+    if j.kind != "storyboard_generate":
+        raise HTTPException(409, "Bu işlem türü güvenli şekilde durdurulamaz.")
+    if j.status not in ("queued", "running"):
+        raise HTTPException(409, "İş artık sürmüyor.")
+    if not jobs.cancel(job_id):
+        raise HTTPException(409, "İş tamamlanmış; durdurulamaz.")
+    session.refresh(j)
     return job_dict(j)
 
 
@@ -622,8 +822,84 @@ def upload_broll(project_id: str, file: UploadFile = File(...), session: Session
 # ------------------------------------------------------------------ render ----
 
 @app.post("/api/projects/{project_id}/render")
-def start_render(project_id: str, session: Session = Depends(get_session)) -> dict:
+def start_render(project_id: str, body: RenderOptions | None = None, session: Session = Depends(get_session)) -> dict:
     p = get_project(project_id, session)
     if p.status != "ready":
         raise HTTPException(409, "Video henüz hazır değil.")
-    return job_dict(jobs.submit(p.id, "render", jobs.task_render, p.id))
+    return job_dict(jobs.submit(p.id, "render", jobs.task_render, p.id, (body or RenderOptions()).model_dump()))
+
+
+def ready_source(project_id: str, session: Session) -> Project:
+    p = get_project(project_id, session)
+    if p.status != "ready" or not p.source_file:
+        raise HTTPException(409, "Kaynak video henüz hazır değil.")
+    return p
+
+
+@app.get("/api/projects/{project_id}/download/{filename:path}")
+def download_output(project_id: str, filename: str, session: Session = Depends(get_session)):
+    p = get_project(project_id, session)
+    root = jobs.project_dir(p.id).resolve()
+    path = (root / filename).resolve()
+    try:
+        relative = path.relative_to(root).as_posix()
+    except ValueError:
+        raise HTTPException(404, "Dosya bulunamadı.") from None
+    permitted = relative.startswith("outputs/") or relative == p.thumbnail_file
+    if not permitted or path.suffix.lower() not in {".mp4", ".jpg", ".zip"} or not path.is_file():
+        raise HTTPException(404, "Dosya bulunamadı.")
+    return FileResponse(path, filename=path.name)
+
+
+@app.put("/api/projects/{project_id}/thumbnail")
+def select_thumbnail(project_id: str, body: ThumbnailBody, session: Session = Depends(get_session)) -> dict:
+    p = ready_source(project_id, session)
+    if body.at >= p.duration:
+        raise HTTPException(422, "Kapak zamanı kaynak video süresinden küçük olmalı.")
+    name = f"thumb_{uuid.uuid4().hex[:12]}.jpg"
+    try:
+        make_thumbnail(jobs.project_dir(p.id) / p.source_file, jobs.project_dir(p.id) / name, at=body.at)
+    except Exception as exc:
+        raise HTTPException(422, f"Kapak karesi oluşturulamadı: {exc}") from exc
+    p.thumbnail_file = name
+    touch(p)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return serialize(p)
+
+
+@app.post("/api/projects/{project_id}/export-batch")
+def export_batch(project_id: str, body: BatchExportBody, session: Session = Depends(get_session)) -> dict:
+    p = ready_source(project_id, session)
+    if body.thumbnail_at >= p.duration:
+        raise HTTPException(422, "Kapak zamanı kaynak video süresinden küçük olmalı.")
+    return job_dict(jobs.submit(p.id, "export_batch", jobs.task_publish, p.model_dump(), body.model_dump()))
+
+
+@app.post("/api/projects/{project_id}/clips/analyze")
+def analyze_clips(project_id: str, body: ClipAnalyzeBody, session: Session = Depends(get_session)) -> dict:
+    p = ready_source(project_id, session)
+    if not p.has_audio:
+        raise HTTPException(422, "Konuşma analizi için kaynak videoda ses olmalı.")
+    if p.duration < body.min_duration:
+        raise HTTPException(422, f"Kaynak video en az {body.min_duration:g} saniye olmalı.")
+    return job_dict(jobs.submit(p.id, "clip_analyze", jobs.task_analyze_clips, p.model_dump(), body.model_dump()))
+
+
+@app.post("/api/projects/{project_id}/clips/render")
+def render_clips(project_id: str, body: ClipExportBody, session: Session = Depends(get_session)) -> dict:
+    p = ready_source(project_id, session)
+    analysis = session.get(Job, body.analysis_id)
+    if not analysis or analysis.project_id != p.id or analysis.kind != "clip_analyze" or analysis.status != "done":
+        raise HTTPException(422, "Bu projeye ait tamamlanmış bir klip analizi seçin.")
+    result = analysis.result or {}
+    if result.get("source_file") != p.source_file:
+        raise HTTPException(409, "Kaynak video değişti; yeniden analiz edin.")
+    candidates = {c["id"]: c for c in result.get("clips", [])}
+    if any(i not in candidates for i in body.clip_ids):
+        raise HTTPException(422, "Geçersiz klip seçimi.")
+    selected = [candidates[i] for i in body.clip_ids]
+    if any(not (0 <= c["start"] < c["end"] <= p.duration and 29.99 <= c["end"] - c["start"] <= 60.01) for c in selected):
+        raise HTTPException(422, "Klip aralıkları geçersiz; yeniden analiz edin.")
+    return job_dict(jobs.submit(p.id, "clip_render", jobs.task_publish, p.model_dump(), body.model_dump(), selected))

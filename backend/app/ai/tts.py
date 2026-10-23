@@ -194,6 +194,7 @@ def generate_voiceover(
     voice_id: str = "tr-TR-AhmetNeural",
     speed: float = 1.0,
     out_path: Path | None = None,
+    *, mock_mode: bool | None = None, allow_fallback: bool = True,
 ) -> dict[str, Any]:
     """Ses dosyasını üretir ve kelime zaman damgalı transkript sözlüğü döner."""
     clean_text = text.strip()
@@ -206,11 +207,20 @@ def generate_voiceover(
     words: list[dict[str, Any]] = []
     duration = 0.0
 
-    try:
-        duration, words = asyncio.run(_edge_tts_generate(clean_text, voice_id, speed, out_file))
-    except Exception as exc:
-        log.warning("edge-tts çağrısı başarısız oldu (%s), fallback üreticiye geçiliyor...", exc)
+    from ..config import get_settings
+
+    synthetic = get_settings().is_mock if mock_mode is None else mock_mode
+    if synthetic:
         duration, words = _fallback_generate(clean_text, speed, out_file)
+    else:
+        try:
+            duration, words = asyncio.run(_edge_tts_generate(clean_text, voice_id, speed, out_file))
+        except Exception as exc:
+            if not allow_fallback:
+                raise RuntimeError("Seslendirme başarısız; gerçek konuşma yerine demo tonu kullanılmadı.") from exc
+            log.warning("edge-tts başarısız; demo tonu kullanılıyor: %s", exc)
+            synthetic = True
+            duration, words = _fallback_generate(clean_text, speed, out_file)
 
     segments = _build_segments(words, clean_text, duration)
     voice_info = get_voice(voice_id)
@@ -223,4 +233,5 @@ def generate_voiceover(
         "voice": voice_id,
         "segments": segments,
         "words": words,
+        "mock": synthetic,
     }

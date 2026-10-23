@@ -1,0 +1,22 @@
+.studio { display: grid; gap: 20px; padding: 24px; border: 1px solid var(--border); background: var(--surface); }
+.panel, .intro, .scene { display: grid; gap: 12px; min-width: 0; }
+.intro p, .note { color: var(--text-dim); font-size: 0.85rem; line-height: 1.7; }
+.intro .chip { justify-self: start; }
+.formGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.formGrid label, .scene > label { display: grid; gap: 7px; font-size: 0.875rem; min-width: 0; }
+.formGrid select, .formGrid input, .formGrid textarea, .scene textarea, .scene input { width: 100%; min-width: 0; }
+.wide { grid-column: 1 / -1; }
+.check { display: flex; gap: 10px; align-items: flex-start; line-height: 1.6; min-height: 44px; font-size: 0.85rem; }
+.check input { margin-top: 5px; flex-shrink: 0; width: 18px; height: 18px; accent-color: var(--violet); }
+.scene { border-top: 1px solid var(--border); padding-top: 20px; }
+.control { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--violet); background: var(--bg-elev); align-items: start; }
+.controlHead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.control .btn { justify-self: start; }
+.sceneHead { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.scene video { width: 100%; max-height: 220px; background: #000; }
+.error { color: var(--danger, #ffb4b4); font-size: 0.85rem; line-height: 1.6; overflow-wrap: anywhere; }
+.versions { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 16px; }
+.versionRow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.panel :focus-visible, .studio :focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+@media (max-width: 600px) { .studio { padding: 16px; } .formGrid { grid-template-columns: minmax(0, 1fr); } }

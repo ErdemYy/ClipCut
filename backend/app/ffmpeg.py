@@ -161,6 +161,8 @@ def detect_silences(path: Path, threshold_db: float, min_silence_s: float, durat
 
 def make_thumbnail(src: Path, dst: Path, at: float = 1.0) -> None:
     run_ffmpeg(["-ss", f"{at:.2f}", "-i", str(src), "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "4", str(dst)])
+    if not dst.is_file() or dst.stat().st_size == 0:
+        raise FFmpegError("Seçilen zamanda video karesi bulunamadı.")
 
 
 def extract_audio(src: Path, dst: Path) -> None:

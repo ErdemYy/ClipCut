@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { API_URL, api, waitForJob, type Job, type Project } from "@/lib/api";
 import styles from "./create.module.css";
+import StoryboardForm from "@/components/StoryboardForm";
 
 const STYLES = [
   { label: "Sinematik", text: "cinematic lighting, shallow depth of field, 35mm film look" },
@@ -27,11 +28,11 @@ const PRESET_TEMPLATES = [
   { label: "🎬 Sinematik", prompt: "Altın saat gün batımında dağ yamacında süzülen sinematik kamera", aspect: "16:9" as const },
 ];
 
-type Tab = "generate" | "upload";
+type Tab = "storyboard" | "generate" | "upload";
 
 export default function CreatePage() {
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>("generate");
+  const [tab, setTab] = useState<Tab>("storyboard");
   const [error, setError] = useState<string | null>(null);
 
   // generate
@@ -123,6 +124,10 @@ export default function CreatePage() {
       </div>
 
       <div className={styles.tabs} role="tablist">
+        <button role="tab" id="tab-storyboard" aria-selected={tab === "storyboard"}
+          className={`${styles.tab} ${tab === "storyboard" ? styles.tabActive : ""}`} onClick={() => setTab("storyboard")} disabled={!!busy}>
+          Senaryodan Üret
+        </button>
         <button
           role="tab"
           id="tab-generate"
@@ -131,7 +136,7 @@ export default function CreatePage() {
           onClick={() => setTab("generate")}
           disabled={!!busy}
         >
-          ✦ AI ile Üret
+          ✦ Tek Sahne Üret
         </button>
         <button
           role="tab"
@@ -145,7 +150,7 @@ export default function CreatePage() {
         </button>
       </div>
 
-      {tab === "generate" ? (
+      {tab === "storyboard" ? <StoryboardForm /> : tab === "generate" ? (
         <section className={`${styles.panel} glass fade-in`}>
           <div className={styles.cols}>
             <div className={styles.form}>

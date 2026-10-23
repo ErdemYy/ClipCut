@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import uuid
+import copy
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import JSON, Column, text
-from sqlmodel import Field, Session, SQLModel, create_engine
+from sqlalchemy import JSON, Column, inspect, text
+from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from .config import get_settings
 
@@ -26,7 +27,7 @@ class Project(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_now)
     # draft | generating | ready | failed
     status: str = "draft"
-    origin: str = "upload"  # upload | veo
+    origin: str = "upload"  # upload | veo | storyboard
     generation_prompt: Optional[str] = None
 
     source_file: Optional[str] = None  # proje klasörüne göre
@@ -47,6 +48,7 @@ class Project(SQLModel, table=True):
 
     output_file: Optional[str] = None
     output_meta: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    storyboard: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
 
 
 class Job(SQLModel, table=True):
@@ -68,20 +70,27 @@ engine = create_engine(get_settings().db_url, connect_args={"check_same_thread":
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     # Kolon göçü
-    with engine.connect() as conn:
-        try:
+    columns = {c["name"] for c in inspect(engine).get_columns("project")}
+    with engine.begin() as conn:
+        if "voiceover_file" not in columns:
             conn.execute(text("ALTER TABLE project ADD COLUMN voiceover_file VARCHAR"))
-            conn.commit()
-        except Exception:
-            pass
+        if "storyboard" not in columns:
+            conn.execute(text("ALTER TABLE project ADD COLUMN storyboard JSON"))
     # Yarım kalmış işleri başarısız işaretle (sunucu yeniden başlatıldıysa)
     with Session(engine) as s:
-        for job in s.query(Job).filter(Job.status.in_(["queued", "running"])).all():  # type: ignore[attr-defined]
+        for job in s.exec(select(Job).where(Job.status.in_(["queued", "running"]))).all():
             job.status = "failed"
             job.error = "Sunucu yeniden başlatıldı."
             s.add(job)
-        for p in s.query(Project).filter(Project.status == "generating").all():  # type: ignore[attr-defined]
-            p.status = "failed"
+        for p in s.exec(select(Project).where(Project.status == "generating")).all():
+            p.status = "ready" if p.storyboard and p.source_file else "failed"
+            if p.storyboard:
+                spec = copy.deepcopy(p.storyboard)
+                spec["last_error"] = "Sunucu yeniden başlatıldı; hazır sahneler korunmuştur."
+                for scene in spec.get("scenes", []):
+                    if scene.get("status") == "generating":
+                        scene.update(status="failed", error="Üretim yarım kaldı. Sağlayıcıda başlayan istek ücretlenmiş olabilir.")
+                p.storyboard = spec
             s.add(p)
         s.commit()
 

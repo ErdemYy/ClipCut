@@ -44,19 +44,30 @@ class RenderRequest:
     resolve_track: TrackResolver
     voiceover: Optional[Path] = None
     resolve_overlay: Optional[TrackResolver] = None
+    resolution: str = "1080p"
+    quality: str = "standard"
 
 
 def even(n: float) -> int:
     return max(2, int(round(n / 2)) * 2)
 
 
-def output_size(info: MediaInfo, plan: EditPlan) -> tuple[int, int]:
+RESOLUTION_SCALE = {
+    "720p": 720 / 1080,
+    "1080p": 1.0,
+    "4k": 2160 / 1080,
+}
+
+
+def output_size(info: MediaInfo, plan: EditPlan, resolution: str = "1080p") -> tuple[int, int]:
+    scale_factor = RESOLUTION_SCALE.get(str(resolution).lower(), 1.0)
     reframe = plan.first("reframe")
-    if reframe and reframe.aspect_ratio != "original":
-        return ASPECT_SIZES[reframe.aspect_ratio]
+    if reframe and reframe.aspect_ratio != "original" and reframe.aspect_ratio in ASPECT_SIZES:
+        base_w, base_h = ASPECT_SIZES[reframe.aspect_ratio]
+        return even(base_w * scale_factor), even(base_h * scale_factor)
     w, h = info.width or 1280, info.height or 720
     scale = min(1.0, MAX_SIDE / max(w, h))
-    return even(w * scale), even(h * scale)
+    return even(w * scale * scale_factor), even(h * scale * scale_factor)
 
 
 def atempo_chain(factor: float) -> list[str]:
@@ -97,7 +108,7 @@ def _rel(path: Path, start: Path) -> str:
 
 def build_command(req: RenderRequest) -> tuple[list[str], float]:
     plan, tl, info = req.plan, req.timeline, req.info
-    W, H = output_size(info, plan)
+    W, H = output_size(info, plan, req.resolution)
     T = tl.output_duration
     inputs: list[str] = ["-i", str(req.source)]
     next_input = 1
@@ -309,7 +320,10 @@ def build_command(req: RenderRequest) -> tuple[list[str], float]:
         "-filter_complex", ";".join(f),
         "-map", "[vout]", "-map", "[aout]",
         "-t", f"{T:.3f}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264",
+        "-preset", "medium" if req.quality == "high" else ("veryfast" if req.quality == "fast" else "veryfast"),
+        "-crf", "18" if req.quality == "high" else ("26" if req.quality == "fast" else "20"),
+        "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
         str(req.output),
     ]
@@ -322,5 +336,5 @@ def render(req: RenderRequest, on_progress: Callable[[float], None]) -> dict:
     args, total = build_command(req)
     (req.work_dir / "command.txt").write_text(" ".join(f'"{a}"' if " " in a else a for a in args), encoding="utf-8")
     run_ffmpeg_with_progress(args, total, on_progress, cwd=req.work_dir)
-    W, H = output_size(req.info, req.plan)
+    W, H = output_size(req.info, req.plan, req.resolution)
     return {"duration": round(total, 3), "width": W, "height": H}
