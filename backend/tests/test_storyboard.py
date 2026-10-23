@@ -820,3 +820,31 @@ def test_duplicate_job_submission_returns_http_409(studio, monkeypatch):
     response = client.post(f"/api/projects/{p['id']}/transcribe", json={"target_language": "en"})
     assert response.status_code == 409
     assert "zaten sırada veya sürüyor" in response.text
+
+
+def test_project_list_reports_storyboard_progress_and_subtitles(studio, monkeypatch):
+    from app import storyboard_jobs as worker
+    from app.ffmpeg import run_ffmpeg
+
+    client, _, _, _ = studio
+    p = create(client)
+
+    def local_generate(prompt, aspect, duration, negative, path, on_progress):
+        run_ffmpeg(["-f", "lavfi", "-i", "color=c=red:size=160x90:rate=10", "-t", str(duration),
+                    "-c:v", "libx264", str(path)])
+
+    monkeypatch.setattr(worker.ai, "generate_video", local_generate)
+
+    def listing():
+        return [q for q in client.get("/api/projects").json() if q["id"] == p["id"]][0]
+
+    row = listing()
+    assert row["storyboard_progress"] == {"ready": 0, "total": 2, "assembled": False}
+    assert row["has_subtitles"] is False
+    assert worker.task_generate_storyboard(lambda *_: None, p["id"])["assembled"]
+    row = listing()
+    assert row["storyboard_progress"] == {"ready": 2, "total": 2, "assembled": True}
+    assert row["has_subtitles"] is True
+    # The dashboard download shortcuts are backed by real endpoints.
+    assert client.get(f"/api/projects/{p['id']}/subtitles.srt").status_code == 200
+    assert "-->" in client.get(f"/api/projects/{p['id']}/subtitles.srt").text

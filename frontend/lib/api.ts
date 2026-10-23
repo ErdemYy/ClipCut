@@ -25,6 +25,8 @@ export type Project = {
   output_url: string | null;
   subtitle_language: string | null;
   has_transcript: boolean;
+  has_subtitles?: boolean;
+  storyboard_progress?: { ready: number; total: number; assembled: boolean } | null;
   operation_count: number;
   generation_prompt?: string | null;
   transcript_language?: string | null;

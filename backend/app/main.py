@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,8 +66,16 @@ def serialize(p: Project, full: bool = True) -> dict[str, Any]:
         "source_url": jobs.media_url(p.id, p.source_file), "thumbnail_url": jobs.media_url(p.id, p.thumbnail_file),
         "voiceover_url": jobs.media_url(p.id, p.voiceover_file), "has_voiceover": bool(p.voiceover_file),
         "output_url": jobs.media_url(p.id, p.output_file), "subtitle_language": p.subtitle_language,
-        "has_transcript": bool(p.transcript), "operation_count": len(p.plan.get("operations", [])),
+        "has_transcript": bool(p.transcript), "has_subtitles": bool(p.subtitles),
+        "operation_count": len(p.plan.get("operations", [])),
     }
+    if p.storyboard:
+        scenes = p.storyboard.get("scenes", [])
+        data["storyboard_progress"] = {
+            "ready": sum(1 for s in scenes if s.get("status") == "ready"),
+            "total": len(scenes),
+            "assembled": p.storyboard.get("assembled_revision") == p.storyboard.get("revision"),
+        }
     if full:
         data.update({
             "generation_prompt": p.generation_prompt, "transcript_language": (p.transcript or {}).get("language"),
@@ -503,8 +512,12 @@ def export_subtitles(project_id: str, fmt: Literal["srt", "vtt"], edited: bool =
     cues = cues_for_export(words)
     body = to_srt(cues) if fmt == "srt" else to_vtt(cues)
     filename = f"{p.name}_{p.subtitle_language or 'sub'}.{fmt}".replace(" ", "_")
+    # Header values are latin-1; non-ASCII names (Turkish) need the RFC 5987 UTF-8 form.
+    ascii_fallback = "".join(c if (c.isascii() and (c.isalnum() or c in "-._")) else "_" for c in filename)
+    utf8_name = quote(filename, safe="!#$&+-.^_`|~")
     return PlainTextResponse(body, media_type="text/plain; charset=utf-8",
-                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+                             headers={"Content-Disposition":
+                                      f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_name}"})
 
 
 # ------------------------------------------------------------------ edit planı ----

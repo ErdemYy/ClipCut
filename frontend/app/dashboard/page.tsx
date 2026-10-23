@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { api, formatTime, mediaUrl, type Project } from "@/lib/api";
+import { api, API_URL, downloadUrl, formatTime, mediaUrl, type Project } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 import styles from "./dashboard.module.css";
 
@@ -106,10 +106,17 @@ export default function DashboardPage() {
                   <StatusBadge status={p.status} />
                 </div>
                 <div className={styles.tags}>
+                  {p.storyboard_progress && (p.status === "generating" || p.storyboard_progress.ready < p.storyboard_progress.total) &&
+                    <span className="chip">🎬 {p.storyboard_progress.ready}/{p.storyboard_progress.total} sahne üretildi</span>}
                   {p.subtitle_language && <span className="chip">💬 {p.subtitle_language.toUpperCase()}</span>}
                   {p.operation_count > 0 && <span className="chip">✨ {p.operation_count} edit</span>}
                   {p.output_url && <span className="chip">✅ Render</span>}
                 </div>
+                {(p.source_url || p.output_url) && <div className={styles.downloads}>
+                  {p.source_url && <a className="btn btn-sm" href={downloadUrl(p.source_url)} download>⬇ Kaynak</a>}
+                  {p.output_url && <a className="btn btn-sm" href={downloadUrl(p.output_url)} download>⬇ Çıkış</a>}
+                  {p.has_subtitles && <a className="btn btn-sm" href={`${API_URL}/api/projects/${p.id}/subtitles.srt`} download>⬇ SRT</a>}
+                </div>}
                 <div className={styles.footer}>
                   <span>{new Date(p.updated_at).toLocaleString("tr-TR", { dateStyle: "medium", timeStyle: "short" })}</span>
                   <button className="btn btn-ghost btn-sm btn-danger" onClick={() => remove(p)} id={`delete-${p.id}`}>

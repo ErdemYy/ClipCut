@@ -119,6 +119,14 @@
   flex-wrap: wrap;
   min-height: 26px;
 }
+.downloads {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.downloads .btn {
+  text-decoration: none;
+}
 .footer {
   display: flex;
   justify-content: space-between;
