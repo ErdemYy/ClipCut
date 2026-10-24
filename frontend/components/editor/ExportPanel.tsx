@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { api, downloadUrl, formatTime, mediaUrl, type ExportFormat, type FillMode, type Job, type JobMap, type Project, type RenderOptions } from "@/lib/api";
 import { JobProgress } from "./SubtitlePanel";
 import { PublishingResults, RenderSettings } from "./PublishingControls";
+import PreviewPanel from "./PreviewPanel";
 import styles from "./editor-parts.module.css";
 import pub from "./publishing.module.css";
 
@@ -61,6 +62,7 @@ export default function ExportPanel({ project, jobs, setProject, track, notify, 
       </label>)}
     </fieldset>
     <RenderSettings value={options} onChange={setOptions} fill={fill} onFill={setFill} disabled={disabled} />
+    <PreviewPanel project={project} options={options} jobs={jobs} track={track} notify={notify} />
     <section className={pub.cover} aria-label="Kapak karesi seçici">
       <h4>Kapak karesi</h4>
       <video ref={video} src={mediaUrl(project.source_url)} controls muted playsInline preload="metadata"

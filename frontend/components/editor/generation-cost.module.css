@@ -1,0 +1,27 @@
+.cost {
+  --spacing-xs: 0.5rem;
+  --spacing-sm: 0.75rem;
+  --spacing-md: 1rem;
+  display: grid;
+  gap: var(--spacing-sm);
+  min-width: 0;
+  padding: var(--spacing-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+}
+.head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--spacing-xs); }
+.badge { color: var(--text-dim); font-size: 0.8rem; border: 1px solid var(--border-strong); border-radius: 999px; padding: 2px 8px; }
+.models { display: grid; gap: var(--spacing-sm); min-width: 0; }
+.models label, .budget { display: grid; gap: var(--spacing-xs); min-width: 0; color: var(--text-dim); }
+.models select, .budget input { width: 100%; min-width: 0; min-height: 44px; color: var(--text); }
+.estimate { display: grid; gap: var(--spacing-xs); min-width: 0; }
+.estimate ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
+.estimate li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--spacing-xs); border-bottom: 1px solid var(--border); padding-bottom: 6px; min-width: 0; overflow-wrap: anywhere; }
+.estimate small { color: var(--text-faint); }
+.total { margin: 0; font-variant-numeric: tabular-nums; }
+.note, .warn { margin: 0; color: var(--text-dim); font-size: 0.85rem; line-height: 1.55; overflow-wrap: anywhere; }
+.note summary { cursor: pointer; }
+.note p { margin: 0.4rem 0 0; }
+.error { margin: 0; color: var(--red); font-size: 0.875rem; line-height: 1.5; }
+@media (min-width: 48rem) { .models { grid-template-columns: 1fr 1fr; } }

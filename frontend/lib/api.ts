@@ -2,7 +2,8 @@ export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:800
 
 export type Word = { text: string; start: number; end: number };
 export type Segment = { id: number; start: number; end: number; text: string; words: Word[] };
-export type Transcript = { language: string; segments: Segment[]; edited?: boolean; mock?: boolean };
+export type SubtitleEditSegment = Omit<Segment, "words"> & { words?: Word[] };
+export type Transcript = { language: string; segments: Segment[]; edited?: boolean; mock?: boolean; manual_segments?: boolean };
 export type Operation = { type: string; [key: string]: unknown };
 export type Plan = { operations: Operation[] };
 export type ChatMessage = { role: "user" | "assistant"; text: string; at: string; changed?: boolean };
@@ -23,6 +24,10 @@ export type Project = {
   voiceover_url?: string | null;
   has_voiceover?: boolean;
   output_url: string | null;
+  render_revision?: string;
+  subtitle_revision?: string;
+  subtitle_time_limit?: number;
+  timeline_revision?: string;
   subtitle_language: string | null;
   has_transcript: boolean;
   has_subtitles?: boolean;
@@ -51,7 +56,7 @@ export type Voice = {
 export type Job = {
   id: string;
   project_id: string;
-  kind: "generate" | "storyboard_generate" | "transcribe" | "translate" | "render" | "export_batch" | "clip_analyze" | "clip_render";
+  kind: "generate" | "storyboard_generate" | "transcribe" | "translate" | "render" | "preview" | "export_batch" | "clip_analyze" | "clip_render" | "clip_preview" | "transcript_clip";
   status: "queued" | "running" | "done" | "failed";
   progress: number;
   message: string;
@@ -65,11 +70,24 @@ export type TimelineInfo = {
   speed: number;
   crossfade: number;
   output_duration: number;
+  exact_output_duration?: number;
+  revision?: string;
 };
+export type LayerTiming = { index: number; start: number; duration: number };
+export type Waveform = { duration: number; has_audio: boolean; revision: string; sample_rate: number; peaks: number[] };
 
 export type ExportFormat = "9:16" | "1:1" | "4:5" | "16:9";
 export type RenderOptions = { resolution: "720p" | "1080p" | "4k"; quality: "fast" | "standard" | "high" };
+export type PreviewResult = RenderOptions & {
+  output: string; start: number; end: number; duration: number;
+  width: number; height: number; render_revision: string;
+};
 export type FillMode = "blur" | "fit" | "crop";
+export type ClipPreviewResult = RenderOptions & {
+  output: string; start: number; end: number; duration: number;
+  width: number; height: number; clip_id: number; clip_start: number; clip_end: number;
+  analysis_id: string; aspect_ratio: ExportFormat; fill: FillMode; render_revision: string;
+};
 export type PublishResult = {
   archive: string;
   outputs: { label: string; aspect_ratio: ExportFormat; output: string; thumbnail: string;
@@ -78,8 +96,18 @@ export type PublishResult = {
 export type ClipCandidate = {
   id: number; start: number; end: number; duration: number; score: number;
   speech_ratio: number; words_per_minute: number | null; excerpt: string; reason: string;
+  transcript_used?: boolean; sentence_aligned?: boolean; hook_score?: number | null; topic_score?: number | null;
+  signals?: { speech: number; cadence: number; boundary: number; completeness?: number; hook?: number; topic?: number };
 };
-export type ClipAnalysis = { clips: ClipCandidate[]; notice: string; empty_reason: string | null };
+export type ClipRangeOverride = { id: number; start: number; end: number };
+export type ClipAnalysis = {
+  clips: ClipCandidate[]; notice: string; empty_reason: string | null;
+  method?: string; scoring?: string; transcript_used?: boolean;
+  sentence_boundaries?: { starts: number[]; ends: number[] };
+};
+export type TranscriptRow = { id: number; start: number; end: number; text: string; kept_duration: number };
+export type TranscriptEdit = { revision: string; language: string | null; mock: boolean; blocked_reason: string | null; segments: TranscriptRow[] };
+export type TranscriptSelection = { revision: string; segment_ids: number[] };
 
 export type StoryScene = {
   id: string; title: string; visual_prompt: string; narration: string; duration: 4 | 6 | 8;
@@ -91,6 +119,7 @@ export type StoryScene = {
 export type Storyboard = {
   title: string; aspect_ratio: "9:16" | "16:9"; language: "tr" | "en" | "de" | "es";
   style: string; continuity: string; voiceover: boolean; voice_id: string; auto_subtitles: boolean;
+  text_model: string; video_model: string;
   scenes: StoryScene[]; revision: string; assembled_revision: string | null; mock_plan: boolean;
   pending_scenes: number; planned_duration: number; last_error: string | null;
   timeline_duration: number;
@@ -161,6 +190,22 @@ export type Template = {
 };
 
 export type Health = { ok: boolean; mock: boolean; ffmpeg: string; veo_model: string; video_durations?: number[]; video_model_warning?: string | null };
+export type ModelInfo = {
+  id: string; label: string; kind: "text" | "video"; status: "active" | "deprecated" | "closed" | "unpriced";
+  configured: boolean; selectable: boolean; note: string | null; durations: number[];
+  price_per_second?: number | null; input_per_million?: number | null; output_per_million?: number | null;
+};
+export type ModelCatalog = {
+  mock: boolean; defaults: { text_model: string; video_model: string };
+  text: ModelInfo[]; video: ModelInfo[]; pricing_read_at: string; pricing_note: string;
+};
+export type CostComponent = { label: string; detail: string; usd: number | null };
+export type CostEstimate = {
+  mock: boolean; priced: boolean; video_model: ModelInfo; text_model: ModelInfo;
+  video_calls: number; video_seconds: number; tts_calls: number; planning_calls: number;
+  estimated_usd: number | null; components: CostComponent[]; warnings: string[];
+  pricing_read_at: string; pricing_note: string;
+};
 
 export const mediaUrl = (path: string | null | undefined) => (path ? `${API_URL}${path}` : undefined);
 export const downloadUrl = (path: string | null | undefined) => {
@@ -192,6 +237,9 @@ const json = (body: unknown): RequestInit => ({ method: "POST", body: JSON.strin
 
 export const api = {
   health: () => request<Health>("/api/health"),
+  aiModels: () => request<ModelCatalog>("/api/ai/models"),
+  preflight: (body: { video_model?: string; text_model?: string; scene_durations?: number[]; voiceover?: boolean;
+    planning_scene_count?: number; planning_chars?: number }) => request<CostEstimate>("/api/ai/preflight", json(body)),
   library: () => request<Library>("/api/library"),
   templates: () => request<Template[]>("/api/templates"),
   applyTemplate: (projectId: string, templateId: string) =>
@@ -206,12 +254,14 @@ export const api = {
     fd.append("name", name);
     return request<Project>("/api/projects/upload", { method: "POST", body: fd });
   },
-  generate: (body: { prompt: string; name?: string; aspect_ratio: string; duration: number; negative_prompt?: string }) =>
+  generate: (body: { prompt: string; name?: string; aspect_ratio: string; duration: number; negative_prompt?: string;
+    video_model?: string; max_cost_usd?: number }) =>
     request<{ project: Project; job: Job }>("/api/projects/generate", json(body)),
-  createStoryboard: (body: { brief: string; scene_count: number; scene_duration: number; aspect_ratio: string; language: string; style: string; confirm_api_usage: boolean }) =>
+  createStoryboard: (body: { brief: string; scene_count: number; scene_duration: number; aspect_ratio: string; language: string; style: string;
+    text_model?: string; video_model?: string; max_cost_usd?: number; confirm_api_usage: boolean }) =>
     request<Project>("/api/projects/storyboard", json(body)),
   saveStoryboard: (id: string, body: Storyboard) => request<Project>(`/api/projects/${id}/storyboard`, { method: "PUT", body: JSON.stringify(body) }),
-  generateStoryboard: (id: string, body: { revision: string; scene_id?: string; confirm_api_usage: boolean; confirm_replace_source: boolean }) =>
+  generateStoryboard: (id: string, body: { revision: string; scene_id?: string; confirm_api_usage: boolean; confirm_replace_source: boolean; max_cost_usd?: number }) =>
     request<Job>(`/api/projects/${id}/storyboard/generate`, json(body)),
   cancelJob: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   restoreStoryboardVersion: (id: string, body: { version_index: number; confirm: boolean }) =>
@@ -220,22 +270,37 @@ export const api = {
   jobs: (projectId: string) => request<Job[]>(`/api/projects/${projectId}/jobs`),
   transcribe: (id: string, target_language?: string) => request<Job>(`/api/projects/${id}/transcribe`, json({ target_language })),
   translate: (id: string, target_language: string) => request<Job>(`/api/projects/${id}/translate`, json({ target_language })),
-  saveSubtitles: (id: string, segments: { id: number; start: number; end: number; text: string }[]) =>
-    request<Project>(`/api/projects/${id}/subtitles`, { method: "PUT", body: JSON.stringify({ segments }) }),
+  saveSubtitles: (id: string, segments: SubtitleEditSegment[], revision?: string) =>
+    request<Project>(`/api/projects/${id}/subtitles`, { method: "PUT", body: JSON.stringify({ segments, revision }) }),
   edit: (id: string, prompt: string) =>
     request<{ summary: string; changed: boolean; project: Project }>(`/api/projects/${id}/edit`, json({ prompt })),
   setPlan: (id: string, plan: Plan) => request<Project>(`/api/projects/${id}/plan`, { method: "PUT", body: JSON.stringify({ plan }) }),
   undo: (id: string) => request<Project>(`/api/projects/${id}/plan/undo`, { method: "POST" }),
   timeline: (id: string) => request<TimelineInfo>(`/api/projects/${id}/timeline`),
+  setLayerTimings: (id: string, revision: string, layers: LayerTiming[]) => request<Project>(`/api/projects/${id}/timeline/layers`,
+    { method: "PATCH", body: JSON.stringify({ revision, layers }) }),
+  waveform: (id: string, signal?: AbortSignal) => request<Waveform>(`/api/projects/${id}/waveform`, { signal }),
+  transcriptEdit: (id: string) => request<TranscriptEdit>(`/api/projects/${id}/transcript-edit`),
+  cutTranscript: (id: string, selection: TranscriptSelection) => request<Project>(`/api/projects/${id}/transcript-edit/cut`, json(selection)),
+  clipTranscript: (id: string, selection: TranscriptSelection & RenderOptions & { aspect_ratio: ExportFormat; fill: FillMode }) =>
+    request<Job>(`/api/projects/${id}/transcript-edit/clip`, json(selection)),
   render: (id: string, options?: RenderOptions) => request<Job>(`/api/projects/${id}/render`, json(options ?? {})),
+  preview: (id: string, options: RenderOptions & { start: number; duration: 5 | 10 }) =>
+    request<Job>(`/api/projects/${id}/preview`, json(options)),
   exportBatch: (id: string, options: RenderOptions & { formats: ExportFormat[]; fill: FillMode; thumbnail_at: number }) =>
     request<Job>(`/api/projects/${id}/export-batch`, json(options)),
   selectThumbnail: (id: string, at: number) =>
     request<Project>(`/api/projects/${id}/thumbnail`, { method: "PUT", body: JSON.stringify({ at }) }),
   analyzeClips: (id: string, options: { min_duration: number; max_duration: number; max_clips: number }) =>
     request<Job>(`/api/projects/${id}/clips/analyze`, json(options)),
-  renderClips: (id: string, options: RenderOptions & { analysis_id: string; clip_ids: number[]; aspect_ratio: ExportFormat; fill: FillMode }) =>
-    request<Job>(`/api/projects/${id}/clips/render`, json(options)),
+  renderClips: (id: string, options: RenderOptions & {
+    analysis_id: string; clip_ids: number[]; aspect_ratio: ExportFormat; fill: FillMode;
+    clip_ranges?: ClipRangeOverride[];
+  }) => request<Job>(`/api/projects/${id}/clips/render`, json(options)),
+  previewClip: (id: string, options: RenderOptions & {
+    analysis_id: string; clip_id: number; clip_range?: ClipRangeOverride;
+    aspect_ratio: ExportFormat; fill: FillMode; duration?: 5 | 10;
+  }) => request<Job>(`/api/projects/${id}/clips/preview`, json(options)),
   uploadAudio: (id: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);

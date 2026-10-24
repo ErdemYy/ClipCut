@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, mediaUrl, type Health, type Job, type JobMap, type Project, type Storyboard, type StoryScene, type Voice } from "@/lib/api";
+import { api, mediaUrl, type Health, type Job, type JobMap, type ModelCatalog, type Project, type Storyboard, type StoryScene, type Voice } from "@/lib/api";
+import GenerationCost from "./GenerationCost";
 import { JobProgress } from "./SubtitlePanel";
 import styles from "./storyboard.module.css";
 
 function editable(s: Storyboard) {
   return { title: s.title, aspect_ratio: s.aspect_ratio, language: s.language, style: s.style, continuity: s.continuity,
     voiceover: s.voiceover, voice_id: s.voice_id, auto_subtitles: s.auto_subtitles,
+    text_model: s.text_model, video_model: s.video_model,
     scenes: s.scenes.map(({ id, title, visual_prompt, narration, duration, trim_start, trim_end, transition, transition_duration }) =>
       ({ id, title, visual_prompt, narration, duration, trim_start, trim_end, transition, transition_duration })) };
 }
@@ -21,6 +23,8 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
 }) {
   const story = project.storyboard!;
   const [health, setHealth] = useState<Health | null>(null);
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  const [budget, setBudget] = useState("");
   const [voices, setVoices] = useState<Voice[]>([]);
   const [approved, setApproved] = useState(false);
   const [replaceApproved, setReplaceApproved] = useState(false);
@@ -36,6 +40,7 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
   useEffect(() => {
     api.health().then(setHealth).catch((e: Error) => notify(e.message, true));
     api.voices().then(setVoices).catch((e: Error) => notify(e.message, true));
+    api.aiModels().then(setCatalog).catch((e: Error) => notify(e.message, true));
   }, [notify]);
   // While production runs, refresh the project so the control center tracks the active scene.
   useEffect(() => {
@@ -64,7 +69,9 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
   const generate = async (sceneId?: string) => {
     setPending(true);
     try {
-      const j = await api.generateStoryboard(project.id, { revision: story.revision, scene_id: sceneId, confirm_api_usage: approved, confirm_replace_source: replaceApproved });
+      const j = await api.generateStoryboard(project.id, { revision: story.revision, scene_id: sceneId,
+        confirm_api_usage: approved, confirm_replace_source: replaceApproved,
+        max_cost_usd: budget.trim() === "" ? undefined : Number(budget) });
       await track(j, (final) => {
         const r = final.result as { assembled?: boolean; stopped?: boolean; message?: string } | null;
         if (r?.stopped) notify(r.message || "Üretim durduruldu; hazır sahneler korunuyor.");
@@ -96,6 +103,16 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
   const active = story.scenes.find((s) => s.status === "generating");
   const remaining = story.scenes.filter((s) => s.status !== "ready").length;
   const canGenerate = !busy && !dirty && !invalid && !!health && (!project.source_url || replaceApproved);
+  const selectedVideo = catalog?.video.find((model) => model.id === draft.video_model);
+  const durations = selectedVideo?.durations?.length ? selectedVideo.durations : [4, 6, 8];
+  const pendingDurations = story.scenes.filter((scene) => scene.status !== "ready").map((scene) => scene.duration);
+  const changeVideoModel = (id: string) => {
+    const next = catalog?.video.find((model) => model.id === id)?.durations ?? [4, 6, 8];
+    setDraft({ ...draft, video_model: id, scenes: draft.scenes.map((scene) => ({
+      ...scene, duration: (next.includes(scene.duration) ? scene.duration : next[next.length - 1] ?? 8) as StoryScene["duration"],
+      trim_start: 0, trim_end: null,
+    })) });
+  };
 
   return <div className={styles.panel}>
     <header className={styles.intro}><h3>Sahne planı</h3>
@@ -115,6 +132,12 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
       <label className={styles.wide}>Karakter ve sahne tutarlılığı<textarea className="textarea" rows={3} maxLength={1500} value={draft.continuity} disabled={busy}
         onChange={(e) => setDraft({ ...draft, continuity: e.target.value, scenes: draft.scenes.map((s) => ({ ...s, trim_start: 0, trim_end: null })) })} placeholder="Aynı karakterin görünüşü, ürün rengi, mekân, kamera dili…" /></label>
     </div>
+    <GenerationCost catalog={catalog} videoModel={draft.video_model} textModel={draft.text_model}
+      onVideoModel={changeVideoModel} onTextModel={(id) => setDraft({ ...draft, text_model: id })}
+      sceneDurations={pendingDurations} voiceover={draft.voiceover} budget={budget} onBudget={setBudget}
+      disabled={busy} />
+    <p className={styles.note}>Maliyet tahmini yalnızca bekleyen sahneler içindir. Tek bir hazır sahneyi yeniden üretmek ek 1 video çağrısıdır; bütçe sınırı o çağrı için sunucuda yeniden hesaplanır. Tüm sahneler hazırsa birleştirme yereldir ve ücret oluşturmaz.</p>
+    {dirty && <p className={styles.note}>Model seçimi de taslağın parçasıdır. Kaydettiğinizde video modeli değişmişse hazır sahneler yeni modelle yeniden üretilmek üzere beklemeye alınır; kırpma aralıkları bu durumda sıfırlanır. Maliyet tahmini kayıtlı planla değil, ekrandaki taslakla hesaplanır.</p>}
     <label className={styles.check}><input type="checkbox" checked={draft.voiceover} disabled={busy} onChange={(e) => setDraft({ ...draft, voiceover: e.target.checked, scenes: draft.scenes.map((s) => ({ ...s, trim_start: 0, trim_end: null })) })} />Sahne anlatımlarını Edge TTS ile seslendir (kaynak sahne sesi yerine)</label>
     {draft.voiceover && <>
       <label>Ses<select className="select" value={draft.voice_id} disabled={busy || voices.length === 0} onChange={(e) => setDraft({ ...draft, voice_id: e.target.value, scenes: draft.scenes.map((s) => ({ ...s, trim_start: 0, trim_end: null })) })}>
@@ -145,7 +168,7 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
         <label>Görsel prompt<textarea className="textarea" value={scene.visual_prompt} rows={3} maxLength={2000} disabled={busy} onChange={(e) => patchScene(scene.id, { visual_prompt: e.target.value })} /></label>
         <label>Anlatım metni<textarea className="textarea" value={scene.narration} rows={2} maxLength={1000} disabled={busy} onChange={(e) => patchScene(scene.id, { narration: e.target.value })} /></label>
         <label>Görsel üretim süresi<select className="select" value={scene.duration} disabled={busy} onChange={(e) => patchScene(scene.id, { duration: Number(e.target.value) as StoryScene["duration"] })}>
-          {[4, 6, 8].map((n) => <option key={n} value={n} disabled={!!health?.video_durations && !health.video_durations.includes(n)}>{n} saniye</option>)}
+          {[4, 6, 8].map((n) => <option key={n} value={n} disabled={!durations.includes(n)}>{n} saniye</option>)}
         </select></label>
         {draft.voiceover && scene.narration.split(/\s+/).length > scene.duration * 3 && <p className={styles.note}>Anlatım bu süre için uzun olabilir. Metni kısaltın; gerekirse son kare anlatım bitene kadar tutulur.</p>}
         {state.video_url && <video controls preload="none" src={mediaUrl(state.video_url)} aria-label={`${scene.title} önizlemesi`} />}

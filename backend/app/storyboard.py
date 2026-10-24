@@ -6,7 +6,7 @@ import json
 import math
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -47,6 +47,9 @@ class StoryboardInput(BaseModel):
     voiceover: bool = True
     voice_id: str = "tr-TR-EmelNeural"
     auto_subtitles: bool = True
+    # Model secimi endpoint'te dogrulanir; eski projelerde alan yoksa etkin varsayilan kullanilir.
+    text_model: Optional[str] = Field(None, max_length=128)
+    video_model: Optional[str] = Field(None, max_length=128)
     scenes: list[SceneInput] = Field(..., min_length=2, max_length=12)
 
     @model_validator(mode="after")
@@ -70,6 +73,9 @@ class StoryboardCreateBody(BaseModel):
     aspect_ratio: Literal["9:16", "16:9"] = "9:16"
     language: Literal["tr", "en", "de", "es"] = "tr"
     style: str = Field("cinematic, natural lighting", min_length=1, max_length=500)
+    text_model: Optional[str] = Field(None, max_length=128)
+    video_model: Optional[str] = Field(None, max_length=128)
+    max_cost_usd: Optional[float] = Field(None, ge=0, le=10000)
     confirm_api_usage: bool = False
 
 
@@ -82,6 +88,8 @@ class StoryboardGenerateBody(BaseModel):
     scene_id: str | None = Field(None, pattern=r"^[a-f0-9]{12}$")
     confirm_api_usage: bool = False
     confirm_replace_source: bool = False
+    # Istege bagli sert ust sinir. Sunucu, saglayici cagrisindan once tahmini hesaplar.
+    max_cost_usd: Optional[float] = Field(None, ge=0, le=10000)
 
 
 def revision() -> str:
@@ -95,7 +103,7 @@ def fingerprint(spec: dict, scene: dict) -> str:
         "aspect_ratio": spec["aspect_ratio"], "style": spec["style"], "continuity": spec.get("continuity", ""),
         "language": spec["language"], "voiceover": spec["voiceover"],
         "voice_id": spec["voice_id"] if spec["voiceover"] else None,
-        "mock": settings.is_mock, "model": settings.veo_model, "pipeline": 1,
+        "mock": settings.is_mock, "model": spec.get("video_model") or settings.veo_model, "pipeline": 1,
     }
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]
 
@@ -104,7 +112,8 @@ def visual_fingerprint(spec: dict, scene: dict) -> str:
     settings = get_settings()
     data = {"prompt": scene["visual_prompt"], "duration": scene["duration"], "style": spec["style"],
             "continuity": spec.get("continuity", ""), "aspect": spec["aspect_ratio"],
-            "no_dialogue": spec["voiceover"], "mock": settings.is_mock, "model": settings.veo_model, "pipeline": 1}
+            "no_dialogue": spec["voiceover"], "mock": settings.is_mock,
+            "model": spec.get("video_model") or settings.veo_model, "pipeline": 1}
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]
 
 
@@ -166,8 +175,11 @@ def public_storyboard(project_id: str, spec: dict | None) -> dict | None:
     if not spec:
         return None
     data = StoryboardInput.model_validate(spec).model_dump()
+    settings = get_settings()
     data.update({"revision": spec["revision"], "assembled_revision": spec.get("assembled_revision"),
-                 "mock_plan": spec.get("mock_plan", False), "last_error": spec.get("last_error")})
+                 "mock_plan": spec.get("mock_plan", False), "last_error": spec.get("last_error"),
+                 "text_model": spec.get("text_model") or settings.gemini_text_model,
+                 "video_model": spec.get("video_model") or settings.veo_model})
     for public, scene in zip(data["scenes"], spec["scenes"]):
         ready = scene_ready(project_id, spec, scene)
         public.update({"status": "ready" if ready else (scene.get("status") if scene.get("status") in {"generating", "failed"} else "pending"),
@@ -196,6 +208,9 @@ def public_storyboard(project_id: str, spec: dict | None) -> dict | None:
 def merge_saved_spec(old: dict, edited: StoryboardSaveBody) -> dict:
     """Only editor fields are accepted; clients cannot inject file/cache/status fields."""
     data = StoryboardInput.model_validate(edited.model_dump()).model_dump()
+    # Eski istemciler model alanlarini gondermezse kayitli secimi silme.
+    data["text_model"] = data.get("text_model") or old.get("text_model")
+    data["video_model"] = data.get("video_model") or old.get("video_model")
     # The first scene has no incoming edge.
     data["scenes"][0]["transition"] = "cut"
     previous = {s["id"]: s for s in old["scenes"]}

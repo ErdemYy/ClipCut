@@ -20,23 +20,29 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session, select
 
 from . import assets, jobs
-from .ai import broll, services as ai, tts
+from .ai import broll, catalog as ai_catalog, services as ai, tts
 from .config import get_settings
 from .edit.schema import EditPlan, OverlayOp, SubtitlesOp, dsl_reference
+from .edit.layers import LayerTimingsBody, timeline_revision, update_layer_timings
 from .edit.templates import TEMPLATES, get_template
 from .ffmpeg import ffmpeg_exe, make_thumbnail, probe
 from .models import Job, Project, get_session, init_db
-from .publishing import BatchExportBody, ClipAnalyzeBody, ClipExportBody, RenderOptions, ThumbnailBody
+from .publishing import BatchExportBody, ClipAnalyzeBody, ClipExportBody, ClipPreviewBody, PreviewBody, RenderOptions, ThumbnailBody, preview_window
 from .storyboard import (StoryboardCreateBody, StoryboardGenerateBody, StoryboardSaveBody,
                          merge_saved_spec, public_storyboard, scene_ready)
 from .storyboard import scene_file
 from .storyboard_jobs import task_generate_storyboard
 from .subtitles.builder import cues_for_export, map_words, to_srt, to_vtt, transcript_words
+from .subtitles.editor import SubtitlesBody, normalized_segments, subtitle_revision, subtitle_time_limit
+from .transcript_edit import (TranscriptClipBody, TranscriptSelection, clip_selection, cut_selection,
+                              selected_rows, transcript_revision, transcript_view)
+from .waveform import SourceChangedError, source_waveform
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 settings = get_settings()
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 _storyboard_lock = threading.Lock()
+_layer_edit_lock = threading.Lock()
 
 
 @asynccontextmanager
@@ -81,6 +87,10 @@ def serialize(p: Project, full: bool = True) -> dict[str, Any]:
             "generation_prompt": p.generation_prompt, "transcript_language": (p.transcript or {}).get("language"),
             "subtitles": p.subtitles, "plan": p.plan, "can_undo": bool(p.plan_history), "chat": p.chat,
             "output_meta": p.output_meta,
+            "render_revision": jobs.render_revision(p),
+            "subtitle_revision": subtitle_revision(p.model_dump()),
+            "subtitle_time_limit": subtitle_time_limit(p.model_dump()),
+            "timeline_revision": timeline_revision(p.model_dump()),
             "storyboard": public_storyboard(p.id, p.storyboard),
         })
     return data
@@ -112,6 +122,34 @@ def health() -> dict:
         ff = f"HATA: {exc}"
     return {"ok": True, "mock": settings.is_mock, "ffmpeg": ff, "veo_model": settings.veo_model,
             "text_model": settings.gemini_text_model, **ai.video_model_constraints()}
+
+
+@app.get("/api/ai/models")
+def ai_models() -> dict:
+    """Selectable models and the pricing snapshot used for pre-generation estimates."""
+    return ai_catalog.model_catalog()
+
+
+class PreflightBody(BaseModel):
+    video_model: Optional[str] = Field(None, max_length=128)
+    text_model: Optional[str] = Field(None, max_length=128)
+    scene_durations: list[int] = Field(default_factory=list, max_length=24)
+    voiceover: bool = False
+    planning_scene_count: int = Field(0, ge=0, le=12)
+    planning_chars: int = Field(0, ge=0, le=20000)
+
+
+@app.post("/api/ai/preflight")
+def ai_preflight(body: PreflightBody) -> dict:
+    """Estimate provider cost WITHOUT calling any AI or starting a job."""
+    try:
+        return ai_catalog.preflight(
+            video_model=body.video_model, text_model=body.text_model,
+            scene_durations=body.scene_durations, voiceover=body.voiceover,
+            planning_scene_count=body.planning_scene_count, planning_chars=body.planning_chars,
+        )
+    except (ai_catalog.UnknownModel, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.get("/api/library")
@@ -191,6 +229,8 @@ class GenerateBody(BaseModel):
     aspect_ratio: Literal["16:9", "9:16"] = "16:9"
     duration: int = Field(8, ge=4, le=8)
     negative_prompt: Optional[str] = None
+    video_model: Optional[str] = Field(None, max_length=128)
+    max_cost_usd: Optional[float] = Field(None, ge=0, le=10000)
 
 
 @app.exception_handler(jobs.DuplicateJobError)
@@ -201,11 +241,23 @@ async def duplicate_job_handler(_request: Any, exc: jobs.DuplicateJobError) -> P
 
 @app.post("/api/projects/generate")
 def generate_project(body: GenerateBody, session: Session = Depends(get_session)) -> dict:
+    try:
+        model = ai_catalog.resolve_video_model(body.video_model)
+    except ai_catalog.UnknownModel as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if body.duration not in model.durations:
+        raise HTTPException(422, f"{model.label} için 8 saniyelik sahne seçin.")
+    if body.max_cost_usd is not None:
+        estimate = ai_catalog.preflight(video_model=model.id, scene_durations=[body.duration])
+        blocked = ai_catalog.budget_error(estimate, body.max_cost_usd)
+        if blocked:
+            raise HTTPException(422, blocked)
     p = Project(name=body.name.strip() or body.prompt[:48], origin="veo", status="generating", generation_prompt=body.prompt)
     session.add(p)
     session.commit()
     session.refresh(p)
-    job = jobs.submit(p.id, "generate", jobs.task_generate, p.id, body.prompt, body.aspect_ratio, body.duration, body.negative_prompt)
+    job = jobs.submit(p.id, "generate", jobs.task_generate, p.id, body.prompt, body.aspect_ratio,
+                      body.duration, body.negative_prompt, model.id)
     return {"project": serialize(p), "job": job_dict(job)}
 
 
@@ -220,8 +272,21 @@ def read_project(project_id: str, session: Session = Depends(get_session)) -> di
 def create_storyboard(body: StoryboardCreateBody, session: Session = Depends(get_session)) -> dict:
     if not settings.is_mock and not body.confirm_api_usage:
         raise HTTPException(422, "Gerçek AI planlama çağrısı ücretli olabilir; açık onay gerekli.")
-    if body.scene_duration not in ai.video_model_constraints()["video_durations"]:
-        raise HTTPException(422, "Yapılandırılan video modeli için 8 saniyelik sahne seçin.")
+    try:
+        video_model = ai_catalog.resolve_video_model(body.video_model)
+        text_model = ai_catalog.resolve_text_model(body.text_model)
+    except ai_catalog.UnknownModel as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if body.scene_duration not in video_model.durations:
+        raise HTTPException(422, f"{video_model.label} için 8 saniyelik sahne seçin.")
+    if body.max_cost_usd is not None:
+        estimate = ai_catalog.preflight(
+            video_model=video_model.id, text_model=text_model.id,
+            planning_scene_count=body.scene_count, planning_chars=len(body.brief),
+        )
+        blocked = ai_catalog.budget_error(estimate, body.max_cost_usd)
+        if blocked:
+            raise HTTPException(422, blocked)
     from .ai.storyboard import plan_storyboard
 
     try:
@@ -247,8 +312,15 @@ def save_storyboard(project_id: str, body: StoryboardSaveBody, session: Session 
         if body.revision != p.storyboard["revision"]:
             raise HTTPException(409, "Sahne planı başka bir oturumda değişti; sayfayı yenileyin.")
         try:
+            # Yalnızca değiştirilen model kimliği doğrulanır; eski kayıttaki bir model
+            # yapılandırmadan çıkarılmış olsa bile projeyi kilitlemeyiz.
+            old = p.storyboard
+            if body.text_model and body.text_model != old.get("text_model"):
+                ai_catalog.resolve_text_model(body.text_model)
+            if body.video_model and body.video_model != old.get("video_model"):
+                ai_catalog.resolve_video_model(body.video_model)
             p.storyboard = merge_saved_spec(p.storyboard, body)
-        except ValueError as exc:
+        except (ai_catalog.UnknownModel, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
         p.name = body.title
         touch(p)
@@ -293,8 +365,20 @@ def generate_storyboard(project_id: str, body: StoryboardGenerateBody, session: 
         if body.scene_id and body.scene_id not in {s["id"] for s in spec["scenes"]}:
             raise HTTPException(422, "Seçilen sahne bu projeye ait değil.")
         pending = [s for s in spec["scenes"] if s["id"] == body.scene_id] if body.scene_id else [s for s in spec["scenes"] if not scene_ready(p.id, spec, s)]
-        if any(s["duration"] not in ai.video_model_constraints()["video_durations"] for s in pending):
-            raise HTTPException(422, "Yapılandırılan video modeli için sahne süresini 8 saniye seçip planı kaydedin.")
+        constraints = ai.video_model_constraints(spec.get("video_model"))
+        if any(s["duration"] not in constraints["video_durations"] for s in pending):
+            raise HTTPException(422, "Seçili video modeli için sahne süresini 8 saniye seçip planı kaydedin.")
+        if pending and body.max_cost_usd is not None:
+            try:
+                estimate = ai_catalog.preflight(
+                    video_model=spec.get("video_model"), text_model=spec.get("text_model"),
+                    scene_durations=[s["duration"] for s in pending], voiceover=spec.get("voiceover", False),
+                )
+            except (ai_catalog.UnknownModel, ValueError) as exc:
+                raise HTTPException(422, f"Üretim öncesi maliyet doğrulanamadı: {exc}") from exc
+            blocked = ai_catalog.budget_error(estimate, body.max_cost_usd)
+            if blocked:
+                raise HTTPException(422, blocked)
         if pending and not settings.is_mock and not body.confirm_api_usage:
             raise HTTPException(422, f"{len(pending)} sahne için gerçek video/ses API kullanımı onayı gerekli.")
         if p.source_file and not body.confirm_replace_source:
@@ -468,32 +552,24 @@ def translate(project_id: str, body: TranslateBody, session: Session = Depends(g
     return job_dict(jobs.submit(p.id, "translate", jobs.task_translate, p.id, body.target_language))
 
 
-class SubtitleSegment(BaseModel):
-    id: int
-    start: float = Field(..., ge=0)
-    end: float = Field(..., ge=0)
-    text: str
-
-
-class SubtitlesBody(BaseModel):
-    segments: list[SubtitleSegment]
-
-
 @app.put("/api/projects/{project_id}/subtitles")
 def update_subtitles(project_id: str, body: SubtitlesBody, session: Session = Depends(get_session)) -> dict:
-    """Elle düzenlenen altyazı metinlerini kaydeder; metni değişen segmentin kelime zamanları yeniden dağıtılır."""
-    from .subtitles.builder import distribute_words
-
-    p = get_project(project_id, session)
-    old = {s["id"]: s for s in (p.subtitles or {}).get("segments", [])}
-    segments = []
-    for seg in sorted(body.segments, key=lambda s: s.start):
-        prev = old.get(seg.id)
-        end = max(seg.end, seg.start + 0.2)
-        same = prev and prev["text"] == seg.text and prev["start"] == seg.start and prev["end"] == end
-        words = prev["words"] if same else [w.__dict__ for w in distribute_words(seg.text, seg.start, end)]
-        segments.append({"id": seg.id, "start": seg.start, "end": end, "text": seg.text.strip(), "words": words})
-    p.subtitles = {"language": p.subtitle_language or "und", "segments": segments, "edited": True}
+    """Keep explicit word timings; only legacy changed-text requests redistribute words."""
+    p = ready_source(project_id, session)
+    snapshot = p.model_dump()
+    if body.revision is not None and body.revision != subtitle_revision(snapshot):
+        raise HTTPException(409, "Kaynak veya altyazılar değişti; güncel altyazıyı yükleyip tekrar düzenleyin.")
+    active = session.exec(select(Job).where(Job.project_id == p.id,
+        Job.kind.in_(("transcribe", "translate", "storyboard_generate")),
+        Job.status.in_(("queued", "running")))).first()
+    if active:
+        raise HTTPException(409, "Altyazıyı değiştiren işlem sürüyor; tamamlanmasını bekleyin.")
+    try:
+        segments = normalized_segments(body, p.subtitles, subtitle_time_limit(snapshot))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    p.subtitles = {**(p.subtitles or {}), "language": p.subtitle_language or (p.subtitles or {}).get("language") or "und", "segments": segments,
+                   "edited": True, "manual_segments": True}
     touch(p)
     session.add(p)
     session.commit()
@@ -606,7 +682,90 @@ def timeline(project_id: str, session: Session = Depends(get_session)) -> dict:
     p = get_project(project_id, session)
     if p.status != "ready":
         raise HTTPException(409, "Video henüz hazır değil.")
-    return jobs.project_timeline(p).to_dict()
+    value = jobs.project_timeline(p)
+    return {**value.to_dict(), "exact_output_duration": value.output_duration, "revision": timeline_revision(p.model_dump())}
+
+
+@app.patch("/api/projects/{project_id}/timeline/layers")
+def edit_timeline_layers(project_id: str, body: LayerTimingsBody, session: Session = Depends(get_session)) -> dict:
+    # One process-local critical section for revision check + plan/history update.
+    # Two editor tabs must not both accept the same old layer revision.
+    with _layer_edit_lock:
+        p = ready_source(project_id, session)
+        if body.revision != timeline_revision(p.model_dump()):
+            raise HTTPException(409, "Kaynak veya edit planı değişti; güncel zaman çizelgesini yükleyin.")
+        current = EditPlan.model_validate(p.plan)
+        if len(current.operations) != len(p.plan.get("operations", [])):
+            raise HTTPException(409, "Edit planında yinelenen tekil işlemler var; AI Edit panelinde düzeltip yenileyin.")
+        try:
+            plan = update_layer_timings(current, body, jobs.project_timeline(p, current).output_duration)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if plan.model_dump() != current.model_dump():
+            _set_plan(p, plan)
+            session.add(p)
+            session.commit()
+            session.refresh(p)
+        return serialize(p)
+
+
+@app.get("/api/projects/{project_id}/waveform")
+def waveform(project_id: str, session: Session = Depends(get_session)) -> dict:
+    p = ready_source(project_id, session)
+    pdir = jobs.project_dir(p.id)
+    try:
+        return source_waveform(pdir / p.source_file, pdir / "work" / "waveforms", p.duration, p.has_audio)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Kaynak video bulunamadı.") from exc
+    except SourceChangedError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(422, f"Ses dalgası oluşturulamadı: {exc}") from exc
+
+
+@app.get("/api/projects/{project_id}/transcript-edit")
+def get_transcript_edit(project_id: str, session: Session = Depends(get_session)) -> dict:
+    p = ready_source(project_id, session)
+    return transcript_view(p.model_dump(), jobs.project_timeline(p))
+
+
+def transcript_selection(p: Project, body: TranscriptSelection):
+    snapshot = p.model_dump()
+    if body.revision != transcript_revision(snapshot):
+        raise HTTPException(409, "Kaynak, transkript veya edit değişti; transkripti yenileyip tekrar seçin.")
+    timeline = jobs.project_timeline(p)
+    view = transcript_view(snapshot, timeline)
+    try:
+        rows = selected_rows(view, body)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return timeline, view, rows
+
+
+@app.post("/api/projects/{project_id}/transcript-edit/cut")
+def cut_transcript(project_id: str, body: TranscriptSelection, session: Session = Depends(get_session)) -> dict:
+    p = ready_source(project_id, session)
+    timeline, _, rows = transcript_selection(p, body)
+    try:
+        plan = cut_selection(EditPlan.model_validate(p.plan), timeline, rows)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    _set_plan(p, plan)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return serialize(p)
+
+
+@app.post("/api/projects/{project_id}/transcript-edit/clip")
+def clip_transcript(project_id: str, body: TranscriptClipBody, session: Session = Depends(get_session)) -> dict:
+    p = ready_source(project_id, session)
+    _, view, rows = transcript_selection(p, body)
+    try:
+        clip = clip_selection(view, rows)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return job_dict(jobs.submit(p.id, "transcript_clip", jobs.task_publish, p.model_dump(), body.model_dump(), [clip]))
 
 
 @app.post("/api/projects/{project_id}/audio")
@@ -684,6 +843,7 @@ def apply_voiceover(project_id: str, body: VoiceoverApplyBody, session: Session 
         "language": res["language"],
         "segments": res["segments"],
         "words": res["words"],
+        "timing_basis": "voiceover",
     }
     p.transcript = transcript_data
     p.subtitles = transcript_data
@@ -849,6 +1009,16 @@ def ready_source(project_id: str, session: Session) -> Project:
     return p
 
 
+@app.post("/api/projects/{project_id}/preview")
+def start_preview(project_id: str, body: PreviewBody, session: Session = Depends(get_session)) -> dict:
+    p = ready_source(project_id, session)
+    try:
+        preview_window(body.start, body.duration, jobs.project_timeline(p).output_duration)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return job_dict(jobs.submit(p.id, "preview", jobs.task_preview, p.model_dump(), body.model_dump()))
+
+
 @app.get("/api/projects/{project_id}/download/{filename:path}")
 def download_output(project_id: str, filename: str, session: Session = Depends(get_session)):
     p = get_project(project_id, session)
@@ -900,19 +1070,48 @@ def analyze_clips(project_id: str, body: ClipAnalyzeBody, session: Session = Dep
     return job_dict(jobs.submit(p.id, "clip_analyze", jobs.task_analyze_clips, p.model_dump(), body.model_dump()))
 
 
-@app.post("/api/projects/{project_id}/clips/render")
-def render_clips(project_id: str, body: ClipExportBody, session: Session = Depends(get_session)) -> dict:
-    p = ready_source(project_id, session)
-    analysis = session.get(Job, body.analysis_id)
+def _clip_candidates(p: Project, analysis_id: str, session: Session) -> dict[int, dict]:
+    analysis = session.get(Job, analysis_id)
     if not analysis or analysis.project_id != p.id or analysis.kind != "clip_analyze" or analysis.status != "done":
         raise HTTPException(422, "Bu projeye ait tamamlanmış bir klip analizi seçin.")
     result = analysis.result or {}
     if result.get("source_file") != p.source_file:
         raise HTTPException(409, "Kaynak video değişti; yeniden analiz edin.")
-    candidates = {c["id"]: c for c in result.get("clips", [])}
+    return {c["id"]: c for c in result.get("clips") or []}
+
+
+@app.post("/api/projects/{project_id}/clips/preview")
+def preview_clip(project_id: str, body: ClipPreviewBody, session: Session = Depends(get_session)) -> dict:
+    p = ready_source(project_id, session)
+    candidates = _clip_candidates(p, body.analysis_id, session)
+    clip = candidates.get(body.clip_id)
+    if clip is None:
+        raise HTTPException(422, "Geçersiz klip seçimi.")
+    start, end = float(clip["start"]), float(clip["end"])
+    if body.clip_range is not None:
+        start, end = round(body.clip_range.start, 3), round(body.clip_range.end, 3)
+    if not (0 <= start < end <= p.duration and 29.99 <= end - start <= 60.01):
+        raise HTTPException(422, "Klip aralıkları geçersiz; yeniden analiz edin.")
+    selected = {**clip, "start": start, "end": end}
+    return job_dict(jobs.submit(p.id, "clip_preview", jobs.task_preview_clip, p.model_dump(), body.model_dump(), selected))
+
+
+@app.post("/api/projects/{project_id}/clips/render")
+def render_clips(project_id: str, body: ClipExportBody, session: Session = Depends(get_session)) -> dict:
+    p = ready_source(project_id, session)
+    candidates = _clip_candidates(p, body.analysis_id, session)
     if any(i not in candidates for i in body.clip_ids):
         raise HTTPException(422, "Geçersiz klip seçimi.")
-    selected = [candidates[i] for i in body.clip_ids]
+    overrides = {item.id: item for item in body.clip_ranges or []}
+    if body.clip_ranges is not None and set(overrides) != set(body.clip_ids):
+        raise HTTPException(422, "Elle ayarlanan aralıklar seçilen kliplerle eşleşmiyor.")
+    selected = []
+    for clip_id in body.clip_ids:
+        clip = dict(candidates[clip_id])
+        if body.clip_ranges is not None:
+            override = overrides[clip_id]
+            clip["start"], clip["end"] = round(override.start, 3), round(override.end, 3)
+        selected.append(clip)
     if any(not (0 <= c["start"] < c["end"] <= p.duration and 29.99 <= c["end"] - c["start"] <= 60.01) for c in selected):
         raise HTTPException(422, "Klip aralıkları geçersiz; yeniden analiz edin.")
     return job_dict(jobs.submit(p.id, "clip_render", jobs.task_publish, p.model_dump(), body.model_dump(), selected))

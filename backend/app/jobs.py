@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import threading
 import traceback
@@ -187,11 +188,15 @@ def _load(project_id: str) -> Project:
 
 # ------------------------------------------------------------------ işler ----
 
-def task_generate(progress, project_id: str, prompt: str, aspect: str, duration: int, negative: str | None) -> dict:
+def task_generate(progress, project_id: str, prompt: str, aspect: str, duration: int, negative: str | None,
+                  model: str | None = None) -> dict:
     pdir = project_dir(project_id)
     out = pdir / "source.mp4"
     try:
-        ai.generate_video(prompt, aspect, duration, negative, out, lambda v, m: progress(v, m))
+        if model:
+            ai.generate_video(prompt, aspect, duration, negative, out, lambda v, m: progress(v, m), model=model)
+        else:
+            ai.generate_video(prompt, aspect, duration, negative, out, lambda v, m: progress(v, m))
         progress(0.97, "Video analiz ediliyor")
         _save_project(project_id, lambda p: ingest_source(p, out))
     except Exception:
@@ -213,6 +218,7 @@ def task_transcribe(progress, project_id: str, target_language: str | None) -> d
         transcript = ai.transcribe(audio, p.duration)
     else:
         transcript = ai.mock.transcript(p.duration) if get_settings().is_mock else {"language": "und", "segments": []}
+    transcript = {**transcript, "timing_basis": "source"}
     subtitles = transcript
     target = target_language or transcript.get("language")
     if target_language and target_language != transcript.get("language"):
@@ -281,19 +287,117 @@ def task_render(progress, project_id: str, options: dict | None = None) -> dict:
     return {"output": media_url(project_id, out_rel), **meta}
 
 
+def render_revision(p: Project) -> str:
+    """Only render inputs: renaming, cover selection or full renders don't stale a preview."""
+    state = {key: getattr(p, key) for key in (
+        "source_file", "duration", "width", "height", "has_audio", "voiceover_file", "plan", "subtitles",
+    )}
+    state["duration"] = float(p.duration)
+    return hashlib.sha256(json.dumps(state, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def task_preview(progress, snapshot: dict, options: dict) -> dict:
+    from .publishing import PreviewBody, preview_window
+
+    p = Project.model_validate(snapshot)
+    opts = PreviewBody.model_validate(options)
+    if not p.source_file:
+        raise ValueError("Projede video yok.")
+    progress(0.03, "Önizleme zaman çizelgesi hesaplanıyor")
+    plan = EditPlan.model_validate(p.plan)
+    timeline = project_timeline(p, plan)
+    duration = preview_window(opts.start, opts.duration, timeline.output_duration)
+    pdir = project_dir(p.id)
+    token = uuid.uuid4().hex
+    out_rel = f"outputs/previews/{token}.mp4"
+    req = RenderRequest(
+        source=pdir / p.source_file, info=media_info(p), plan=plan, timeline=timeline,
+        transcript=p.subtitles, work_dir=pdir / "work" / "previews" / token, output=pdir / out_rel,
+        fonts_dir=assets.fonts_dir(), resolve_track=lambda t: assets.resolve_track(t, pdir),
+        resolve_overlay=lambda t: assets.resolve_overlay(t, pdir),
+        voiceover=pdir / p.voiceover_file if p.voiceover_file else None,
+        resolution=opts.resolution, quality=opts.quality,
+        output_start=opts.start, output_duration=duration,
+    )
+    progress(0.06, "Kısa önizleme işleniyor; seçilen aralığa hazırlanılıyor")
+    try:
+        meta = render(req, lambda v: progress(0.06 + v * 0.92, "Kısa önizleme render ediliyor"))
+        info = probe(req.output)
+        if not info.has_video or not info.has_audio or abs(info.duration - duration) > 0.2:
+            raise ValueError("Önizleme çıktısının süresi veya medya akışları doğrulanamadı.")
+    except Exception:
+        req.output.unlink(missing_ok=True)
+        raise
+    # Never save a Project: output_file, edit history and full-render metadata stay untouched.
+    return {"output": media_url(p.id, out_rel), **meta, "start": opts.start,
+            "end": opts.start + duration, "resolution": opts.resolution, "quality": opts.quality,
+            "render_revision": render_revision(p)}
+
+
+def task_preview_clip(progress, snapshot: dict, options: dict, clip: dict) -> dict:
+    """Render the first 5/10s of one clip with the same styling as its final export."""
+    from .publishing import ClipPreviewBody, clip_plan
+
+    p = Project.model_validate(snapshot)
+    opts = ClipPreviewBody.model_validate(options)
+    if not p.source_file:
+        raise ValueError("Projede video yok.")
+    start, end = float(clip["start"]), float(clip["end"])
+    preview_duration = min(float(opts.duration), end - start)
+    if not (0 <= start < end <= p.duration and preview_duration >= 0.1):
+        raise ValueError("Klip önizleme aralığı geçersiz.")
+    pdir = project_dir(p.id)
+    base = EditPlan.model_validate(p.plan)
+    plan = clip_plan(base, start, end, opts.aspect_ratio, opts.fill)
+    timeline = project_timeline(p, plan)
+    token = uuid.uuid4().hex
+    out_rel = f"outputs/clip_previews/{token}.mp4"
+    progress(0.05, "Klip önizlemesi hazırlanıyor")
+    req = RenderRequest(
+        source=pdir / p.source_file, info=media_info(p), plan=plan, timeline=timeline,
+        # Match task_publish: a generated voiceover is never mixed into source clips.
+        transcript=p.subtitles if not p.voiceover_file else None,
+        work_dir=pdir / "work" / "clip_previews" / token, output=pdir / out_rel,
+        fonts_dir=assets.fonts_dir(), resolve_track=lambda t: assets.resolve_track(t, pdir),
+        resolve_overlay=lambda t: assets.resolve_overlay(t, pdir), voiceover=None,
+        resolution=opts.resolution, quality=opts.quality,
+        output_start=0.0, output_duration=preview_duration,
+    )
+    try:
+        meta = render(req, lambda value: progress(0.05 + value * 0.94, "Gerçek klip önizlemesi render ediliyor"))
+        info = probe(req.output)
+        if not info.has_video or abs(info.duration - preview_duration) > 0.25:
+            raise ValueError("Klip önizlemesinin süresi veya video akışı doğrulanamadı.")
+    except Exception:
+        req.output.unlink(missing_ok=True)
+        raise
+    # Preview output only; project plan, source, render metadata and full clips stay untouched.
+    return {"output": media_url(p.id, out_rel), **meta, "duration": preview_duration,
+            "start": start, "end": start + preview_duration,
+            "clip_id": clip.get("id"), "clip_start": start, "clip_end": end,
+            "analysis_id": opts.analysis_id, "aspect_ratio": opts.aspect_ratio,
+            "fill": opts.fill, "resolution": opts.resolution, "quality": opts.quality,
+            "render_revision": render_revision(p)}
+
+
 def task_analyze_clips(progress, snapshot: dict, options: dict) -> dict:
-    from .publishing import ClipAnalyzeBody, rank_clips
+    from .publishing import ClipAnalyzeBody, rank_clips, sentence_boundaries
 
     p = Project.model_validate(snapshot)
     opts = ClipAnalyzeBody.model_validate(options)
     progress(0.1, "Kaynak sesteki sessizlikler analiz ediliyor")
     silences = silence_provider(p)(opts.threshold_db, opts.min_silence_ms / 1000)
-    progress(0.75, "Konuşma yoğunluğuna göre klip adayları sıralanıyor")
+    progress(0.75, "Konuşma yoğunluğu ve transkript ipuçlarına göre klip adayları sıralanıyor")
     # A generated voiceover does not describe the source audio being analyzed.
     transcript = p.transcript if not p.voiceover_file else None
     clips = rank_clips(p.duration, silences, opts, transcript)
-    return {"clips": clips, "method": "local_speech_activity", "source_file": p.source_file,
-            "notice": "Yerel sessizlik/konuşma yoğunluğu analizi. Viral başarı veya anlamsal önem garantisi değildir.",
+    return {"clips": clips, "method": "local_speech_activity", "scoring": "smart_local_v1",
+            "transcript_used": any(clip.get("transcript_used") for clip in clips),
+            "sentence_boundaries": sentence_boundaries(p.duration, transcript),
+            "source_file": p.source_file,
+            "notice": ("Yerel sessizlik/konuşma analizi; gerçek kaynak transkripti varsa cümle sınırları, "
+                       "açılış kancası ve konu terimleri de puanlanır. Viral başarı, anlamsal önem veya "
+                       "ücretli AI yargısı garantisi değildir."),
             "empty_reason": None if clips else "Yeterli konuşma içeren 30–60 saniyelik bir aralık bulunamadı."}
 
 

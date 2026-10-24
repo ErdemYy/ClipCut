@@ -42,7 +42,7 @@ def plan_storyboard(body: StoryboardCreateBody) -> dict:
             "Return only the requested JSON. No shell commands or media URLs.\n\nUser brief:\n" + body.brief
         )
         response = _client().models.generate_content(
-            model=get_settings().gemini_text_model, contents=prompt,
+            model=body.text_model or get_settings().gemini_text_model, contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=_ScenePlan, temperature=0.4),
         )
         try:
@@ -55,7 +55,10 @@ def plan_storyboard(body: StoryboardCreateBody) -> dict:
     data = StoryboardInput(title=planned.title, aspect_ratio=body.aspect_ratio, language=body.language, style=body.style,
                           continuity=planned.continuity, voice_id=default_voices[body.language],
                           scenes=[{**s.model_dump(), "id": revision(), "duration": body.scene_duration} for s in planned.scenes]).model_dump()
-    data.update({"revision": revision(), "mock_plan": get_settings().is_mock})
+    # When the user did not choose a model, keep the spec unset so the
+    # configured default stays in effect instead of being frozen at creation.
+    data.update({"revision": revision(), "mock_plan": get_settings().is_mock,
+                 "text_model": body.text_model, "video_model": body.video_model})
     for scene in data["scenes"]:
         scene["status"] = "pending"
     return data

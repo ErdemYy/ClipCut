@@ -1,7 +1,7 @@
 """Altyazı üretimi: kelime gruplama, ASS (stilli) ve SRT/VTT çıktıları."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 from ..edit.schema import SubtitlesOp, TextOp
@@ -14,6 +14,9 @@ class Word:
     text: str
     start: float
     end: float
+    # init=False keeps the default off serialized distribute_words() dictionaries.
+    # Set only on transient render/export words for manually split subtitle rows.
+    break_before: bool = field(default=False, init=False)
 
 
 @dataclass
@@ -45,6 +48,7 @@ def transcript_words(transcript: dict | None) -> list[Word]:
     if not transcript:
         return words
     for seg in transcript.get("segments", []):
+        first = len(words)
         seg_words = seg.get("words") or []
         if seg_words:
             for w in seg_words:
@@ -53,6 +57,8 @@ def transcript_words(transcript: dict | None) -> list[Word]:
                     words.append(Word(text, float(w["start"]), float(w["end"])))
         else:
             words.extend(distribute_words(seg.get("text", ""), float(seg["start"]), float(seg["end"])))
+        if transcript.get("manual_segments") and len(words) > first:
+            words[first].break_before = True
     words.sort(key=lambda w: w.start)
     return words
 
@@ -77,21 +83,30 @@ def map_words(words: Iterable[Word], timeline: Optional[Timeline]) -> list[Word]
     if timeline is None:
         return list(words)
     mapped: list[Word] = []
+    pending_break = False
     for w in words:
+        if w.break_before:
+            pending_break = True
         rng = timeline.map_range(w.start, w.end)
         if rng:
-            mapped.append(Word(w.text, rng[0], rng[1]))
+            word = Word(w.text, rng[0], rng[1])
+            if pending_break:
+                word.break_before = True
+            mapped.append(word)
+            pending_break = False
     return mapped
 
 
 def group_cues(words: list[Word], max_words: int, max_chars: int = 42, max_gap: float = 0.7) -> list[Cue]:
     cues: list[Cue] = []
     current: list[Word] = []
+    manual = any(word.break_before for word in words)
     for w in words:
         if current:
             gap = w.start - current[-1].end
             chars = sum(len(x.text) + 1 for x in current) + len(w.text)
-            if len(current) >= max_words or gap > max_gap or chars > max_chars or current[-1].text.endswith(SENTENCE_END):
+            if (w.break_before or len(current) >= max_words or chars > max_chars
+                    or (not manual and (gap > max_gap or current[-1].text.endswith(SENTENCE_END)))):
                 cues.append(Cue(current[0].start, current[-1].end, current))
                 current = []
         current.append(w)
@@ -100,9 +115,10 @@ def group_cues(words: list[Word], max_words: int, max_chars: int = 42, max_gap: 
     for i, cue in enumerate(cues):
         nxt = cues[i + 1].start if i + 1 < len(cues) else None
         min_end = cue.start + 0.6
-        cue.end = max(cue.end, min_end)
+        if not manual:
+            cue.end = max(cue.end, min_end)
         if nxt is not None:
-            if nxt - cue.end < 0.35:
+            if not manual and nxt - cue.end < 0.35:
                 cue.end = nxt
             cue.end = min(cue.end, nxt)
     return cues
@@ -302,6 +318,8 @@ def _srt_time(t: float, sep: str = ",") -> str:
 
 
 def cues_for_export(words: list[Word]) -> list[Cue]:
+    if any(word.break_before for word in words):
+        return group_cues(words, max_words=100000, max_chars=1000000, max_gap=float("inf"))
     return group_cues(words, max_words=12, max_chars=84)
 
 

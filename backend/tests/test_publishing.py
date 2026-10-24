@@ -13,7 +13,8 @@ os.environ.setdefault("MOCK_AI", "true")
 
 from app.edit.schema import EditPlan  # noqa: E402
 from app.publishing import (  # noqa: E402
-    BatchExportBody, ClipAnalyzeBody, ClipExportBody, ThumbnailBody, clip_plan, export_plan, rank_clips,
+    BatchExportBody, ClipAnalyzeBody, ClipExportBody, ClipPreviewBody, ThumbnailBody, clip_plan, export_plan,
+    rank_clips, sentence_boundaries,
 )
 
 
@@ -30,6 +31,16 @@ def test_publish_validation():
         ThumbnailBody(at=float("inf"))
     with pytest.raises(ValidationError):
         ClipExportBody(analysis_id="../../file", clip_ids=[0])
+    preview = ClipPreviewBody(analysis_id="abcdef123456", clip_id=0,
+                              clip_range={"id": 0, "start": 30, "end": 65})
+    assert preview.duration == 5 and preview.clip_range.start == 30
+    for body in (
+        {"analysis_id": "abcdef123456", "clip_id": 0, "duration": 6},
+        {"analysis_id": "abcdef123456", "clip_id": 1, "clip_range": {"id": 0, "start": 30, "end": 65}},
+        {"analysis_id": "../../file", "clip_id": 0},
+    ):
+        with pytest.raises(ValidationError):
+            ClipPreviewBody.model_validate(body)
 
 
 def test_format_plans_do_not_change_editor_plan():
@@ -71,7 +82,88 @@ def test_clip_ignores_mock_transcript_and_uses_real_tempo():
     result = rank_clips(30, [], ClipAnalyzeBody(), tr)
     assert result[0]["words_per_minute"] == 120
     assert result[0]["excerpt"]
+    assert result[0]["transcript_used"] is True
     assert rank_clips(30, [], ClipAnalyzeBody(), {**tr, "mock": True})[0]["words_per_minute"] is None
+
+
+def test_smart_clip_rejects_voiceover_transcript_provenance():
+    tr = {
+        "timing_basis": "voiceover",
+        "segments": [{"start": 0, "end": 30, "text": "Neden bu yöntem daha iyi? Çünkü daha hızlı."}],
+    }
+    result = rank_clips(30, [], ClipAnalyzeBody(), tr)
+    assert result and result[0]["transcript_used"] is False
+    assert result[0]["sentence_aligned"] is False
+    assert result[0]["hook_score"] is None and result[0]["topic_score"] is None
+    assert result[0]["words_per_minute"] is None
+
+
+def test_smart_clip_prefers_question_at_sentence_boundary():
+    texts = [
+        "Kahve hazırlamayı öğreneceğiz.",
+        "Önce çekirdekleri tartıyoruz ve öğütüyoruz.",
+        "Neden su sıcaklığı bu kadar önemli? Yanlış sıcaklık tadı bozar.",
+        "Doksan derece su kullanın ve yavaş dökün.",
+        "Dört dakika bekleyin, sonra servis edin.",
+        "Sonuç gerçekten farklı olacak.",
+        "Bu yöntemi her gün uygulayın.",
+        "Şimdi deneyin ve yorum yazın.",
+    ]
+    segments = [{"start": index * 10, "end": index * 10 + 10, "text": text}
+                for index, text in enumerate(texts)]
+    result = rank_clips(80, [], ClipAnalyzeBody(min_duration=30, max_duration=30, max_clips=1),
+                        {"segments": segments})
+    assert len(result) == 1
+    clip = result[0]
+    assert clip["start"] == 20 and clip["end"] == 50
+    assert clip["transcript_used"] is True and clip["sentence_aligned"] is True
+    assert clip["hook_score"] >= 0.9
+    assert "soru/merak kancası" in clip["reason"]
+    assert clip["signals"]["completeness"] == 1.0
+    assert 0 <= clip["topic_score"] <= 1
+
+
+def test_sentence_boundaries_use_only_source_transcript():
+    source = {"segments": [
+        {"start": 0, "end": 10, "text": "Birinci cümle."},
+        {"start": 10, "end": 20, "text": "İkinci cümle."},
+    ]}
+    assert sentence_boundaries(30, source) == {"starts": [0, 10], "ends": [10, 20]}
+    assert sentence_boundaries(15, source) == {"starts": [0, 10], "ends": [10, 15]}
+    assert sentence_boundaries(30, {**source, "mock": True}) == {"starts": [], "ends": []}
+    assert sentence_boundaries(30, {**source, "timing_basis": "voiceover"}) == {"starts": [], "ends": []}
+
+
+def test_clip_export_manual_ranges_are_validated():
+    base = {"analysis_id": "abcdef123456", "clip_ids": [0]}
+    body = ClipExportBody(**base, clip_ranges=[{"id": 0, "start": 40, "end": 75}])
+    assert (body.clip_ranges[0].start, body.clip_ranges[0].end) == (40, 75)
+    for ranges in (
+        [{"id": 0, "start": 40, "end": 75}, {"id": 0, "start": 50, "end": 80}],
+        [{"id": 0, "start": 50, "end": 40}],
+        [{"id": 0, "start": 0, "end": 20}],
+    ):
+        with pytest.raises(ValidationError):
+            ClipExportBody(**base, clip_ranges=ranges)
+    with pytest.raises(ValidationError):
+        ClipExportBody(**base, clip_ranges=[])
+
+
+def test_smart_clip_fields_are_bounded_and_nonoverlapping():
+    transcripts = {"segments": [
+        {"start": index * 10, "end": index * 10 + 10,
+         "text": "Konu maddesi {} ve önemli ayrıntılar.".format(index)}
+        for index in range(18)
+    ]}
+    result = rank_clips(180, [(0, 15), (65, 90), (150, 180)], ClipAnalyzeBody(max_clips=5), transcripts)
+    assert result
+    for clip in result:
+        assert 0 <= clip["score"] <= 100
+        assert 0 <= clip["hook_score"] <= 1 and 0 <= clip["topic_score"] <= 1
+        assert set(clip["signals"]) >= {"speech", "cadence", "boundary", "completeness", "hook", "topic"}
+        assert clip["transcript_used"] is True and isinstance(clip["sentence_aligned"], bool)
+        assert clip["reason"]
+    assert all(a["end"] <= b["start"] for a, b in zip(result, result[1:]))
 
 
 @pytest.fixture
@@ -140,6 +232,26 @@ def test_clip_api_rejects_foreign_and_invented_candidates(isolated_api):
     assert client.post("/api/projects/video/clips/render", json=body).status_code == 200
     assert captures[-1][0] == "clip_render"
     assert captures[-1][1][2][0]["start"] == 30
+    manual = {**body, "clip_ranges": [{"id": 0, "start": 40, "end": 75}]}
+    assert client.post("/api/projects/video/clips/render", json=manual).status_code == 200
+    assert (captures[-1][1][2][0]["start"], captures[-1][1][2][0]["end"]) == (40, 75)
+    assert client.post("/api/projects/video/clips/render",
+                       json={**manual, "clip_ranges": [{"id": 9, "start": 40, "end": 75}]}).status_code == 422
+    assert client.post("/api/projects/video/clips/render",
+                       json={**manual, "clip_ranges": [{"id": 0, "start": 100, "end": 135}]}).status_code == 422
+    preview = {"analysis_id": "abcdef123456", "clip_id": 0}
+    assert client.post("/api/projects/silent/clips/preview", json=preview).status_code == 422
+    assert client.post("/api/projects/video/clips/preview", json={**preview, "clip_id": 99}).status_code == 422
+    assert client.post("/api/projects/video/clips/preview", json=preview).status_code == 200
+    assert captures[-1][0] == "clip_preview"
+    assert (captures[-1][1][2]["start"], captures[-1][1][2]["end"]) == (30, 65)
+    preview_manual = {**preview, "clip_range": {"id": 0, "start": 40, "end": 75}}
+    assert client.post("/api/projects/video/clips/preview", json=preview_manual).status_code == 200
+    assert (captures[-1][1][2]["start"], captures[-1][1][2]["end"]) == (40, 75)
+    assert client.post("/api/projects/video/clips/preview",
+                       json={**preview_manual, "clip_range": {"id": 9, "start": 40, "end": 75}}).status_code == 422
+    assert client.post("/api/projects/video/clips/preview",
+                       json={**preview_manual, "clip_range": {"id": 0, "start": 100, "end": 135}}).status_code == 422
 
 
 def test_thumbnail_api_uses_unique_frame_and_checks_source_time(isolated_api, monkeypatch):
@@ -195,6 +307,42 @@ def test_real_four_format_batch_and_archive(tmp_path, monkeypatch):
     assert p.plan == before
 
 
+def test_clip_preview_uses_full_style_and_short_output_window(tmp_path, monkeypatch):
+    from app import jobs
+    from app.ffmpeg import MediaInfo
+    from app.models import Project
+
+    monkeypatch.setattr(jobs, "project_dir", lambda _: tmp_path)
+    p = Project(
+        id="test", name="Preview", source_file="source.mp4", duration=80, width=640, height=360,
+        has_audio=True, status="ready", subtitles={"segments": [{"start": 0, "end": 80, "text": "Deneme."}]},
+        plan={"operations": [{"type": "subtitles"}, {"type": "color_grade", "preset": "warm"}]},
+    )
+    captured = {}
+    def fake_render(req, progress):
+        captured.update(plan=req.plan, output_start=req.output_start,
+                        output_duration=req.output_duration, transcript=req.transcript)
+        req.output.parent.mkdir(parents=True, exist_ok=True)
+        req.output.write_bytes(b"video")
+        return {"duration": req.output_duration, "width": 720, "height": 1280}
+    monkeypatch.setattr(jobs, "render", fake_render)
+    monkeypatch.setattr(jobs, "probe", lambda _: MediaInfo(
+        duration=5, width=720, height=1280, fps=30, has_audio=True, has_video=True))
+    options = ClipPreviewBody(analysis_id="abcdef123456", clip_id=2, resolution="720p",
+                              quality="fast", fill="crop").model_dump()
+    result = jobs.task_preview_clip(lambda *_: None, p.model_dump(), options,
+                                    {"id": 2, "start": 10, "end": 40})
+    assert captured["output_start"] == 0 and captured["output_duration"] == 5
+    assert captured["transcript"] == p.subtitles
+    plan = captured["plan"]
+    assert plan.first("trim").start == 10 and plan.first("trim").end == 40
+    assert plan.first("subtitles") is not None and plan.first("color_grade") is not None
+    assert plan.first("reframe").aspect_ratio == "9:16" and plan.first("reframe").mode == "crop"
+    assert result["clip_id"] == 2 and result["analysis_id"] == "abcdef123456"
+    assert (result["start"], result["end"], result["duration"]) == (10, 15, 5)
+    assert result["clip_end"] == 40 and result["fill"] == "crop"
+
+
 def test_real_clip_from_source_time(tmp_path, monkeypatch):
     from app import jobs
     from app.ffmpeg import probe, run_ffmpeg
@@ -207,7 +355,9 @@ def test_real_clip_from_source_time(tmp_path, monkeypatch):
     p = Project(id="test", name="Clip", source_file="source.mp4", duration=36, width=96, height=54, has_audio=True, status="ready")
     analysis = jobs.task_analyze_clips(lambda *_: None, p.model_dump(), ClipAnalyzeBody().model_dump())
     assert analysis["method"] == "local_speech_activity" and analysis["clips"]
+    assert analysis["scoring"] == "smart_local_v1" and analysis["transcript_used"] is False
     assert analysis["clips"][0]["speech_ratio"] > 0.95
+    assert analysis["clips"][0]["transcript_used"] is False
     options = ClipExportBody(analysis_id="abcdef123456", clip_ids=[0], resolution="720p", quality="fast").model_dump()
     result = jobs.task_publish(lambda *_: None, p.model_dump(), options, [{"id": 0, "start": 5, "end": 35}])
     out = result["outputs"][0]
@@ -215,6 +365,15 @@ def test_real_clip_from_source_time(tmp_path, monkeypatch):
     assert (info.width, info.height) == (720, 1280)
     assert info.duration == pytest.approx(30, abs=0.15)
     assert info.has_audio and out["start"] == 5
+    preview = jobs.task_preview_clip(
+        lambda *_: None, p.model_dump(),
+        ClipPreviewBody(analysis_id="abcdef123456", clip_id=0, resolution="720p", quality="fast").model_dump(),
+        {"id": 0, "start": 5, "end": 35},
+    )
+    preview_info = probe(tmp_path / preview["output"].split("/projects/test/")[1])
+    assert (preview_info.width, preview_info.height) == (720, 1280)
+    assert preview_info.duration == pytest.approx(5, abs=0.25)
+    assert preview_info.has_audio and preview["clip_end"] == 35
 
 
 def test_batch_maps_selected_cover_after_trim_and_speed(tmp_path, monkeypatch):

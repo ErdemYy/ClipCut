@@ -168,8 +168,10 @@ def task_generate_storyboard(progress, project_id: str, scene_id: str | None = N
                 prompt = f"{scene['visual_prompt']}\nVisual style: {spec['style']}\nContinuity: {spec.get('continuity', '')}"
                 if spec["voiceover"]:
                     prompt += "\nNo dialogue, no on-screen text. Narration will be added separately."
+                kwargs = {"model": spec["video_model"]} if spec.get("video_model") else {}
                 ai.generate_video(prompt, spec["aspect_ratio"], scene["duration"], None, raw,
-                                  lambda v, m: progress((index + v * 0.7) / max(1, len(target)) * 0.85, f"{scene['title']} · {m}"))
+                                  lambda v, m: progress((index + v * 0.7) / max(1, len(target)) * 0.85, f"{scene['title']} · {m}"),
+                                  **kwargs)
                 if not probe(raw).has_video:
                     raise ValueError("Video üretimi geçerli bir video dosyası döndürmedi.")
                 _checkpoint(p.id, scene["id"], {"raw_file": raw.relative_to(pdir).as_posix(), "raw_fingerprint": visual_key, "fingerprint": key})

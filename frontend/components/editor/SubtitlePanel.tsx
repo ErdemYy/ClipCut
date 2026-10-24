@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { api, formatTime, type Job, type Library, type Operation, type Project } from "@/lib/api";
+import { useState } from "react";
+import { api, type Job, type Library, type Operation, type Project } from "@/lib/api";
 import type { JobMap } from "@/lib/api";
 import styles from "./editor-parts.module.css";
+import SubtitleTimingEditor from "./SubtitleTimingEditor";
 
 const STYLE_INFO: Record<string, { label: string; hint: string }> = {
   hormozi: { label: "Hormozi", hint: "Viral kinetik zıplama & emojiler" },
@@ -34,13 +35,11 @@ type Props = {
 
 export default function SubtitlePanel({ project, setProject, library, jobs, track, notify, seek, time }: Props) {
   const [target, setTarget] = useState(project.subtitle_language || "tr");
-  const [drafts, setDrafts] = useState<Record<number, string>>({});
-  const languages = library?.languages ?? [{ code: "tr", name: "TÃ¼rkÃ§e" }, { code: "en", name: "English" }];
+  const [timingDirty, setTimingDirty] = useState(false);
+  const languages = library?.languages ?? [{ code: "tr", name: "Türkçe" }, { code: "en", name: "English" }];
   const sub = (project.plan?.operations.find((o) => o.type === "subtitles") ?? null) as Operation | null;
   const running = (k: "transcribe" | "translate") => jobs[k] && (jobs[k]!.status === "queued" || jobs[k]!.status === "running");
   const activeJob = running("transcribe") ? jobs.transcribe : running("translate") ? jobs.translate : null;
-
-  useEffect(() => setDrafts({}), [project.subtitles]);
 
   const transcribe = async () => {
     try {
@@ -86,20 +85,6 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
     updateSub(patch);
   };
 
-  const saveTexts = async () => {
-    const segs = project.subtitles?.segments ?? [];
-    try {
-      const p = await api.saveSubtitles(
-        project.id,
-        segs.map((s) => ({ id: s.id, start: s.start, end: s.end, text: drafts[s.id] ?? s.text })),
-      );
-      setProject(p);
-      notify("Altyazı metinleri kaydedildi");
-    } catch (e) {
-      notify((e as Error).message, true);
-    }
-  };
-
   if (!project.has_transcript) {
     return (
       <div className={styles.section}>
@@ -126,9 +111,6 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
     );
   }
 
-  const segs = project.subtitles?.segments ?? [];
-  const dirty = Object.keys(drafts).length > 0;
-
   return (
     <div className={styles.section}>
       <div className={styles.row}>
@@ -146,7 +128,7 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
           id="sub-translate"
           className="btn"
           onClick={translate}
-          disabled={!!activeJob || target === project.subtitle_language}
+          disabled={!!activeJob || timingDirty || target === project.subtitle_language}
           style={{ alignSelf: "flex-end" }}
         >
           Çevir
@@ -251,33 +233,8 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
         </label>
       </div>
 
-      <div className={styles.planHead}>
-        <h4>Metinler · {segs.length}</h4>
-        <div className={styles.row}>
-          <a className="btn btn-sm" href={api.subtitleExportUrl(project.id, "srt")} id="sub-export-srt">SRT</a>
-          <a className="btn btn-sm" href={api.subtitleExportUrl(project.id, "vtt")} id="sub-export-vtt">VTT</a>
-          <button className="btn btn-sm btn-primary" onClick={saveTexts} disabled={!dirty} id="sub-save">Kaydet</button>
-        </div>
-      </div>
-      <ul className={styles.segments}>
-        {segs.map((s) => {
-          const active = time >= s.start && time <= s.end;
-          return (
-            <li key={s.id} className={`${styles.segment} ${active ? styles.segmentActive : ""}`}>
-              <button className={styles.segTime} onClick={() => seek(s.start)} title="Bu noktaya git">
-                {formatTime(s.start)}
-              </button>
-              <textarea
-                rows={1}
-                value={drafts[s.id] ?? s.text}
-                onChange={(e) => setDrafts((d) => ({ ...d, [s.id]: e.target.value }))}
-                id={`sub-text-${s.id}`}
-              />
-            </li>
-          );
-        })}
-      </ul>
-      {segs.length === 0 && <p className={styles.muted}>Konuşma bulunamadı.</p>}
+      <SubtitleTimingEditor project={project} setProject={setProject} notify={notify} seek={seek} time={time}
+        disabled={!!activeJob || project.status !== "ready"} onDirtyChange={setTimingDirty} />
     </div>
   );
 }

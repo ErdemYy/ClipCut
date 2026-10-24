@@ -17,15 +17,17 @@ import BrollPanel from "@/components/editor/BrollPanel";
 import ClipperPanel from "@/components/editor/ClipperPanel";
 import StoryboardPanel from "@/components/editor/StoryboardPanel";
 import SceneTimeline from "@/components/editor/SceneTimeline";
+import TranscriptPanel from "@/components/editor/TranscriptPanel";
 import styles from "./editor.module.css";
 
-type PanelTab = "scenes" | "templates" | "voiceover" | "broll" | "edit" | "subtitles" | "audio" | "clips" | "export";
+type PanelTab = "scenes" | "templates" | "voiceover" | "broll" | "edit" | "transcript" | "subtitles" | "audio" | "clips" | "export";
 const TABS: { id: PanelTab; label: string; icon: string }[] = [
   { id: "scenes", label: "Sahneler", icon: "▤" },
   { id: "templates", label: "Şablonlar", icon: "⚡" },
   { id: "voiceover", label: "Seslendirme", icon: "🎙️" },
   { id: "broll", label: "B-Roll", icon: "🖼️" },
   { id: "edit", label: "AI Edit", icon: "✨" },
+  { id: "transcript", label: "Metinden Edit", icon: "☷" },
   { id: "subtitles", label: "Altyazı", icon: "💬" },
   { id: "audio", label: "Ses", icon: "🎵" },
   { id: "clips", label: "Kısa Klipler", icon: "✂" },
@@ -109,9 +111,10 @@ export default function EditorPage() {
   const planKey = JSON.stringify(project?.plan ?? null);
   useEffect(() => {
     if (project?.status !== "ready") return;
-    const t = setTimeout(() => api.timeline(id).then(setTimeline).catch(() => {}), 250);
-    return () => clearTimeout(t);
-  }, [planKey, project?.status, id]);
+    let cancelled = false;
+    const t = setTimeout(() => api.timeline(id).then((value) => { if (!cancelled) setTimeline(value); }).catch(() => {}), 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [planKey, project?.status, project?.source_url, project?.duration, id]);
 
   const seek = (t: number) => {
     setView("source");
@@ -231,9 +234,9 @@ export default function EditorPage() {
                 src={view === "output" ? mediaUrl(project.output_url) : mediaUrl(project.source_url)}
                 onTime={setTime}
               />
-              {timeline && view === "source" && (
-                <Timeline project={project} timeline={timeline} time={time} onSeek={seek} />
-              )}
+              {timeline && <div hidden={view !== "source"}>
+                <Timeline project={project} timeline={timeline} time={time} onSeek={seek} setProject={setProject} onTimeline={setTimeline} notify={notify} />
+              </div>}
             </>
           )}
           {project.storyboard && storyDraft && <SceneTimeline draft={storyDraft} runtime={project.storyboard} onChange={setStoryDraft}
@@ -274,6 +277,7 @@ export default function EditorPage() {
               />
             )}
             {tab === "edit" && <EditPanel project={project} setProject={setProject} notify={notify} disabled={project.status !== "ready"} />}
+            {tab === "transcript" && <TranscriptPanel project={project} setProject={setProject} jobs={jobs} track={track} notify={notify} seek={seek} />}
             {tab === "subtitles" && (
               <SubtitlePanel project={project} setProject={setProject} library={library} jobs={jobs} track={track} notify={notify} seek={seek} time={time} />
             )}

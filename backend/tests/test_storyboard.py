@@ -848,3 +848,90 @@ def test_project_list_reports_storyboard_progress_and_subtitles(studio, monkeypa
     # The dashboard download shortcuts are backed by real endpoints.
     assert client.get(f"/api/projects/{p['id']}/subtitles.srt").status_code == 200
     assert "-->" in client.get(f"/api/projects/{p['id']}/subtitles.srt").text
+
+
+def test_model_catalog_and_preflight_are_local(studio):
+    client, settings, _, captures = studio
+    catalog = client.get("/api/ai/models")
+    assert catalog.status_code == 200
+    data = catalog.json()
+    assert data["defaults"]["video_model"] == settings.veo_model
+    assert data["defaults"]["text_model"] == settings.gemini_text_model
+    assert {model["id"] for model in data["video"]} >= {settings.veo_model}
+    assert data["pricing_read_at"] and data["pricing_note"]
+
+    estimate = client.post("/api/ai/preflight", json={
+        "video_model": settings.veo_model, "text_model": settings.gemini_text_model,
+        "scene_durations": [4, 6], "voiceover": True, "planning_scene_count": 2, "planning_chars": 200,
+    })
+    assert estimate.status_code == 200, estimate.text
+    body = estimate.json()
+    assert body["mock"] is True and body["priced"] is True
+    assert body["estimated_usd"] == 0.0
+    assert body["video_seconds"] == 10 and body["video_calls"] == 2 and body["tts_calls"] == 2
+    assert captures == []
+
+
+def test_real_preflight_estimates_and_unknown_models_are_rejected(studio):
+    client, settings, _, captures = studio
+    settings.mock_ai = "false"
+    response = client.post("/api/ai/preflight", json={
+        "video_model": "veo-3.0-fast-generate-001", "scene_durations": [8], "voiceover": False,
+    })
+    assert response.status_code == 200, response.text
+    estimate = response.json()
+    assert estimate["estimated_usd"] == pytest.approx(1.2)
+    assert estimate["pricing_read_at"] == "2026-10-22"
+
+    assert client.post("/api/ai/preflight", json={"video_model": "not-a-real-model"}).status_code == 422
+    assert client.post("/api/projects/storyboard", json={"brief": "A brief", "video_model": "not-a-real-model"}).status_code == 422
+    assert client.post("/api/projects/generate", json={"prompt": "test", "video_model": "not-a-real-model"}).status_code == 422
+    assert captures == []
+
+
+def test_budget_blocks_generation_before_job(studio):
+    client, settings, _, captures = studio
+    p = create(client, scene_duration=8)
+    settings.mock_ai = "false"
+    payload = {"revision": p["storyboard"]["revision"], "confirm_api_usage": True, "max_cost_usd": 0.01}
+    response = client.post(f"/api/projects/{p['id']}/storyboard/generate", json=payload)
+    assert response.status_code == 422
+    assert "bütçesini aşıyor" in response.text
+    assert captures == []
+
+
+def test_budget_rejects_unpriced_model(studio):
+    client, settings, _, captures = studio
+    settings.veo_model = "test-video-model"
+    settings.veo_model_options = "test-video-model"
+    p = create(client, scene_duration=4, video_model="test-video-model")
+    settings.mock_ai = "false"
+    response = client.post(f"/api/projects/{p['id']}/storyboard/generate", json={
+        "revision": p["storyboard"]["revision"], "confirm_api_usage": True, "max_cost_usd": 100,
+    })
+    assert response.status_code == 422
+    assert "fiyatı bilinmediği" in response.text
+    assert captures == []
+
+
+def test_single_scene_budget_blocks_before_job(studio):
+    client, settings, _, captures = studio
+    settings.mock_ai = "false"
+    response = client.post("/api/projects/generate", json={
+        "prompt": "A short video", "duration": 8, "video_model": "veo-3.0-fast-generate-001", "max_cost_usd": 0,
+    })
+    assert response.status_code == 422
+    assert "bütçesini aşıyor" in response.text
+    assert captures == []
+
+
+def test_explicit_models_are_saved_and_fingerprint_changes(studio):
+    client, _, _, _ = studio
+    p = create(client, scene_duration=4, text_model="gemini-2.5-pro", video_model="veo-3.0-generate-001")
+    story = p["storyboard"]
+    assert story["text_model"] == "gemini-2.5-pro"
+    assert story["video_model"] == "veo-3.0-generate-001"
+    spec = copy.deepcopy(story)
+    first = fingerprint(spec, spec["scenes"][0])
+    spec["video_model"] = "veo-3.0-fast-generate-001"
+    assert fingerprint(spec, spec["scenes"][0]) != first

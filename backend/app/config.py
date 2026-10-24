@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     gemini_text_model: str = "gemini-2.5-flash"
     gemini_transcribe_model: str = "gemini-2.5-flash"
     veo_model: str = "veo-3.0-fast-generate-001"
+    # Virgülle ayrılmış ek modeller. Yapılandırılmış model her zaman listeye eklenir.
+    # Model erişimi sağlayıcı hesabına bağlıdır; seçim garanti değildir.
+    text_model_options: str = "gemini-2.5-flash,gemini-2.5-pro"
+    veo_model_options: str = "veo-3.0-fast-generate-001,veo-3.0-generate-001"
 
     storage_dir: Path = ROOT_DIR / "storage"
     assets_dir: Path = ROOT_DIR / "assets"

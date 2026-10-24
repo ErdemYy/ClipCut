@@ -5,7 +5,6 @@ import {
   API_URL,
   api,
   type BrollStockItem,
-  type LibraryItem,
   type OverlayOp,
   type Project,
 } from "@/lib/api";
@@ -22,7 +21,6 @@ type Props = {
 
 export default function BrollPanel({ project, setProject, notify, disabled, time = 0, seek }: Props) {
   const [stock, setStock] = useState<BrollStockItem[]>([]);
-  const [projectMedia, setProjectMedia] = useState<LibraryItem[]>([]);
   const [autoLoading, setAutoLoading] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
@@ -40,7 +38,6 @@ export default function BrollPanel({ project, setProject, notify, disabled, time
 
   useEffect(() => {
     api.brollLibrary().then(setStock).catch(() => {});
-    api.projectBroll(project.id).then(setProjectMedia).catch(() => {});
   }, [project.id]);
 
   const savePlan = async (newOverlays: OverlayOp[]) => {
@@ -102,7 +99,6 @@ export default function BrollPanel({ project, setProject, notify, disabled, time
     setAiLoading(true);
     try {
       const res = await api.generateBroll(project.id, aiPrompt.trim());
-      setProjectMedia((prev) => [res, ...prev]);
       await addOverlay(res.id, res.label);
       setAiPrompt("");
       notify("AI B-Roll görseli başarıyla üretildi ve eklendi!");
@@ -119,7 +115,6 @@ export default function BrollPanel({ project, setProject, notify, disabled, time
     setUploading(true);
     try {
       const res = await api.uploadBroll(project.id, file);
-      setProjectMedia((prev) => [res, ...prev]);
       await addOverlay(res.id, res.label);
       notify("Görsel yüklendi ve katman eklendi!");
     } catch (err) {
@@ -210,7 +205,7 @@ export default function BrollPanel({ project, setProject, notify, disabled, time
             <label className={styles.label} style={{ fontSize: "0.74rem", margin: "0 0 4px" }}>Görünüm Modu</label>
             <select
               value={mode}
-              onChange={(e) => setMode(e.target.value as any)}
+              onChange={(e) => setMode(e.target.value as typeof mode)}
               className="select"
               style={{ fontSize: "0.78rem", padding: "4px 6px", width: "100%" }}
             >
@@ -223,7 +218,7 @@ export default function BrollPanel({ project, setProject, notify, disabled, time
             <label className={styles.label} style={{ fontSize: "0.74rem", margin: "0 0 4px" }}>Konum</label>
             <select
               value={position}
-              onChange={(e) => setPosition(e.target.value as any)}
+              onChange={(e) => setPosition(e.target.value as typeof position)}
               className="select"
               style={{ fontSize: "0.78rem", padding: "4px 6px", width: "100%" }}
               disabled={mode === "fullscreen"}
@@ -254,7 +249,7 @@ export default function BrollPanel({ project, setProject, notify, disabled, time
             <label className={styles.label} style={{ fontSize: "0.74rem", margin: "0 0 4px" }}>Animasyon</label>
             <select
               value={animation}
-              onChange={(e) => setAnimation(e.target.value as any)}
+              onChange={(e) => setAnimation(e.target.value as typeof animation)}
               className="select"
               style={{ fontSize: "0.78rem", padding: "4px 6px", width: "100%" }}
             >

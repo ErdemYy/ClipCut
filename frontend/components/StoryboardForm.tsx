@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, type Health } from "@/lib/api";
+import { api, type Health, type ModelCatalog } from "@/lib/api";
+import GenerationCost from "./editor/GenerationCost";
 import styles from "./editor/storyboard.module.css";
 
 export default function StoryboardForm() {
@@ -14,16 +15,34 @@ export default function StoryboardForm() {
   const [language, setLanguage] = useState("tr");
   const [style, setStyle] = useState("cinematic, natural lighting");
   const [health, setHealth] = useState<Health | null>(null);
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  const [textModel, setTextModel] = useState("");
+  const [videoModel, setVideoModel] = useState("");
   const [approved, setApproved] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => { api.health().then(setHealth).catch((e: Error) => setError(e.message)); }, []);
+  useEffect(() => {
+    api.health().then(setHealth).catch((e: Error) => setError(e.message));
+    api.aiModels().then((value) => {
+      setCatalog(value);
+      setTextModel((current) => current || value.defaults.text_model);
+      setVideoModel((current) => current || value.defaults.video_model);
+    }).catch((e: Error) => setError(e.message));
+  }, []);
+  const selectedVideo = catalog?.video.find((model) => model.id === videoModel);
+  const durations = selectedVideo?.durations?.length ? selectedVideo.durations : [4, 6, 8];
+  const changeVideoModel = (id: string) => {
+    setVideoModel(id);
+    const next = catalog?.video.find((model) => model.id === id)?.durations ?? [4, 6, 8];
+    if (!next.includes(duration)) setDuration(next[next.length - 1] ?? 8);
+  };
   const create = async () => {
     setPending(true); setError(null);
     try {
       const project = await api.createStoryboard({ brief, scene_count: count, scene_duration: duration, aspect_ratio: aspect,
-        language, style, confirm_api_usage: approved });
+        language, style, text_model: textModel || undefined, video_model: videoModel || undefined,
+        confirm_api_usage: approved });
       router.push(`/editor/${project.id}`);
     } catch (e) { setError((e as Error).message); setPending(false); }
   };
@@ -43,7 +62,7 @@ export default function StoryboardForm() {
         {Array.from({ length: 11 }, (_, i) => i + 2).map((n) => <option key={n} value={n}>{n} sahne</option>)}
       </select></label>
       <label>Sahne süresi<select className="select" value={duration} onChange={(e) => setDuration(Number(e.target.value))} disabled={pending}>
-        {[4, 6, 8].map((n) => <option key={n} value={n} disabled={!!health?.video_durations && !health.video_durations.includes(n)}>{n} saniye</option>)}
+        {[4, 6, 8].map((n) => <option key={n} value={n} disabled={!durations.includes(n)}>{n} saniye</option>)}
       </select></label>
       <label>Platform<select className="select" value={aspect} onChange={(e) => setAspect(e.target.value)} disabled={pending}>
         <option value="9:16">9:16 · Reels / TikTok / Shorts</option><option value="16:9">16:9 · YouTube</option>
@@ -54,6 +73,9 @@ export default function StoryboardForm() {
       <label className={styles.wide}>Ortak görsel stil<input className="input" maxLength={500} value={style} onChange={(e) => setStyle(e.target.value)} disabled={pending} /></label>
     </div>
     <p className={styles.note}>Planlanan süre: <strong>{count * duration} saniye</strong> · {count} sahne. Anlatım daha uzunsa son kare anlatım bitene kadar tutulur; sahne en fazla 30 sn olabilir.</p>
+    <GenerationCost catalog={catalog} videoModel={videoModel} textModel={textModel} onVideoModel={changeVideoModel}
+      onTextModel={setTextModel} planningSceneCount={count} planningChars={brief.length}
+      showBudget={false} disabled={pending} />
     {health?.video_model_warning && <p className={styles.note}>{health.video_model_warning}</p>}
     {health?.mock ? <p className={styles.note}>Demo modu: plan mekanik bir taslaktır; videolar demo görselleri, seslendirme konuşma yerine sentetik tondur. API çağrısı yapılmaz.</p> : health && <label className={styles.check}>
       <input type="checkbox" checked={approved} onChange={(e) => setApproved(e.target.checked)} disabled={pending} />

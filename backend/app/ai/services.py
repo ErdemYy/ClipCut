@@ -192,30 +192,31 @@ def plan_edit(prompt: str, current: EditPlan, context: dict) -> tuple[EditPlan, 
 
 # ------------------------------------------------------------ Veo video üretimi ----
 
-def video_model_constraints() -> dict:
+def video_model_constraints(model: str | None = None) -> dict:
+    from .catalog import video_durations, video_model_warning
+
     settings = get_settings()
-    legacy = settings.veo_model.startswith("veo-3.0")
+    target = model or settings.veo_model
+    warning = video_model_warning(target)
+    if warning is None and target == settings.veo_model:
+        warning = None
     return {
-        "video_durations": [4, 6, 8] if settings.is_mock or not legacy else [8],
-        "video_model_warning": (
-            "Yapılandırılan Veo 3.0 modeli Google dokümanında deprecated olarak işaretli. "
-            "Gerçek erişim doğrulanmadı; API bağlarken model kullanılabilirliğini kontrol edin. Otomatik model geçişi yapılmaz."
-            if legacy else
-            "Veo 3.1 Preview modelleri 22 Ekim 2026 tarihinde kapatıldı; yapılandırılan modeli güncellemeniz gerekir."
-            if settings.veo_model in {"veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"} else None
-        ),
+        "video_durations": video_durations(target, settings.is_mock),
+        "video_model_warning": warning,
     }
 
 
 def generate_video(
     prompt: str, aspect_ratio: str, duration: int, negative_prompt: Optional[str], out_path: Path,
-    on_progress: Callable[[float, str], None],
+    on_progress: Callable[[float, str], None], model: str | None = None,
 ) -> None:
-    if get_settings().is_mock:
+    settings = get_settings()
+    target = model or settings.veo_model
+    if settings.is_mock:
         mock.generate_video(prompt, aspect_ratio, duration, out_path, on_progress)
         return
-    if duration not in video_model_constraints()["video_durations"]:
-        raise AIError("Yapılandırılan Veo 3.0 modeli için 8 saniyelik sahne seçin. Video çağrısı yapılmadı.")
+    if duration not in video_model_constraints(target)["video_durations"]:
+        raise AIError("Seçili Veo modeli için 8 saniyelik sahne seçin. Video çağrısı yapılmadı.")
     from google.genai import types
 
     client = _client()
@@ -226,7 +227,7 @@ def generate_video(
         negative_prompt=negative_prompt or None,
         duration_seconds=duration,
     )
-    operation = client.models.generate_videos(model=get_settings().veo_model, prompt=prompt, config=config)
+    operation = client.models.generate_videos(model=target, prompt=prompt, config=config)
     started = time.time()
     while not operation.done:
         elapsed = time.time() - started

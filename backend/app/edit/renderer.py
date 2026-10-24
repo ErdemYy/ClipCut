@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import math
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +47,10 @@ class RenderRequest:
     resolve_overlay: Optional[TrackResolver] = None
     resolution: str = "1080p"
     quality: str = "standard"
+    # Output-time window, applied AFTER the unchanged edit graph. Input seeking or
+    # rebuilding a cropped plan would reset timed captions, fades, music and transitions.
+    output_start: float = 0.0
+    output_duration: Optional[float] = None
 
 
 def even(n: float) -> int:
@@ -110,6 +115,11 @@ def build_command(req: RenderRequest) -> tuple[list[str], float]:
     plan, tl, info = req.plan, req.timeline, req.info
     W, H = output_size(info, plan, req.resolution)
     T = tl.output_duration
+    start = req.output_start
+    duration = T - start if req.output_duration is None else min(req.output_duration, T - start)
+    if (not math.isfinite(start) or start < 0 or not math.isfinite(duration) or duration <= 0
+            or (req.output_duration is not None and (not math.isfinite(req.output_duration) or req.output_duration <= 0))):
+        raise ValueError("Geçersiz çıktı önizleme aralığı.")
     inputs: list[str] = ["-i", str(req.source)]
     next_input = 1
 
@@ -215,7 +225,9 @@ def build_command(req: RenderRequest) -> tuple[list[str], float]:
 
         pad_x = 36
         pad_y = 100
-        if ov.position == "top_left":
+        if ov.mode == "fullscreen":
+            pos_expr = "0:0"
+        elif ov.position == "top_left":
             pos_expr = f"{pad_x}:{pad_y}"
         elif ov.position == "bottom_right":
             pos_expr = f"W-w-{pad_x}:H-h-220"
@@ -227,12 +239,16 @@ def build_command(req: RenderRequest) -> tuple[list[str], float]:
             pos_expr = f"W-w-{pad_x}:{pad_y}"
 
         ov_label = f"ov{k}"
-        trans_filters = [scale_filter, "format=rgba"]
+        trans_filters = ["setpts=PTS-STARTPTS", scale_filter, "format=rgba"]
         if ov.animation in ("fade", "pop"):
             fade_in = 0.25
             fade_out = max(0.1, ov.duration - 0.25)
             trans_filters.append(f"fade=t=in:st=0:d={fade_in:.2f}:alpha=1")
             trans_filters.append(f"fade=t=out:st={fade_out:.2f}:d=0.25:alpha=1")
+
+        # Animate from the overlay's own zero, then place it on the OUTPUT clock.
+        # Otherwise moving a fading/video layer later shows its end (or nothing).
+        trans_filters.append(f"setpts=PTS+{ov.start:.6f}/TB")
 
         f.append(f"[{oi}:v]{','.join(trans_filters)}[{ov_label}]")
         next_v = f"vov{k}"
@@ -319,7 +335,8 @@ def build_command(req: RenderRequest) -> tuple[list[str], float]:
         *inputs,
         "-filter_complex", ";".join(f),
         "-map", "[vout]", "-map", "[aout]",
-        "-t", f"{T:.3f}",
+        *(["-ss", f"{start:.3f}"] if start else []),
+        "-t", f"{duration:.3f}",
         "-c:v", "libx264",
         "-preset", "medium" if req.quality == "high" else ("veryfast" if req.quality == "fast" else "veryfast"),
         "-crf", "18" if req.quality == "high" else ("26" if req.quality == "fast" else "20"),
@@ -327,7 +344,7 @@ def build_command(req: RenderRequest) -> tuple[list[str], float]:
         "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
         str(req.output),
     ]
-    return args, T
+    return args, duration
 
 
 def render(req: RenderRequest, on_progress: Callable[[float], None]) -> dict:

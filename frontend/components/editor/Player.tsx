@@ -3,6 +3,7 @@
 import { type Ref, useEffect, useMemo, useRef, useState } from "react";
 import { API_URL, type Operation, type OverlayOp, type Project, type Word, mediaUrl } from "@/lib/api";
 import { findEmojiForWord } from "@/lib/emoji";
+import { distributeSubtitleWords } from "@/lib/subtitle-timing";
 import styles from "./editor-parts.module.css";
 
 const ASPECTS: Record<string, string> = { "9:16": "9 / 16", "1:1": "1 / 1", "16:9": "16 / 9", "4:5": "4 / 5" };
@@ -134,12 +135,14 @@ function SubtitleOverlay({ sub, project }: { sub: Record<string, unknown>; proje
   const chunks = useMemo(() => {
     const out: Word[][] = [];
     for (const seg of project.subtitles?.segments ?? []) {
-      for (let i = 0; i < seg.words.length; i += maxWords) out.push(seg.words.slice(i, i + maxWords));
+      const words = seg.words?.length ? seg.words : distributeSubtitleWords(seg.text, seg.start, seg.end);
+      for (let i = 0; i < words.length; i += maxWords) out.push(words.slice(i, i + maxWords));
     }
     return out;
   }, [project.subtitles, maxWords]);
 
-  const chunk = chunks.find((c) => t >= c[0].start - 0.05 && t <= c[c.length - 1].end + 0.25);
+  const precise = project.subtitles?.manual_segments;
+  const chunk = chunks.find((c) => t >= c[0].start - (precise ? 0 : 0.05) && t <= c[c.length - 1].end + (precise ? 0 : 0.25));
   if (!chunk) return null;
 
   const pos = String(sub.position ?? "bottom");
@@ -252,4 +255,3 @@ function resolveOverlayUrl(track: string, projectId: string) {
   }
   return `${API_URL}/assets/broll/${track}.jpg`;
 }
-

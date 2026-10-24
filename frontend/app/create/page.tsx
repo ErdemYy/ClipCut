@@ -1,8 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
-import { API_URL, api, waitForJob, type Job, type Project } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { API_URL, api, waitForJob, type Job, type ModelCatalog, type Project } from "@/lib/api";
+import GenerationCost from "@/components/editor/GenerationCost";
 import styles from "./create.module.css";
 import StoryboardForm from "@/components/StoryboardForm";
 
@@ -43,6 +44,9 @@ export default function CreatePage() {
   const [name, setName] = useState("");
   const [styleTags, setStyleTags] = useState<string[]>([]);
   const [job, setJob] = useState<Job | null>(null);
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  const [videoModel, setVideoModel] = useState("");
+  const [budget, setBudget] = useState("");
 
   // upload
   const [file, setFile] = useState<File | null>(null);
@@ -52,6 +56,21 @@ export default function CreatePage() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const busy = (job && job.status !== "failed") || uploadPct !== null;
+
+  useEffect(() => {
+    api.aiModels().then((value) => {
+      setCatalog(value);
+      setVideoModel((current) => current || value.defaults.video_model);
+    }).catch((e: Error) => setError(e.message));
+  }, []);
+
+  const selectedVideo = catalog?.video.find((model) => model.id === videoModel);
+  const durations = selectedVideo?.durations?.length ? selectedVideo.durations : [4, 6, 8];
+  const changeVideoModel = (id: string) => {
+    setVideoModel(id);
+    const next = catalog?.video.find((model) => model.id === id)?.durations ?? [4, 6, 8];
+    if (!next.includes(duration)) setDuration(next[next.length - 1] ?? 8);
+  };
 
   const toggleStyle = (text: string) =>
     setStyleTags((s) => (s.includes(text) ? s.filter((x) => x !== text) : [...s, text]));
@@ -66,6 +85,8 @@ export default function CreatePage() {
         aspect_ratio: aspect,
         duration,
         negative_prompt: negative || undefined,
+        video_model: videoModel || undefined,
+        max_cost_usd: budget.trim() === "" ? undefined : Number(budget),
       });
       setJob(job);
       const final = await waitForJob(job.id, setJob, 1500);
@@ -246,18 +267,20 @@ export default function CreatePage() {
                 </div>
               </div>
               <div>
-                <span className="label">Süre: {duration} sn</span>
-                <input
+                <label className="label" htmlFor="gen-duration">
+                  Süre
+                </label>
+                <select
                   id="gen-duration"
-                  type="range"
-                  min={4}
-                  max={8}
-                  step={2}
+                  className="select"
                   value={duration}
                   onChange={(e) => setDuration(Number(e.target.value))}
-                  className={styles.range}
                   disabled={!!busy}
-                />
+                >
+                  {[4, 6, 8].map((value) => (
+                    <option key={value} value={value} disabled={!durations.includes(value)}>{value} saniye</option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="label" htmlFor="gen-name">
@@ -272,6 +295,18 @@ export default function CreatePage() {
                   disabled={!!busy}
                 />
               </div>
+
+              <GenerationCost
+                catalog={catalog}
+                videoModel={videoModel}
+                textModel={catalog?.defaults.text_model ?? ""}
+                onVideoModel={changeVideoModel}
+                sceneDurations={[duration]}
+                budget={budget}
+                onBudget={setBudget}
+                disabled={!!busy}
+                compact
+              />
 
               {job && job.status !== "failed" ? (
                 <div className={styles.progressBox}>

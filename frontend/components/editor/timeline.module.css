@@ -1,0 +1,45 @@
+.timeline {
+  --spacing-xs: 0.5rem;
+  --spacing-sm: 0.75rem;
+  --spacing-md: 1rem;
+  display: grid; gap: var(--spacing-md); min-width: 0;
+  padding: var(--spacing-md); border: 1px solid var(--border); background: var(--bg-elev);
+}
+.header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--spacing-xs); }
+.header span, .note { color: var(--text-dim); font-size: 0.875rem; line-height: 1.6; overflow-wrap: anywhere; }
+.source, .output { display: grid; gap: var(--spacing-sm); min-width: 0; }
+.output { border-top: 1px solid var(--border); padding-top: var(--spacing-md); }
+.sourceBand, .lane { position: relative; background: var(--bg); border: 1px solid var(--border-strong); overflow: hidden; }
+.sourceBand { height: 24px; }
+.keep { position: absolute; height: 100%; background: var(--surface-hover); border-inline: 1px solid var(--text-dim); }
+.subtitleCue { position: absolute; inset-block: 4px; background: var(--text-dim); }
+.cursor { position: absolute; inset-block: 0; width: 2px; background: var(--text); pointer-events: none; }
+.waveform { min-width: 0; }
+.waveform svg { width: 100%; height: 64px; display: block; background: var(--bg); }
+.waveform line { stroke: var(--text-dim); stroke-width: 1; }
+.label { display: grid; gap: var(--spacing-xs); min-width: 0; }
+.label input, .label select { width: 100%; min-width: 0; min-height: 44px; }
+.label select, .inspector input { border-color: var(--text-dim); }
+.ruler { display: flex; justify-content: space-between; gap: var(--spacing-xs); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.laneRow { display: grid; gap: var(--spacing-xs); min-width: 0; }
+.laneLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane { height: 44px; }
+.music { display: block; padding: var(--spacing-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); }
+.bar { position: absolute; inset-block: 3px; display: flex; min-width: 0; border: 1px solid var(--text-dim); background: var(--bg-elev-2); }
+.selected { border-color: var(--violet); outline: 1px solid var(--violet); }
+.bar button { min-width: 0; padding: 0; background: transparent; border: 0; color: var(--text); touch-action: none; overflow: hidden; }
+.bar button:disabled { cursor: not-allowed; }
+.move { flex: 1; cursor: grab; white-space: nowrap; text-overflow: ellipsis; }
+.move:active { cursor: grabbing; }
+.handle { flex: 0 0 min(24px, 25%); cursor: ew-resize; }
+.bar button:hover:not(:disabled) { background: var(--surface-hover); }
+.timeline :focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.bar :focus-visible { outline-offset: -3px; }
+.outside { display: block; padding: var(--spacing-xs); font-size: 0.875rem; color: var(--text-dim); }
+.inspector { border: 0; border-top: 1px solid var(--border); display: grid; gap: var(--spacing-sm); padding-top: var(--spacing-sm); min-width: 0; }
+.inspector legend { padding-right: var(--spacing-xs); overflow-wrap: anywhere; }
+.inspector label { display: grid; gap: var(--spacing-xs); min-width: 0; }
+.inspector input { width: 100%; min-width: 0; min-height: 44px; }
+.actions { display: flex; flex-wrap: wrap; gap: var(--spacing-xs); }
+.error { color: var(--red); line-height: 1.6; overflow-wrap: anywhere; }
+@media (min-width: 48rem) { .inspector { grid-template-columns: 1fr 1fr; } }
