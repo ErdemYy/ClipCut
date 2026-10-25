@@ -334,6 +334,7 @@ def test_real_four_format_batch_and_archive(tmp_path, monkeypatch):
     with zipfile.ZipFile(archive) as zf:
         assert len(zf.namelist()) == 8
         assert all("/" not in name for name in zf.namelist())
+    assert "clip_request" not in result
     assert p.plan == before
 
 
@@ -518,6 +519,12 @@ def test_real_per_clip_cover_is_from_rendered_frame_and_in_zip(tmp_path, monkeyp
     out = result["outputs"][0]
     assert out["cover_at"] == cover_at and out["cover_source_at"] == 5 + cover_at
     assert out["thumbnail_fallback"] is False
+    assert result["clip_request"] == {
+        "analysis_id": "abcdef123456",
+        "clips": [{"id": 0, "start": 5, "end": 35, "cover_at": cover_at}],
+        "aspect_ratio": "9:16", "fill": "fit", "resolution": "720p", "quality": "fast",
+        "render_revision": jobs.render_revision(p),
+    }
     thumb = tmp_path / out["thumbnail"].split("/projects/cover/")[1]
     raw = tmp_path / "cover.rgb"
     run_ffmpeg(["-i", str(thumb), "-vf", "crop=2:2:(iw-2)/2:(ih-2)/2,scale=1:1",

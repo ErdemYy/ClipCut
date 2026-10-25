@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useId, useReducer, useRef, useState } from "react";
-import { api, downloadUrl, formatTime, mediaUrl, type ClipAnalysis, type ClipCandidate, type ClipPreviewResult, type ExportFormat, type FillMode, type Job, type JobMap, type Project, type RenderOptions, type Waveform } from "@/lib/api";
+import { api, downloadUrl, formatTime, mediaUrl, type ClipAnalysis, type ClipCandidate, type ClipPreviewResult, type ExportFormat, type FillMode, type Job, type JobMap, type Project, type PublishResult, type RenderOptions, type Waveform } from "@/lib/api";
 import { clampClipRange, clipRangeError, snapClipEdge, type ClipRangeAction, type ClipRange } from "@/lib/clip-trim";
 import { CLIP_FORMATS, clipDraftContext, clipDraftStorageKey, defaultClipDraft, readClipDraft, serializeClipDraft } from "@/lib/clip-draft";
+import { clipExportFreshness } from "@/lib/clip-export";
 import { canRedoClipRanges, canUndoClipRanges, clipRangeHistoryReducer, emptyClipRangeHistory, type ClipRanges } from "@/lib/clip-range-history";
 import { clipPreviewIsStale, clipPreviewSelection, clipPreviewWindow, type ClipPreviewSelection } from "@/lib/clip-preview";
 import { clipCoverError, clipCoverMax } from "@/lib/clip-cover";
@@ -62,6 +63,9 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const draftContext = analysis && result ? clipDraftContext(project.id, project.source_url,
     project.duration, project.has_audio, analysis.id, result.clips) : null;
   const clipPreviewJob = jobs.clip_preview;
+  const clipRenderJob = jobs.clip_render;
+  const clipRenderResult = clipRenderJob?.status === "done" && clipRenderJob.project_id === project.id && clipRenderJob.result
+    ? clipRenderJob.result as unknown as PublishResult : null;
   const clipPreview = clipPreviewJob?.status === "done" && clipPreviewJob.result
     ? clipPreviewJob.result as unknown as ClipPreviewResult : null;
   const shownClipPreview = clipPreview && analysis && clipPreview.analysis_id === analysis.id ? clipPreview : null;
@@ -104,6 +108,12 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     : [];
   const invalidSelected = selectedClips.filter((clip) => clipRangeError(rangeFor(clip), project.duration));
   const invalidCovers = selectedClips.filter((clip) => clipCoverError(covers[clip.id] ?? 0, rangeFor(clip)));
+  const clipRenderFreshness = clipRenderResult
+    ? (!result || !analysis ? "unknown" : clipExportFreshness(clipRenderResult, {
+      analysisId: analysis.id,
+      clips: selectedClips.map((clip) => ({ id: clip.id, ...rangeFor(clip), cover: covers[clip.id] ?? 0 })),
+      aspect, fill, options, renderRevision: project.render_revision,
+    })) : null;
   const previewResultClip = shownClipPreview && result
     ? result.clips.find((clip) => clip.id === shownClipPreview.clip_id) : undefined;
   const clipPreviewStale = !!shownClipPreview && clipPreviewIsStale(shownClipPreview,
@@ -481,6 +491,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
         </button>
       </>}
     </section>}
-    <PublishingResults job={jobs.clip_render} />
+    <PublishingResults job={clipRenderJob}
+      freshness={clipRenderFreshness === "stale" || clipRenderFreshness === "unknown" ? clipRenderFreshness : undefined} />
   </div>;
 }

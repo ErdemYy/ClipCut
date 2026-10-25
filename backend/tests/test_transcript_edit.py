@@ -179,6 +179,7 @@ def test_real_selected_clip_and_cut_render(transcript_api, tmp_path, monkeypatch
     assert response.status_code == 200
     snapshot, options, clips = captures[-1][1]
     result = jobs.task_publish(lambda *_: None, snapshot, options, clips)
+    assert "clip_request" not in result
     output = tmp_path / result["outputs"][0]["output"].split("/projects/video/")[1]
     info = probe(output)
     assert (info.width, info.height) == (720, 1280)

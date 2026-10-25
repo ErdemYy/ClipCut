@@ -456,5 +456,15 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
         for file in sorted(out_dir.iterdir()):
             if file.suffix in {".mp4", ".jpg"}:
                 zf.write(file, file.name)
-    return {"outputs": outputs, "archive": media_url(p.id, archive.relative_to(pdir).as_posix()),
-            "rendered_at": datetime.now(timezone.utc).isoformat()}
+    result = {"outputs": outputs, "archive": media_url(p.id, archive.relative_to(pdir).as_posix()),
+              "rendered_at": datetime.now(timezone.utc).isoformat()}
+    if clips is not None and options.get("analysis_id"):
+        result["clip_request"] = {
+            "analysis_id": options["analysis_id"],
+            "clips": [{"id": entry["id"], "start": entry["start"], "end": entry["end"],
+                       "cover_at": entry.get("cover_at", 0)} for entry in clips],
+            "aspect_ratio": options["aspect_ratio"], "fill": options["fill"],
+            "resolution": options["resolution"], "quality": options["quality"],
+            "render_revision": render_revision(p),
+        }
+    return result

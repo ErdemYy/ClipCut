@@ -89,11 +89,19 @@ export type ClipPreviewResult = RenderOptions & {
   analysis_id: string; aspect_ratio: ExportFormat; fill: FillMode; render_revision: string;
   preview_start?: number; requested_duration?: 5 | 10;
 };
+export type ClipRenderSnapshot = {
+  analysis_id: string;
+  clips: { id: number; start: number; end: number; cover_at: number }[];
+  aspect_ratio: ExportFormat; fill: FillMode;
+  resolution: RenderOptions["resolution"]; quality: RenderOptions["quality"];
+  render_revision: string;
+};
 export type PublishResult = {
   archive: string;
   outputs: { label: string; aspect_ratio: ExportFormat; output: string; thumbnail: string;
     width: number; height: number; duration: number; thumbnail_fallback: boolean;
     cover_at?: number; cover_source_at?: number }[];
+  clip_request?: ClipRenderSnapshot;
 };
 export type ClipCandidate = {
   id: number; start: number; end: number; duration: number; score: number;

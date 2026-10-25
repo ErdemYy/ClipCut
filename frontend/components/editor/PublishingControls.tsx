@@ -24,12 +24,19 @@ export function RenderSettings({ value, onChange, fill, onFill, disabled }: {
   </fieldset>;
 }
 
-export function PublishingResults({ job }: { job?: Job }) {
+export function PublishingResults({ job, freshness }: {
+  job?: Job; freshness?: "stale" | "unknown";
+}) {
   if (job?.status === "failed") return <p className={styles.error} role="alert">{job.error || "Render başarısız. Yeniden deneyebilirsiniz."}</p>;
   if (job?.status !== "done" || !Array.isArray(job.result?.outputs)) return null;
   const result = job.result as unknown as PublishResult;
   return <section className={styles.results} aria-label="Hazır dosyalar">
     <h4>Dosyalar hazır</h4>
+    {freshness && <p className={styles.stale} role="status">
+      {freshness === "stale"
+        ? "Aralık, kapak, seçim, format veya render ayarları son hazırlanan dosyalardan farklı. Dosyaları güncellemek için klipleri yeniden hazırlayın."
+        : "Bu sonuç güncellik bilgisi olmadan hazırlandı. İndirmeden önce klipleri yeniden hazırlayarak güncel olduğunu doğrulayın."}
+    </p>}
     <a className="btn btn-primary" href={downloadUrl(result.archive)} download>Tümünü ZIP olarak indir</a>
     {result.outputs.map((out) => <div className={styles.output} key={out.output}>
       <strong>{out.label.replaceAll("_", " ")}</strong>
