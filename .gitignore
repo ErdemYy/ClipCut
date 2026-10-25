@@ -56,3 +56,6 @@ Thumbs.db
 *.swo
 .vscode/
 .idea/
+
+# Local knowledge graph, caches and machine-specific interpreter path
+graphify-out/

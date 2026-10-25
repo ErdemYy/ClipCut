@@ -2,7 +2,8 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { api, downloadUrl, formatTime, mediaUrl, type ClipAnalysis, type ClipCandidate, type ClipPreviewResult, type FillMode, type Job, type JobMap, type Project, type RenderOptions, type Waveform } from "@/lib/api";
-import { clampClipRange, clipRangeError, snapClipEdge, type ClipEdge, type ClipRange } from "@/lib/clip-trim";
+import { clampClipRange, clipRangeError, snapClipEdge, type ClipRangeAction, type ClipRange } from "@/lib/clip-trim";
+import { clipDraftContext, clipDraftStorageKey, defaultClipDraft, readClipDraft, serializeClipDraft } from "@/lib/clip-draft";
 import ClipRangeStrip from "./ClipRangeStrip";
 import { JobProgress } from "./SubtitlePanel";
 import { PublishingResults, RenderSettings } from "./PublishingControls";
@@ -38,8 +39,13 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const previewVideo = useRef<HTMLVideoElement>(null);
   const backdropVideo = useRef<HTMLVideoElement>(null);
   const initializedAnalysis = useRef<string | null>(null);
+  const [hydratedDraft, setHydratedDraft] = useState<string | null>(null);
+  const [draftNotice, setDraftNotice] = useState("");
   const analysis = jobs.clip_analyze;
-  const result = analysis?.status === "done" ? analysis.result as unknown as ClipAnalysis : null;
+  const result = analysis?.status === "done" && analysis.project_id === project.id
+    ? analysis.result as unknown as ClipAnalysis : null;
+  const draftContext = analysis && result ? clipDraftContext(project.id, project.source_url,
+    project.duration, project.has_audio, analysis.id, result.clips) : null;
   const clipPreviewJob = jobs.clip_preview;
   const clipPreview = clipPreviewJob?.status === "done" && clipPreviewJob.result
     ? clipPreviewJob.result as unknown as ClipPreviewResult : null;
@@ -49,7 +55,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const smart = result ? (result.transcript_used ?? result.clips.some((clip) => clip.transcript_used)) : false;
   const clipPreviewRunning = clipPreviewJob?.status === "running" || clipPreviewJob?.status === "queued";
   const active = [analysis, jobs.clip_render, clipPreviewJob].find((j) => j?.status === "running" || j?.status === "queued");
-  const disabled = pending || !!active || project.status !== "ready";
+  const disabled = pending || !!active || project.status !== "ready" || (!!draftContext && hydratedDraft !== draftContext);
   const sourceReady = project.has_audio && project.duration >= minimum;
   const fillLabel = FILL_LABELS[fill];
   const hasCandidates = !!result && result.clips.length > 0;
@@ -80,13 +86,50 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     || shownClipPreview.render_revision !== project.render_revision
   );
 
+  // These effects synchronize React drafts with synchronous browser storage.
+  // Context-gated hydration happens once; status updates are not dependencies
+  // of either effect and cannot cause a persistence/render loop.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    if (!analysis || analysis.status !== "done" || !result || initializedAnalysis.current === analysis.id) return;
-    initializedAnalysis.current = analysis.id;
-    setRanges(Object.fromEntries(result.clips.map((clip) => [clip.id, { start: clip.start, end: clip.end }])));
-    setSelected([]);
+    if (!draftContext || !result || initializedAnalysis.current === draftContext) return;
+    initializedAnalysis.current = draftContext;
+    let draft = defaultClipDraft(result.clips);
+    try {
+      const restored = readClipDraft(localStorage.getItem(clipDraftStorageKey(project.id)), draftContext,
+        result.clips, project.duration);
+      if (restored) draft = restored;
+      setDraftNotice(restored ? "Yerel klip taslağı geri yüklendi." : "Taslak bu tarayıcıda otomatik saklanır.");
+    } catch { setDraftNotice("Tarayıcı depolamasına erişilemiyor; taslak yalnızca bu oturumda kalır."); }
+    setRanges(draft.ranges);
+    setSelected(draft.selected);
+    setOptions(draft.options);
+    setFill(draft.fill);
+    setSnap(draft.snap);
     setPreview(null);
-  }, [analysis, result]);
+    setHydratedDraft(draftContext);
+  }, [draftContext, result, project.id, project.duration]);
+
+  useEffect(() => {
+    // The hydration render must never overwrite stored data with empty defaults.
+    if (!draftContext || hydratedDraft !== draftContext || !result) return;
+    const raw = serializeClipDraft({ ranges, selected, options, fill, snap }, draftContext, result.clips, project.duration);
+    if (!raw) {
+      setDraftNotice("Geçersiz aralık saklanmadı; son geçerli taslak korunuyor.");
+      return;
+    }
+    try {
+      localStorage.setItem(clipDraftStorageKey(project.id), raw);
+      setDraftNotice("Taslak bu tarayıcıda saklandı; kaynak ve ana edit değişmedi.");
+    } catch { setDraftNotice("Taslak saklanamadı (depolama kapalı veya dolu); değişiklikler yalnızca bu oturumda kalır."); }
+  }, [draftContext, hydratedDraft, result, project.id, project.duration, ranges, selected, options, fill, snap]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  const resetDraft = () => {
+    if (disabled || !result) return;
+    const draft = defaultClipDraft(result.clips);
+    setRanges(draft.ranges); setSelected(draft.selected); setOptions(draft.options);
+    setFill(draft.fill); setSnap(draft.snap); setPreview(null);
+  };
 
   useEffect(() => {
     if (!hasCandidates || project.status !== "ready" || !project.has_audio) return;
@@ -143,7 +186,12 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const setClipRange = (clip: ClipCandidate, next: ClipRange) => {
     setRanges((current) => ({ ...current, [clip.id]: next }));
   };
-  const commitStripRange = (clip: ClipCandidate, field: ClipEdge, next: ClipRange) => {
+  const commitStripRange = (clip: ClipCandidate, field: ClipRangeAction, next: ClipRange) => {
+    // Whole-range moves preserve duration; snapping a single edge would resize it.
+    if (field === "move") {
+      setClipRange(clip, next);
+      return;
+    }
     const clamped = clampClipRange(next, project.duration);
     const edges = field === "start" ? boundaries?.starts : boundaries?.ends;
     const value = snap && edges
@@ -219,13 +267,15 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
         <h4>{result.clips.length} bağımsız aday{smart ? " · transkript destekli akıllı skor" : ""}</h4>
         <div className={pub.actions}>
           <button className="btn btn-sm" disabled={disabled} onClick={() => setSelected(result.clips.map((c) => c.id))}>Tümünü seç</button>
+          <button type="button" className="btn btn-sm" disabled={disabled} onClick={resetDraft}>Taslağı sıfırla</button>
           <label className={pub.snapToggle} title="2 saniye yakınındaki cümle başlangıç/bitişlerine yapıştırır">
             <input type="checkbox" checked={snap} disabled={disabled || !canSnap} onChange={(e) => setSnap(e.target.checked)} />
             Yakın cümle sınırlarına yapıştır
           </label>
         </div>
+        <p className={pub.note} role="status">{draftNotice} Seçimler, geçerli aralıklar, yapıştırma ve çıktı ayarları yalnızca bu tarayıcıda saklanır; kaynak veya analiz değişince eski taslak kullanılmaz. Sıfırlama aday aralıklarını ve varsayılan ayarları geri getirir.</p>
         {!canSnap && <p className={pub.note}>Kaynak transkripti veya cümle zamanı yok; yapıştırma kapalı. Başlangıç/bitiş yine elle ayarlanabilir.</p>}
-        <p id={waveformHelpId} className={pub.note}>Dalga formundaki başlangıç/bitiş tutamaçlarını sürükleyin; 30–60 sn ve kaynak sınırları korunur. Tutamacı odaklayıp ok tuşlarıyla 0,1 sn (Shift ile 1 sn) ayarlayın. Sayı alanları hassas giriş içindir. Dalga, kaynak sesin mono tepe genliğidir; editin kesim/hız veya müzik karışımı değildir. Çizim görünür pencereye göre ölçeklenir; ses düzeyi ölçümü değildir.</p>
+        <p id={waveformHelpId} className={pub.note}>Başlangıç/bitiş tutamaçları süreyi ayarlar; aralığın ortasını sürüklemek süreyi koruyarak taşır. Sürükleme görünür dalga penceresiyle sınırlıdır. Odaklanan tutamaç veya aralıkta ok tuşları 0,1 sn, Shift ile 1 sn; Home/End kaynak sınırına taşır. Escape veya dokunma iptali sürüklemeyi geri alır. Taşırken cümleye yapıştırma uygulanmaz; 1 sn taşı düğmeleri sürükleme alternatifidir. 30–60 sn ve kaynak sınırları korunur. Sayı alanları hassas giriş içindir. Dalga, kaynak sesin mono tepe genliğidir; editin kesim/hız veya müzik karışımı değildir. Çizim görünür pencereye göre ölçeklenir; ses düzeyi ölçümü değildir.</p>
         {waveformLoading && <p className={pub.note} role="status">Kaynak ses dalgası hazırlanıyor; tutamaçlar şimdiden kullanılabilir.</p>}
         {waveformError && <div className={pub.actions} role="alert">
           <span className={pub.note}>Ses dalgası yüklenemedi; tutamaçlar düz çizgi üzerinde çalışır. {waveformError}</span>

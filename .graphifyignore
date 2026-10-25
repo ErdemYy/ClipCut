@@ -1,0 +1,4 @@
+# Runtime media and decorative assets do not describe the architecture.
+assets/
+frontend/public/
+graphify-out/

@@ -1,4 +1,5 @@
 export type ClipEdge = "start" | "end";
+export type ClipRangeAction = ClipEdge | "move";
 export type ClipRange = { start: number; end: number };
 
 export const CLIP_MIN_SECONDS = 30;
@@ -78,4 +79,19 @@ export function constrainClipEdge(
   const upper = Math.min(total, base.start + CLIP_MAX_SECONDS, viewEnd);
   if (lower > upper) return base;
   return { ...base, end: round(clamp(raw, lower, upper)) };
+}
+
+/** Translate a valid range without resizing it. Invalid drafts stay untouched. */
+export function moveClipRange(
+  range: ClipRange, delta: number, duration: number,
+  visibleStart = 0, visibleEnd = duration,
+): ClipRange {
+  if (clipRangeError(range, duration) || !Number.isFinite(delta)) return range;
+  const low = Math.max(0, Number.isFinite(visibleStart) ? visibleStart : 0);
+  const high = Math.min(duration, Number.isFinite(visibleEnd) ? visibleEnd : duration);
+  const minDelta = low - range.start;
+  const maxDelta = high - range.end;
+  if (minDelta > maxDelta) return range;
+  const shift = clamp(round(delta), minDelta, maxDelta);
+  return { start: range.start + shift, end: range.end + shift };
 }

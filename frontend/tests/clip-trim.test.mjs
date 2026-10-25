@@ -8,7 +8,7 @@ const source = fs.readFileSync(new URL("../lib/clip-trim.ts", import.meta.url), 
 const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2017 } }).outputText;
 const exported = {};
 vm.runInNewContext(js, { exports: exported });
-const { nearestBoundary, clipRangeError, clampClipRange, snapClipEdge, constrainClipEdge } = exported;
+const { nearestBoundary, clipRangeError, clampClipRange, snapClipEdge, constrainClipEdge, moveClipRange } = exported;
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
 test("clip range validation enforces source bounds and 30–60 seconds", () => {
@@ -50,4 +50,41 @@ test("dragging a clip edge preserves duration, source and visible-window bounds"
   assert.deepEqual(plain(constrainClipEdge("end", 90, base, 100, 0, 50)), { start: 10, end: 50 });
   assert.deepEqual(plain(constrainClipEdge("start", 15, { start: 40, end: 100 }, 100)), { start: 40, end: 100 });
   assert.deepEqual(plain(constrainClipEdge("end", 120, { start: 0, end: 30 }, 30)), { start: 0, end: 30 });
+});
+
+test("moving a whole clip preserves length at both source and frozen-window bounds", () => {
+  const base = { start: 20, end: 55 };
+  assert.deepEqual(plain(moveClipRange(base, 5, 100)), { start: 25, end: 60 });
+  assert.deepEqual(plain(moveClipRange(base, -99, 100)), { start: 0, end: 35 });
+  assert.deepEqual(plain(moveClipRange(base, 99, 100)), { start: 65, end: 100 });
+  assert.deepEqual(plain(moveClipRange(base, -99, 100, 10, 70)), { start: 10, end: 45 });
+  assert.deepEqual(plain(moveClipRange(base, 99, 100, 10, 70)), { start: 35, end: 70 });
+  assert.deepEqual(plain(base), { start: 20, end: 55 });
+  assert.deepEqual(plain(moveClipRange(base, 1, 100, 30, 50)), base);
+});
+
+test("whole-range movement rejects invalid drafts and nonfinite inputs without silently resizing", () => {
+  for (const range of [{ start: -1, end: 40 }, { start: 10, end: 20 },
+    { start: 10, end: 80 }, { start: 50, end: 40 }, { start: 0, end: NaN }]) {
+    assert.equal(moveClipRange(range, 1, 100), range);
+  }
+  const base = { start: 10, end: 40 };
+  assert.equal(moveClipRange(base, Infinity, 100), base);
+  assert.equal(moveClipRange(base, NaN, 100), base);
+  assert.equal(moveClipRange(base, 1, NaN), base);
+  assert.deepEqual(plain(moveClipRange({ start: 0, end: 30 }, 20, 30)), { start: 0, end: 30 });
+});
+
+test("whole-range fractional movement preserves duration and relative keyboard precision", () => {
+  let range = { start: 32.85, end: 67.85 };
+  for (let i = 0; i < 100; i++) range = moveClipRange(range, 0.1, 120);
+  assert.ok(Math.abs(range.start - 42.85) < 1e-9);
+  assert.ok(Math.abs(range.end - range.start - 35) < 1e-9);
+  for (const duration of [80, 80.035, 120]) {
+    for (const delta of [-100, -0.1, 0, 0.1, 100]) {
+      const shifted = moveClipRange({ start: 10.025, end: 40.025 }, delta, duration);
+      assert.equal(clipRangeError(shifted, duration), null);
+      assert.ok(Math.abs(shifted.end - shifted.start - 30) < 1e-9);
+    }
+  }
 });

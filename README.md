@@ -20,6 +20,14 @@ ClipCut, yapay zekâ destekli modern bir video üretim ve akıllı edit stüdyos
 - **Üretim öncesi model ve maliyet kontrolü:** Video ve metin/planlama modelini seçin; bekleyen sahne sayısı, video saniyesi, planlama çağrısı ve Edge TTS çağrıları için **tahmini** sağlayıcı maliyetini görün. İsteğe bağlı USD bütçe üst sınırı, sağlayıcı çağrısından önce sunucuda doğrulanır; tahmini aşan istek hiç başlatılmaz. Model listesi yapılandırılmış varsayılan ve `TEXT_MODEL_OPTIONS`/`VEO_MODEL_OPTIONS` ile sınırlıdır; fiyatı bilinmeyen modelde toplam tahmin üretilmez ve bütçe doğrulanamaz. Tahmin endpoint'i AI çağrısı yapmaz, iş oluşturmaz. Fiyatlar 22 Ekim 2026 liste fiyatı anlık görüntüsüdür; vergi/kur/bölge/çözünürlük ve başarısız istekler dahil değildir, kesin fatura değildir.
 - **Sıfır Maliyetli Mock Modu:** `GEMINI_API_KEY` girilmediğinde sistem otomatik olarak mock AI modunda çalışır ve ücret ödemeden tüm akışı test etmenizi sağlar.
 
+### Kısa klip aralığını taşıma
+
+Klip adayının dalga formunda aralığın ortasını sürükleyerek başlangıç ve bitişi birlikte taşıyın; klibin süresi değişmez. Odaklanan aralıkta ok tuşları 0,1 sn, Shift + ok 1 sn; Home/End kaynak başına/sonuna taşır. **1 sn erkene taşı / 1 sn geçe taşı** düğmeleri sürükleme alternatifidir. Kaynak sınırında hareket kalan mesafeyle sınırlanır; sürükleme sırasında görünür dalga penceresi sabit kalır ve aralık bu pencerenin içinde tutulur. Daha uzağa gitmek için klavye veya düğmeleri kullanın. Escape, pointer iptali veya pointer capture kaybı sürüklemeyi geri alır.
+
+Taşıma sırasında süreyi korumak için cümleye yapıştırma uygulanmaz; kenar tutamaçlarında mevcut yapıştırma davranışı sürer. Önizleme ve dışa aktarma yeni aralığı kullanır; önceki gerçek render önizlemesi eskimiş olarak işaretlenir, otomatik yeniden render yapılmaz. Bu işlem kaynak videoyu veya ana edit planını değiştirmez ve AI çağrısı yapmaz.
+
+**Otomatik yerel taslak:** Geçerli klip aralıkları, seçili klipler, cümleye yapıştırma ve çözünürlük/kalite/dolgu ayarları projeye özel olarak bu tarayıcının `localStorage` alanına kaydedilir; paneli veya sayfayı yeniden açınca geri gelir. Kaynak adresi/süresi/ses bilgisi, analiz kimliği veya aday aralıkları değişmişse eski taslak uygulanmaz. Bozuk veya desteklenmeyen kayıtlar da reddedilir. Geçersiz düzenleme son geçerli taslağın üzerine yazılmaz; depolama kapalı/doluysa uyarı gösterilir ve düzenleme oturum içinde devam eder. **Taslağı sıfırla**, adayların ilk aralıklarını, boş seçimi ve varsayılan çıktı ayarlarını geri getirip saklar. Bu kayıt sunucuya veya başka cihaza senkronize edilmez; tarayıcı verilerini silmek taslağı siler. Birden fazla sekmede aynı projeyi düzenlemek için çakışma çözümü yoktur; son başarılı kayıt geçerlidir. Analiz arama parametreleri ve oynatıcı konumu saklanmaz.
+
 ## Senaryodan çok sahneli video
 
 1. **Yeni Video → Senaryodan Üret** bölümüne konuyu veya hazır senaryoyu yazın; dil, format, ortak stil, 2–12 sahne ve sahne süresini seçin.
@@ -93,6 +101,21 @@ Proje kök dizininde tek tıkla her iki servisi de başlatan script'ler hazırla
 - `start-all.ps1` (PowerShell)
 - `start-backend.bat`
 - `start-frontend.bat`
+
+## Proje bilgi grafiği (Graphify)
+
+Bilgisayardaki mevcut `graphifyy` kurulumu kullanılır; uygulamaya çalışma zamanı bağımlılığı eklenmez.
+
+```powershell
+.\graphify.bat                          # Yerel kod grafiğini güncelle ve HTML üret
+graphify query "voiceover render preview" --budget 1500
+```
+
+`graphify-out/graph.html` etkileşimli harita, `GRAPH_REPORT.md` analiz raporu ve `graph.json` ham veridir. Çıktılar ve makineye özel yollar Git tarafından yok sayılır. İlk kurulumda kod ve proje belgeleri birlikte işlendi; betik sonraki çalıştırmalarda kodu yerel AST ile günceller. Belge değişikliklerinin anlamsal çıkarımı için Graphify becerisiyle yeniden tarama gerekir. Çıktılar silinmişse betik yalnızca kod grafiğini yeniden oluşturur. Stok medya, dekoratif görseller ve çalışma dosyaları kapsam dışıdır. Betik ücretli AI/TTS çağrısı yapmaz; global ayar veya Git hook değiştirmez.
+
+`graphify.bat`, PowerShell betiğini yalnızca kendi işlemi için `ExecutionPolicy Bypass` ile açar; bilgisayarın kalıcı betik güvenlik ayarını değiştirmez. PowerShell betikleri zaten açıksa doğrudan `.\graphify.ps1` de kullanılabilir.
+
+**Seslendirme ve hız:** Ayrı seslendirme, hız işlemi öncesindeki süreye göre kırpılır; hızlandırmada artık ikinci kez erken kesilmez. Kısa seslendirme otomatik uzatılmaz veya yeni konuşma üretilmez. Önizleme ve tam render aynı ses zincirini kullanır.
 
 ---
 

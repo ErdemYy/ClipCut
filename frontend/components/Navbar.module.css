@@ -67,6 +67,9 @@
   gap: 12px;
 }
 @media (max-width: 640px) {
+  .inner { gap: 8px; }
+  .brand { gap: 4px; }
+  .status { gap: 4px; }
   .links {
     display: none;
   }

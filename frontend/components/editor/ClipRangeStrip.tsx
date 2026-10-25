@@ -7,7 +7,9 @@ import {
   CLIP_MIN_SECONDS,
   clampClipRange,
   constrainClipEdge,
+  moveClipRange,
   type ClipEdge,
+  type ClipRangeAction,
   type ClipRange,
 } from "@/lib/clip-trim";
 import pub from "./publishing.module.css";
@@ -20,13 +22,13 @@ type Props = {
   disabled?: boolean;
   describedBy?: string;
   onChange: (range: ClipRange) => void;
-  onCommit: (range: ClipRange, edge: ClipEdge) => void;
+  onCommit: (range: ClipRange, edge: ClipRangeAction) => void;
 };
 
 type View = { start: number; end: number };
 type Drag = {
   pointerId: number;
-  edge: ClipEdge;
+  edge: ClipRangeAction;
   startX: number;
   width: number;
   base: ClipRange;
@@ -38,6 +40,7 @@ type Drag = {
 const BARS = 160;
 const quantize = (value: number) => Math.round(value * 10) / 10;
 const rounded = (value: number) => Math.round(value * 1000) / 1000;
+const actionValue = (range: ClipRange, action: ClipRangeAction) => range[action === "move" ? "start" : action];
 
 function computedView(range: ClipRange, duration: number): View {
   const low = Math.min(range.start, range.end);
@@ -100,12 +103,14 @@ export default function ClipRangeStrip({
 
   const rangeAt = (state: Drag, clientX: number): ClipRange => {
     const delta = ((clientX - state.startX) / state.width) * (state.viewEnd - state.viewStart);
+    if (state.edge === "move")
+      return moveClipRange(state.base, quantize(delta), total, state.viewStart, state.viewEnd);
     return constrainClipEdge(
       state.edge, quantize(state.base[state.edge] + delta), state.base, total, state.viewStart, state.viewEnd,
     );
   };
 
-  const begin = (edge: ClipEdge) => (event: PointerEvent<HTMLButtonElement>) => {
+  const begin = (edge: ClipRangeAction, event: PointerEvent<HTMLButtonElement>) => {
     if (disabled || drag.current || event.button !== 0 || !track.current) return;
     const width = track.current.getBoundingClientRect().width;
     if (width <= 0) return;
@@ -115,7 +120,7 @@ export default function ClipRangeStrip({
     const base = { ...safe };
     drag.current = {
       pointerId: event.pointerId, edge, startX: event.clientX, width, base,
-      viewStart: view.start, viewEnd: view.end, lastValue: base[edge],
+      viewStart: view.start, viewEnd: view.end, lastValue: actionValue(base, edge),
     };
     setDragView(view);
   };
@@ -124,8 +129,8 @@ export default function ClipRangeStrip({
     const state = drag.current;
     if (!state || state.pointerId !== event.pointerId || disabled) return;
     const next = rangeAt(state, event.clientX);
-    if (next[state.edge] === state.lastValue) return;
-    state.lastValue = next[state.edge];
+    if (actionValue(next, state.edge) === state.lastValue) return;
+    state.lastValue = actionValue(next, state.edge);
     onChange(next);
   };
 
@@ -136,29 +141,30 @@ export default function ClipRangeStrip({
     if (event.currentTarget.hasPointerCapture(event.pointerId))
       event.currentTarget.releasePointerCapture(event.pointerId);
     setDragView(null);
-    if (cancel) {
-      if (state.lastValue !== state.base[state.edge]) onChange(state.base);
+    if (cancel || disabled) {
+      if (state.lastValue !== actionValue(state.base, state.edge)) onChange(state.base);
       return;
     }
     const next = rangeAt(state, event.clientX);
-    if (next[state.edge] !== state.lastValue) {
-      state.lastValue = next[state.edge];
+    if (actionValue(next, state.edge) !== state.lastValue) {
+      state.lastValue = actionValue(next, state.edge);
       onChange(next);
     }
-    if (next[state.edge] !== state.base[state.edge]) onCommit(next, state.edge);
+    if (actionValue(next, state.edge) !== actionValue(state.base, state.edge)) onCommit(next, state.edge);
   };
 
-  const keyboard = (event: KeyboardEvent<HTMLButtonElement>, edge: ClipEdge) => {
+  const keyboard = (event: KeyboardEvent<HTMLButtonElement>, edge: ClipRangeAction) => {
     const active = drag.current;
     if (event.key === "Escape" && active) {
+      event.preventDefault();
+      drag.current = null;
       if (event.currentTarget.hasPointerCapture(active.pointerId))
         event.currentTarget.releasePointerCapture(active.pointerId);
-      drag.current = null;
       setDragView(null);
-      if (active.lastValue !== active.base[edge]) onChange(active.base);
+      if (active.lastValue !== actionValue(active.base, active.edge)) onChange(active.base);
       return;
     }
-    if (disabled) return;
+    if (disabled || active) return;
 
     let value: number;
     if (event.key === "Home") value = 0;
@@ -166,15 +172,24 @@ export default function ClipRangeStrip({
     else if (["ArrowLeft", "ArrowRight", "ArrowDown", "ArrowUp"].includes(event.key)) {
       const step = event.shiftKey ? 1 : 0.1;
       const direction = event.key === "ArrowLeft" || event.key === "ArrowDown" ? -1 : 1;
-      value = safe[edge] + direction * step;
+      value = actionValue(safe, edge) + direction * step;
     } else return;
 
     event.preventDefault();
     // Keep the 0.1s step relative to the current value; re-gridding a value
     // such as 32.85 would turn one arrow press into a 0.15s jump.
-    const next = constrainClipEdge(edge, value, safe, total);
+    const next = edge === "move"
+      ? moveClipRange(safe, value - safe.start, total)
+      : constrainClipEdge(edge, value, safe, total);
     onChange(next);
     onCommit(next, edge);
+  };
+
+  const moveBy = (delta: number) => {
+    if (disabled || drag.current) return;
+    const next = moveClipRange(safe, delta, total);
+    onChange(next);
+    onCommit(next, "move");
   };
 
   const handle = (edge: ClipEdge, percentage: number) => {
@@ -188,7 +203,7 @@ export default function ClipRangeStrip({
       aria-valuenow={rounded(value)} aria-valuetext={`${value.toFixed(1)} saniye`}
       aria-describedby={describedBy}
       title={`${label} ${action}: ${value.toFixed(1)} sn. Sürükleyin veya ok tuşlarını kullanın.`}
-      onPointerDown={begin(edge)} onPointerMove={move} onPointerUp={(event) => finish(event)}
+      onPointerDown={(event) => begin(edge, event)} onPointerMove={move} onPointerUp={(event) => finish(event)}
       onPointerCancel={(event) => finish(event, true)} onLostPointerCapture={(event) => finish(event, true)}
       onKeyDown={(event) => keyboard(event, edge)} />;
   };
@@ -202,6 +217,16 @@ export default function ClipRangeStrip({
           <div className={pub.trimShade} style={{ left: `${endPct}%`, right: 0 }} />
           <div className={pub.trimSelection} style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }} />
         </div>
+        <button type="button" role="slider" aria-orientation="horizontal"
+          className={pub.trimMove} style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }}
+          disabled={disabled} aria-label={`${label} aralığı taşı`}
+          aria-valuemin={0} aria-valuemax={rounded(Math.max(0, total - (safe.end - safe.start)))}
+          aria-valuenow={rounded(safe.start)}
+          aria-valuetext={`${safe.start.toFixed(1)} – ${safe.end.toFixed(1)} saniye; süre ${(safe.end - safe.start).toFixed(1)} saniye`}
+          aria-describedby={describedBy} title="Süreyi koruyarak taşı: sürükleyin veya ok tuşlarını kullanın."
+          onPointerDown={(event) => begin("move", event)} onPointerMove={move} onPointerUp={(event) => finish(event)}
+          onPointerCancel={(event) => finish(event, true)} onLostPointerCapture={(event) => finish(event, true)}
+          onKeyDown={(event) => keyboard(event, "move")} />
         {handle("start", startPct)}
         {handle("end", endPct)}
       </div>
@@ -209,6 +234,12 @@ export default function ClipRangeStrip({
     <div className={pub.trimMeta}>
       <span>Dalga {formatTime(view.start)} – {formatTime(view.end)}</span>
       <span>Seçili {safe.start.toFixed(1)} – {safe.end.toFixed(1)} sn · {Math.max(0, safe.end - safe.start).toFixed(1)} sn</span>
+    </div>
+    <div className={pub.actions} role="group" aria-label={`${label} süreyi koruyarak taşı`}>
+      <button type="button" className={`btn btn-sm ${pub.trimShiftButton}`} disabled={disabled || safe.start <= 0}
+        onClick={() => moveBy(-1)}>1 sn erkene taşı</button>
+      <button type="button" className={`btn btn-sm ${pub.trimShiftButton}`} disabled={disabled || safe.end >= total}
+        onClick={() => moveBy(1)}>1 sn geçe taşı</button>
     </div>
   </div>;
 }

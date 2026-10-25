@@ -160,7 +160,10 @@ def build_command(req: RenderRequest) -> tuple[list[str], float]:
 
     # 2b) Ses hazırlama: AI seslendirme varsa doğrudan o kullanılır, yoksa video parçaları birleştirilir
     if has_vo:
-        f.append(f"[{vo_index}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{T:.3f},asetpts=PTS-STARTPTS[aj]")
+        # atempo below still runs on this stream: trim on its PRE-speed clock.
+        # Trimming to T first cuts narration twice when the video is sped up.
+        voice_duration = T * tl.speed
+        f.append(f"[{vo_index}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{voice_duration:.3f},asetpts=PTS-STARTPTS[aj]")
     else:
         f.append(f"[{audio_label}]aresample=48000,aformat=channel_layouts=stereo,asplit={n}" + "".join(f"[as{i}]" for i in range(n)))
         for i, (s, e) in enumerate(tl.segments):

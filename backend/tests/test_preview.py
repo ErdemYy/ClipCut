@@ -180,6 +180,47 @@ def test_real_preview_matches_full_render_window(tmp_path, monkeypatch, audio_mo
     assert audio_error < 0.02, f"mean audio error {audio_error}"
 
 
+@pytest.mark.parametrize("speed,vo_duration", [(2, 8), (0.5, 8), (1, 8), (2, 2)])
+def test_voiceover_speed_preserves_available_audio_and_preview(tmp_path, speed, vo_duration):
+    """Trim narration on the pre-speed clock; never invent missing speech."""
+    source = tmp_path / "source.mp4"
+    vo = tmp_path / "voice.wav"
+    run_ffmpeg(["-f", "lavfi", "-i", "color=blue:size=160x90:rate=30",
+                "-t", "8", "-c:v", "libx264", str(source)])
+    run_ffmpeg(["-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000",
+                "-t", str(vo_duration), str(vo)])
+    plan = EditPlan.model_validate({"operations": [
+        {"type": "trim", "start": 1, "end": 8},
+        {"type": "cut_range", "start": 3, "end": 4},
+        {"type": "transition", "duration": 0.4},
+        {"type": "speed", "factor": speed},
+    ]})
+    timeline = build_timeline(plan, 8)
+    req = RenderRequest(source=source, info=probe(source), plan=plan, timeline=timeline,
+                        transcript=None, output=tmp_path / "full.mp4", work_dir=tmp_path / "work",
+                        fonts_dir=tmp_path, resolve_track=lambda _: None, voiceover=vo)
+    render(req, lambda _: None)
+    expected = min(vo_duration / speed, timeline.output_duration)
+    full_pcm = tmp_path / "full.pcm"
+    run_ffmpeg(["-i", str(req.output), "-vn", "-ac", "1", "-ar", "48000",
+                "-c:a", "pcm_f32le", "-f", "f32le", str(full_pcm)])
+    full_values = array("f")
+    full_values.frombytes(full_pcm.read_bytes())
+    assert len(full_values) / 48000 == pytest.approx(expected, abs=0.12)
+    # Late preview must include the same narration, not only the first half.
+    start = max(0, expected - 0.6)
+    short = replace(req, output=tmp_path / "preview.mp4", work_dir=tmp_path / "short-work",
+                    output_start=start, output_duration=0.4)
+    render(short, lambda _: None)
+    preview_pcm = tmp_path / "preview.pcm"
+    run_ffmpeg(["-i", str(short.output), "-vn", "-ac", "1", "-ar", "48000",
+                "-c:a", "pcm_f32le", "-f", "f32le", str(preview_pcm)])
+    values = array("f")
+    values.frombytes(preview_pcm.read_bytes())
+    assert len(values) / 48000 == pytest.approx(0.4, abs=0.08)
+    assert sum(abs(v) for v in values) / len(values) > 0.02
+
+
 def test_preview_tail_unique_files_and_no_project_writes(tmp_path, monkeypatch):
     from app import jobs
     from app.models import Project
