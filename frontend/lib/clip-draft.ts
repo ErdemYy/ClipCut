@@ -7,8 +7,16 @@ export const CLIP_FORMATS: readonly ExportFormat[] = ["9:16", "1:1", "4:5", "16:
 export type ClipDraft = {
   ranges: Record<number, ClipRange>; selected: number[];
   options: RenderOptions; fill: FillMode; snap: boolean;
-  covers: Record<number, number>; aspect: ExportFormat;
+  covers: Record<number, number>; aspects: ExportFormat[];
 };
+
+/** Preserve the first selected format so adding another does not change the preview. */
+export function toggleClipFormat(current: readonly ExportFormat[], format: ExportFormat): ExportFormat[] {
+  if (!CLIP_FORMATS.includes(format)) return [...current];
+  if (current.includes(format))
+    return current.length <= 1 ? [...current] : current.filter((item) => item !== format);
+  return [...current, format];
+}
 
 export const clipDraftStorageKey = (projectId: string) => `clipcut:clip-draft:v1:${projectId}`;
 
@@ -21,7 +29,7 @@ export function clipDraftContext(projectId: string, source: string | null, durat
 export function defaultClipDraft(clips: ClipCandidate[]): ClipDraft {
   return { ranges: Object.fromEntries(clips.map(({ id, start, end }) => [id, { start, end }])),
     covers: Object.fromEntries(clips.map(({ id }) => [id, 0])),
-    aspect: "9:16",
+    aspects: ["9:16"],
     selected: [], options: { resolution: "1080p", quality: "standard" }, fill: "blur", snap: true };
 }
 
@@ -42,8 +50,18 @@ export function readClipDraft(raw: string | null, context: string, clips: ClipCa
       || d.selected.some((id: unknown) => typeof id !== "number" || !ids.has(id))) return null;
     const ranges: Record<number, ClipRange> = {};
     const covers: Record<number, number> = {};
-    const aspect = d.aspect === undefined ? "9:16" : d.aspect;
-    if (!CLIP_FORMATS.includes(aspect)) return null;
+    let aspects: ExportFormat[];
+    if (d.aspects === undefined) {
+      const legacy = d.aspect === undefined ? "9:16" : d.aspect;
+      if (!CLIP_FORMATS.includes(legacy)) return null;
+      aspects = [legacy];
+    } else {
+      if (!Array.isArray(d.aspects) || d.aspects.length < 1 || d.aspects.length > CLIP_FORMATS.length
+        || new Set(d.aspects).size !== d.aspects.length
+        || d.aspects.some((format: unknown) => !CLIP_FORMATS.includes(format as ExportFormat))
+        || (d.aspect !== undefined && d.aspect !== d.aspects[0])) return null;
+      aspects = [...d.aspects];
+    }
     // Additive v1 migration: snapshots saved before cover selection start at zero.
     if (d.covers !== undefined && (!d.covers || typeof d.covers !== "object" || Array.isArray(d.covers)
       || Object.keys(d.covers).length !== ids.size)) return null;
@@ -55,12 +73,15 @@ export function readClipDraft(raw: string | null, context: string, clips: ClipCa
       if (clipCoverError(cover, range)) return null;
       covers[clip.id] = cover;
     }
-    return { ranges, covers, aspect, selected: [...d.selected], snap: d.snap, fill: d.fill,
+    return { ranges, covers, aspects, selected: [...d.selected], snap: d.snap, fill: d.fill,
       options: { resolution: d.options.resolution, quality: d.options.quality } };
   } catch { return null; }
 }
 
 export function serializeClipDraft(draft: ClipDraft, context: string, clips: ClipCandidate[], duration: number): string | null {
-  const raw = JSON.stringify({ version: 1, context, draft });
+  if (!Array.isArray(draft.aspects) || draft.aspects.length === 0) return null;
+  // Keep the legacy first format for older clients while storing the full list.
+  const stored = { ...draft, aspect: draft.aspects[0] };
+  const raw = JSON.stringify({ version: 1, context, draft: stored });
   return readClipDraft(raw, context, clips, duration) ? raw : null;
 }

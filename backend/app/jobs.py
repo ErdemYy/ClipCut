@@ -417,14 +417,19 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
     out_dir = pdir / "outputs" / token
     out_dir.mkdir(parents=True)
     base = EditPlan.model_validate(p.plan)
-    entries = clips if clips is not None else [{"aspect_ratio": f} for f in options["formats"]]
+    aspect_ratios = None
+    if clips is not None:
+        aspect_ratios = options.get("aspect_ratios") or [options["aspect_ratio"]]
+        tasks = [(index, entry, aspect) for index, entry in enumerate(clips) for aspect in aspect_ratios]
+    else:
+        tasks = [(None, None, aspect) for aspect in options["formats"]]
     outputs = []
-    for i, entry in enumerate(entries):
-        aspect = options["aspect_ratio"] if clips is not None else entry["aspect_ratio"]
+    for i, (clip_index, entry, aspect) in enumerate(tasks):
         plan = (clip_plan(base, entry["start"], entry["end"], aspect, options["fill"])
-                if clips is not None else export_plan(base, aspect, options["fill"]))
+                if entry is not None else export_plan(base, aspect, options["fill"]))
         tl = project_timeline(p, plan)
-        stem = f"clip_{i + 1:02d}_{FORMAT_NAMES[aspect]}" if clips is not None else FORMAT_NAMES[aspect]
+        stem = (f"clip_{clip_index + 1:02d}_{FORMAT_NAMES[aspect]}" if clip_index is not None
+                else FORMAT_NAMES[aspect])
         output = out_dir / f"{stem}.mp4"
         vo = pdir / p.voiceover_file if clips is None and p.voiceover_file else None
         req = RenderRequest(
@@ -435,19 +440,20 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
             resolve_overlay=lambda t: assets.resolve_overlay(t, pdir), voiceover=vo,
             resolution=options["resolution"], quality=options["quality"],
         )
-        progress(i / len(entries), f"{i + 1}/{len(entries)} · {aspect} render ediliyor")
-        meta = render(req, lambda value: progress((i + value * 0.95) / len(entries), f"{i + 1}/{len(entries)} · {aspect}"))
+        progress(i / len(tasks), f"{i + 1}/{len(tasks)} · {aspect} render ediliyor")
+        meta = render(req, lambda value: progress((i + value * 0.95) / len(tasks), f"{i + 1}/{len(tasks)} · {aspect}"))
         # Selected frame is in SOURCE time. Map it to each edited output;
         # if it was cut away, explicitly fall back to that output's first frame.
-        selected_source = (entry["start"] + entry.get("cover_at", 0) if clips is not None
+        selected_source = (entry["start"] + entry.get("cover_at", 0) if entry is not None
                            else options.get("thumbnail_at", 0))
         mapped = tl.map_time(selected_source)
         at = min(max(0, mapped or 0), max(0, tl.output_duration - 0.1))
         thumb = out_dir / f"{stem}.jpg"
         make_thumbnail(output, thumb, at=at)
-        cover_meta = {"cover_at": at, "cover_source_at": entry["start"] + at} if clips is not None else {}
+        cover_meta = {"cover_at": at, "cover_source_at": entry["start"] + at} if entry is not None else {}
         outputs.append({"aspect_ratio": aspect, "label": stem, **meta, **cover_meta,
-                        "start": entry.get("start"), "end": entry.get("end"),
+                        "start": entry.get("start") if entry is not None else None,
+                        "end": entry.get("end") if entry is not None else None,
                         "output": media_url(p.id, output.relative_to(pdir).as_posix()),
                         "thumbnail": media_url(p.id, thumb.relative_to(pdir).as_posix()),
                         "thumbnail_fallback": mapped is None})
@@ -463,7 +469,8 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
             "analysis_id": options["analysis_id"],
             "clips": [{"id": entry["id"], "start": entry["start"], "end": entry["end"],
                        "cover_at": entry.get("cover_at", 0)} for entry in clips],
-            "aspect_ratio": options["aspect_ratio"], "fill": options["fill"],
+            "aspect_ratio": aspect_ratios[0], "aspect_ratios": aspect_ratios,
+            "fill": options["fill"],
             "resolution": options["resolution"], "quality": options["quality"],
             "render_revision": render_revision(p),
         }

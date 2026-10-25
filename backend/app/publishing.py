@@ -99,7 +99,15 @@ class ClipExportBody(RenderOptions):
     clip_ranges: list[ClipRange] | None = Field(default=None, min_length=1, max_length=10)
     clip_covers: list[ClipCover] | None = Field(default=None, min_length=1, max_length=10)
     aspect_ratio: Format = "9:16"
+    # New clients may request several formats in one job; the first is the
+    # preview format and the legacy field remains for compatible callers.
+    aspect_ratios: list[Format] | None = Field(default=None, min_length=1, max_length=4)
     fill: Literal["blur", "fit", "crop"] = "blur"
+
+    @field_validator("aspect_ratios")
+    @classmethod
+    def unique_aspect_ratios(cls, values):
+        return list(dict.fromkeys(values)) if values else values
 
     @field_validator("clip_ids")
     @classmethod

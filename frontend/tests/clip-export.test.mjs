@@ -24,7 +24,7 @@ const result = {
       { id: 1, start: 10.25, end: 50.25, cover_at: 12.5 },
       { id: 0, start: 60, end: 90, cover_at: 0 },
     ],
-    aspect_ratio: "4:5",
+    aspect_ratio: "4:5", aspect_ratios: ["4:5", "1:1"],
     fill: "crop",
     resolution: "1080p",
     quality: "standard",
@@ -37,7 +37,7 @@ const input = {
     { id: 1, start: 10.25, end: 50.25, cover: 12.5 },
     { id: 0, start: 60, end: 90, cover: 0 },
   ],
-  aspect: "4:5",
+  aspects: ["4:5", "1:1"],
   fill: "crop",
   options: { resolution: "1080p", quality: "standard" },
   renderRevision: "revision-a",
@@ -47,7 +47,10 @@ const freshness = (patch = {}) => clipExportFreshness(result, { ...input, ...pat
 test("fresh only when ordered clips, ranges, covers, format and render inputs all match", () => {
   assert.equal(freshness(), "fresh");
   assert.equal(freshness({ analysisId: "ffffffffffff" }), "stale");
-  assert.equal(freshness({ aspect: "9:16" }), "stale");
+  assert.equal(freshness({ aspects: ["9:16"] }), "stale");
+  assert.equal(freshness({ aspects: ["4:5"] }), "stale");
+  assert.equal(freshness({ aspects: ["4:5", "1:1", "16:9"] }), "stale");
+  assert.equal(freshness({ aspects: ["1:1", "4:5"] }), "stale");
   assert.equal(freshness({ fill: "fit" }), "stale");
   assert.equal(freshness({ options: { resolution: "720p", quality: "standard" } }), "stale");
   assert.equal(freshness({ options: { resolution: "1080p", quality: "high" } }), "stale");
@@ -73,4 +76,12 @@ test("millisecond roundoff is tolerated but real changes are not", () => {
 test("legacy results without a request snapshot are unknown, not silently fresh", () => {
   assert.equal(clipExportFreshness({ ...result, clip_request: undefined }, input), "unknown");
   assert.equal(freshness({ renderRevision: undefined }), "unknown");
+});
+
+test("a legacy single-format snapshot is fresh only for that one format", () => {
+  const legacy = { ...result, clip_request: { ...result.clip_request, aspect_ratios: undefined } };
+  assert.equal(clipExportFreshness(legacy, { ...input, aspects: ["4:5"] }), "fresh");
+  assert.equal(clipExportFreshness(legacy, input), "stale");
+  assert.equal(clipExportFreshness({ ...result,
+    clip_request: { ...result.clip_request, aspect_ratios: undefined, aspect_ratio: undefined } }, input), "unknown");
 });

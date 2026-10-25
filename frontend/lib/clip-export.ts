@@ -3,7 +3,7 @@ import type { ExportFormat, FillMode, PublishResult, RenderOptions } from "./api
 export type ClipExportInput = {
   analysisId: string;
   clips: { id: number; start: number; end: number; cover: number }[];
-  aspect: ExportFormat;
+  aspects: ExportFormat[];
   fill: FillMode;
   options: RenderOptions;
   renderRevision?: string;
@@ -19,7 +19,12 @@ const sameTime = (rendered: number, current: number) =>
 export function clipExportFreshness(result: PublishResult, input: ClipExportInput): ClipExportFreshness {
   const request = result.clip_request;
   if (!request || !input.renderRevision) return "unknown";
-  if (request.analysis_id !== input.analysisId || request.aspect_ratio !== input.aspect
+  const requestAspects = request.aspect_ratios
+    ?? (request.aspect_ratio ? [request.aspect_ratio] : []);
+  if (requestAspects.length === 0) return "unknown";
+  if (request.analysis_id !== input.analysisId
+    || requestAspects.length !== input.aspects.length
+    || requestAspects.some((format, index) => format !== input.aspects[index])
     || request.fill !== input.fill || request.resolution !== input.options.resolution
     || request.quality !== input.options.quality || request.render_revision !== input.renderRevision
     || request.clips.length !== input.clips.length) return "stale";

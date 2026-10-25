@@ -241,6 +241,15 @@ def test_clip_api_rejects_foreign_and_invented_candidates(isolated_api):
     assert captures[-1][1][2][0]["start"] == 30
     assert client.post("/api/projects/video/clips/render", json={**body, "aspect_ratio": "1:1"}).status_code == 200
     assert captures[-1][1][1]["aspect_ratio"] == "1:1"
+    multi = {**body, "aspect_ratio": "1:1", "aspect_ratios": ["1:1", "4:5"]}
+    assert client.post("/api/projects/video/clips/render", json=multi).status_code == 200
+    assert captures[-1][1][1]["aspect_ratios"] == ["1:1", "4:5"]
+    count = len(captures)
+    assert client.post("/api/projects/video/clips/render",
+                       json={**body, "aspect_ratios": []}).status_code == 422
+    assert client.post("/api/projects/video/clips/render",
+                       json={**body, "aspect_ratios": ["1:1", "21:9"]}).status_code == 422
+    assert len(captures) == count
     manual = {**body, "clip_ranges": [{"id": 0, "start": 40, "end": 75}]}
     assert client.post("/api/projects/video/clips/render", json=manual).status_code == 200
     assert (captures[-1][1][2][0]["start"], captures[-1][1][2][0]["end"]) == (40, 75)
@@ -493,6 +502,54 @@ def test_preview_window_fractional_tail_tolerance_is_only_float_roundoff():
         preview_window(30.20001, 5, 30.3)
 
 
+def test_real_multi_format_clip_render_outputs_and_archive(tmp_path, monkeypatch):
+    import hashlib
+    from app import jobs
+    from app.ffmpeg import probe, run_ffmpeg
+    from app.models import Project
+
+    monkeypatch.setattr(jobs, "project_dir", lambda _: tmp_path)
+    monkeypatch.setattr(jobs, "_save_project", lambda *_: pytest.fail("Independent clips must not save the project"))
+    source = tmp_path / "source.mp4"
+    run_ffmpeg(["-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10", "-t", "1",
+                "-c:v", "libx264", "-preset", "ultrafast", str(source)])
+    before_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    p = Project(id="multi", name="Multi", source_file="source.mp4", duration=1,
+                width=160, height=90, status="ready", output_file="outputs/preserved.mp4")
+    snapshot = p.model_dump()
+    options = ClipExportBody(analysis_id="abcdef123456", clip_ids=[0], aspect_ratio="9:16",
+                             aspect_ratios=["9:16", "1:1"], resolution="720p", quality="fast",
+                             fill="fit").model_dump()
+    result = jobs.task_publish(lambda *_: None, snapshot, options,
+                               [{"id": 0, "start": 0.1, "end": 0.9, "cover_at": 0.4}])
+    assert [out["label"] for out in result["outputs"]] == [
+        "clip_01_reels_tiktok", "clip_01_instagram_square"]
+    assert [out["aspect_ratio"] for out in result["outputs"]] == ["9:16", "1:1"]
+    assert [(out["width"], out["height"]) for out in result["outputs"]] == [(720, 1280), (720, 720)]
+    for out in result["outputs"]:
+        path = tmp_path / out["output"].split("/projects/multi/")[1]
+        info = probe(path)
+        assert (info.width, info.height) == (out["width"], out["height"])
+        assert info.duration == pytest.approx(0.8, abs=0.15)
+        assert out["cover_at"] == pytest.approx(0.4, abs=0.1)
+        assert out["cover_source_at"] == pytest.approx(0.5, abs=0.1)
+        assert (tmp_path / out["thumbnail"].split("/projects/multi/")[1]).stat().st_size > 0
+    archive = tmp_path / result["archive"].split("/projects/multi/")[1]
+    with zipfile.ZipFile(archive) as zf:
+        assert set(zf.namelist()) == {
+            "clip_01_reels_tiktok.mp4", "clip_01_reels_tiktok.jpg",
+            "clip_01_instagram_square.mp4", "clip_01_instagram_square.jpg"}
+    assert result["clip_request"] == {
+        "analysis_id": "abcdef123456",
+        "clips": [{"id": 0, "start": 0.1, "end": 0.9, "cover_at": 0.4}],
+        "aspect_ratio": "9:16", "aspect_ratios": ["9:16", "1:1"],
+        "fill": "fit", "resolution": "720p", "quality": "fast",
+        "render_revision": jobs.render_revision(p),
+    }
+    assert snapshot == p.model_dump()
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == before_hash
+
+
 @pytest.mark.parametrize("cover_at,dominant", [(0, 2), (26, 0)])
 def test_real_per_clip_cover_is_from_rendered_frame_and_in_zip(tmp_path, monkeypatch, cover_at, dominant):
     import hashlib
@@ -522,7 +579,8 @@ def test_real_per_clip_cover_is_from_rendered_frame_and_in_zip(tmp_path, monkeyp
     assert result["clip_request"] == {
         "analysis_id": "abcdef123456",
         "clips": [{"id": 0, "start": 5, "end": 35, "cover_at": cover_at}],
-        "aspect_ratio": "9:16", "fill": "fit", "resolution": "720p", "quality": "fast",
+        "aspect_ratio": "9:16", "aspect_ratios": ["9:16"],
+        "fill": "fit", "resolution": "720p", "quality": "fast",
         "render_revision": jobs.render_revision(p),
     }
     thumb = tmp_path / out["thumbnail"].split("/projects/cover/")[1]

@@ -92,7 +92,7 @@ export type ClipPreviewResult = RenderOptions & {
 export type ClipRenderSnapshot = {
   analysis_id: string;
   clips: { id: number; start: number; end: number; cover_at: number }[];
-  aspect_ratio: ExportFormat; fill: FillMode;
+  aspect_ratio?: ExportFormat; aspect_ratios?: ExportFormat[]; fill: FillMode;
   resolution: RenderOptions["resolution"]; quality: RenderOptions["quality"];
   render_revision: string;
 };
@@ -304,7 +304,8 @@ export const api = {
   analyzeClips: (id: string, options: { min_duration: number; max_duration: number; max_clips: number }) =>
     request<Job>(`/api/projects/${id}/clips/analyze`, json(options)),
   renderClips: (id: string, options: RenderOptions & {
-    analysis_id: string; clip_ids: number[]; aspect_ratio: ExportFormat; fill: FillMode;
+    analysis_id: string; clip_ids: number[]; aspect_ratio: ExportFormat;
+    aspect_ratios?: ExportFormat[]; fill: FillMode;
     clip_ranges?: ClipRangeOverride[];
     clip_covers?: { id: number; at: number }[];
   }) => request<Job>(`/api/projects/${id}/clips/render`, json(options)),
