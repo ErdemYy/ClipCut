@@ -73,6 +73,11 @@ test("millisecond roundoff is tolerated but real changes are not", () => {
     { id: 0, start: 60, end: 90, cover: 0 }] }), "stale");
 });
 
+test("preview-only format changes do not make prepared exports stale", () => {
+  assert.equal(freshness({ previewAspect: "1:1" }), "fresh");
+  assert.equal(freshness({ previewAspect: "4:5" }), "fresh");
+});
+
 test("legacy results without a request snapshot are unknown, not silently fresh", () => {
   assert.equal(clipExportFreshness({ ...result, clip_request: undefined }, input), "unknown");
   assert.equal(freshness({ renderRevision: undefined }), "unknown");

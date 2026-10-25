@@ -18,7 +18,7 @@ function load(file, dependencies = {}) {
 }
 const trim = load("../lib/clip-trim.ts");
 const cover = load("../lib/clip-cover.ts");
-const { CLIP_FORMATS, clipDraftStorageKey, clipDraftContext, defaultClipDraft, readClipDraft, serializeClipDraft, toggleClipFormat } =
+const { CLIP_FORMATS, clipDraftStorageKey, clipDraftContext, clipPreviewFormat, defaultClipDraft, readClipDraft, serializeClipDraft, toggleClipFormat } =
   load("../lib/clip-draft.ts", { "./clip-trim": trim, "./clip-cover": cover });
 const clips = [{ id: 0, start: 10, end: 45 }, { id: 1, start: 50, end: 80 }];
 const context = clipDraftContext("project-a", "/source.mp4", 100, true, "analysis-a", clips);
@@ -28,6 +28,7 @@ const snapshot = () => {
   draft.ranges[0] = { start: 12.85, end: 47.85 };
   draft.selected = [1, 0]; draft.options = { resolution: "720p", quality: "high" };
   draft.fill = "crop"; draft.snap = false; draft.aspects = ["4:5", "1:1"];
+  draft.previewAspect = "1:1";
   draft.covers[0] = 12.5;
   return draft;
 };
@@ -86,6 +87,7 @@ test("reset defaults are fresh objects and do not mutate candidates", () => {
   assert.equal(b.options.quality, "standard");
   assert.equal(b.aspects.length, 1);
   assert.equal(b.aspects[0], "9:16");
+  assert.equal(b.previewAspect, "9:16");
   assert.deepEqual([...CLIP_FORMATS], ["9:16", "1:1", "4:5", "16:9"]);
   assert.equal(clips[0].start, 10);
 });
@@ -101,10 +103,11 @@ test("format toggles preserve selection order, cannot empty the list and ignore 
 
 test("legacy drafts without covers or aspects migrate without losing existing data", () => {
   const draft = snapshot();
-  delete draft.covers; delete draft.aspects; draft.aspect = "4:5";
+  delete draft.covers; delete draft.aspects; delete draft.previewAspect; draft.aspect = "4:5";
   const restored = readClipDraft(JSON.stringify({ version: 1, context, draft }), context, clips, 100);
   assert.deepEqual(plain(restored.covers), { 0: 0, 1: 0 });
   assert.deepEqual(plain(restored.aspects), ["4:5"]);
+  assert.equal(restored.previewAspect, "4:5");
   assert.deepEqual(plain(restored.selected), [1, 0]);
   assert.equal(restored.ranges[0].start, 12.85);
 });
@@ -112,6 +115,28 @@ test("legacy drafts without covers or aspects migrate without losing existing da
 test("a legacy aspect that disagrees with the new list is rejected", () => {
   const draft = snapshot(); draft.aspect = "16:9";
   assert.equal(readClipDraft(JSON.stringify({ version: 1, context, draft }), context, clips, 100), null);
+});
+
+test("older multi-format drafts default preview to the first selected format", () => {
+  const draft = snapshot(); delete draft.previewAspect;
+  const restored = readClipDraft(JSON.stringify({ version: 1, context, draft }), context, clips, 100);
+  assert.equal(restored.previewAspect, "4:5");
+  assert.deepEqual(plain(restored.aspects), ["4:5", "1:1"]);
+});
+
+test("preview format must belong to the selected outputs", () => {
+  for (const previewAspect of ["9:16", "21:9", null, 1, []]) {
+    assert.equal(serializeClipDraft({ ...snapshot(), previewAspect }, context, clips, 100), null);
+  }
+});
+
+test("preview selection does not reorder outputs and falls back when removed", () => {
+  const aspects = ["9:16", "1:1"];
+  assert.equal(clipPreviewFormat(aspects, "1:1"), "1:1");
+  assert.deepEqual(aspects, ["9:16", "1:1"]);
+  assert.equal(clipPreviewFormat(toggleClipFormat(aspects, "1:1"), "1:1"), "9:16");
+  assert.equal(clipPreviewFormat(toggleClipFormat(aspects, "4:5"), "1:1"), "1:1");
+  assert.equal(clipPreviewFormat(aspects, "21:9"), "9:16");
 });
 
 test("covers persist precisely and reject stale, nonfinite or forged per-clip values", () => {

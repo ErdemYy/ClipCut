@@ -7,10 +7,15 @@ export const CLIP_FORMATS: readonly ExportFormat[] = ["9:16", "1:1", "4:5", "16:
 export type ClipDraft = {
   ranges: Record<number, ClipRange>; selected: number[];
   options: RenderOptions; fill: FillMode; snap: boolean;
-  covers: Record<number, number>; aspects: ExportFormat[];
+  covers: Record<number, number>; aspects: ExportFormat[]; previewAspect: ExportFormat;
 };
 
-/** Preserve the first selected format so adding another does not change the preview. */
+/** A removed preview format falls back to the first remaining output format. */
+export function clipPreviewFormat(aspects: readonly ExportFormat[], preferred?: ExportFormat): ExportFormat {
+  return preferred && aspects.includes(preferred) ? preferred : aspects[0] ?? "9:16";
+}
+
+/** Preserve output selection order and keep at least one format. */
 export function toggleClipFormat(current: readonly ExportFormat[], format: ExportFormat): ExportFormat[] {
   if (!CLIP_FORMATS.includes(format)) return [...current];
   if (current.includes(format))
@@ -29,7 +34,7 @@ export function clipDraftContext(projectId: string, source: string | null, durat
 export function defaultClipDraft(clips: ClipCandidate[]): ClipDraft {
   return { ranges: Object.fromEntries(clips.map(({ id, start, end }) => [id, { start, end }])),
     covers: Object.fromEntries(clips.map(({ id }) => [id, 0])),
-    aspects: ["9:16"],
+    aspects: ["9:16"], previewAspect: "9:16",
     selected: [], options: { resolution: "1080p", quality: "standard" }, fill: "blur", snap: true };
 }
 
@@ -62,6 +67,8 @@ export function readClipDraft(raw: string | null, context: string, clips: ClipCa
         || (d.aspect !== undefined && d.aspect !== d.aspects[0])) return null;
       aspects = [...d.aspects];
     }
+    const previewAspect = d.previewAspect === undefined ? aspects[0] : d.previewAspect;
+    if (!aspects.includes(previewAspect)) return null;
     // Additive v1 migration: snapshots saved before cover selection start at zero.
     if (d.covers !== undefined && (!d.covers || typeof d.covers !== "object" || Array.isArray(d.covers)
       || Object.keys(d.covers).length !== ids.size)) return null;
@@ -73,7 +80,7 @@ export function readClipDraft(raw: string | null, context: string, clips: ClipCa
       if (clipCoverError(cover, range)) return null;
       covers[clip.id] = cover;
     }
-    return { ranges, covers, aspects, selected: [...d.selected], snap: d.snap, fill: d.fill,
+    return { ranges, covers, aspects, previewAspect, selected: [...d.selected], snap: d.snap, fill: d.fill,
       options: { resolution: d.options.resolution, quality: d.options.quality } };
   } catch { return null; }
 }
