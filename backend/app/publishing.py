@@ -80,11 +80,24 @@ class ClipRange(BaseModel):
         return self
 
 
+class ClipCover(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+    id: int = Field(..., ge=0)
+    at: float = Field(..., ge=0)  # Relative to the selected clip's start.
+
+
+def clip_cover_time(at: float, duration: float) -> float:
+    if not all(math.isfinite(v) for v in (at, duration)) or at < 0 or duration - at < 0.1 - 1e-9:
+        raise ValueError("Kapak zamanı klip içinde olmalı ve klip sonunda en az 0.1 sn kalmalı.")
+    return at
+
+
 class ClipExportBody(RenderOptions):
     analysis_id: str = Field(..., pattern=r"^[a-f0-9]{12}$")
     clip_ids: list[int] = Field(..., min_length=1, max_length=10)
     # Optional manual trims. When present every selected clip must have exactly one range.
     clip_ranges: list[ClipRange] | None = Field(default=None, min_length=1, max_length=10)
+    clip_covers: list[ClipCover] | None = Field(default=None, min_length=1, max_length=10)
     aspect_ratio: Format = "9:16"
     fill: Literal["blur", "fit", "crop"] = "blur"
 
@@ -101,6 +114,13 @@ class ClipExportBody(RenderOptions):
         ids = [item.id for item in values]
         if len(ids) != len(set(ids)):
             raise ValueError("Her klip için tek bir aralık gönderin.")
+        return values
+
+    @field_validator("clip_covers")
+    @classmethod
+    def unique_clip_covers(cls, values):
+        if values and len({item.id for item in values}) != len(values):
+            raise ValueError("Her klip için tek bir kapak zamanı gönderin.")
         return values
 
 

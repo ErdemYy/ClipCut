@@ -27,7 +27,7 @@ from .edit.layers import LayerTimingsBody, timeline_revision, update_layer_timin
 from .edit.templates import TEMPLATES, get_template
 from .ffmpeg import ffmpeg_exe, make_thumbnail, probe
 from .models import Job, Project, get_session, init_db
-from .publishing import BatchExportBody, ClipAnalyzeBody, ClipExportBody, ClipPreviewBody, PreviewBody, RenderOptions, ThumbnailBody, preview_window
+from .publishing import BatchExportBody, ClipAnalyzeBody, ClipExportBody, ClipPreviewBody, PreviewBody, RenderOptions, ThumbnailBody, clip_cover_time, preview_window
 from .storyboard import (StoryboardCreateBody, StoryboardGenerateBody, StoryboardSaveBody,
                          merge_saved_spec, public_storyboard, scene_ready)
 from .storyboard import scene_file
@@ -1109,13 +1109,22 @@ def render_clips(project_id: str, body: ClipExportBody, session: Session = Depen
     overrides = {item.id: item for item in body.clip_ranges or []}
     if body.clip_ranges is not None and set(overrides) != set(body.clip_ids):
         raise HTTPException(422, "Elle ayarlanan aralıklar seçilen kliplerle eşleşmiyor.")
+    covers = {item.id: item.at for item in body.clip_covers or []}
+    if body.clip_covers is not None and set(covers) != set(body.clip_ids):
+        raise HTTPException(422, "Kapak zamanları seçilen kliplerle eşleşmiyor.")
     selected = []
     for clip_id in body.clip_ids:
         clip = dict(candidates[clip_id])
         if body.clip_ranges is not None:
             override = overrides[clip_id]
             clip["start"], clip["end"] = round(override.start, 3), round(override.end, 3)
+        clip["cover_at"] = covers.get(clip_id, 0)
         selected.append(clip)
     if any(not (0 <= c["start"] < c["end"] <= p.duration and 29.99 <= c["end"] - c["start"] <= 60.01) for c in selected):
         raise HTTPException(422, "Klip aralıkları geçersiz; yeniden analiz edin.")
+    try:
+        for clip in selected:
+            clip_cover_time(clip["cover_at"], clip["end"] - clip["start"])
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     return job_dict(jobs.submit(p.id, "clip_render", jobs.task_publish, p.model_dump(), body.model_dump(), selected))

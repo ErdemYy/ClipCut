@@ -17,8 +17,9 @@ function load(file, dependencies = {}) {
   return exported;
 }
 const trim = load("../lib/clip-trim.ts");
+const cover = load("../lib/clip-cover.ts");
 const { clipDraftStorageKey, clipDraftContext, defaultClipDraft, readClipDraft, serializeClipDraft } =
-  load("../lib/clip-draft.ts", { "./clip-trim": trim });
+  load("../lib/clip-draft.ts", { "./clip-trim": trim, "./clip-cover": cover });
 const clips = [{ id: 0, start: 10, end: 45 }, { id: 1, start: 50, end: 80 }];
 const context = clipDraftContext("project-a", "/source.mp4", 100, true, "analysis-a", clips);
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -27,6 +28,7 @@ const snapshot = () => {
   draft.ranges[0] = { start: 12.85, end: 47.85 };
   draft.selected = [1, 0]; draft.options = { resolution: "720p", quality: "high" };
   draft.fill = "crop"; draft.snap = false;
+  draft.covers[0] = 12.5;
   return draft;
 };
 
@@ -80,4 +82,41 @@ test("reset defaults are fresh objects and do not mutate candidates", () => {
   assert.equal(b.selected.length, 0);
   assert.equal(b.options.quality, "standard");
   assert.equal(clips[0].start, 10);
+});
+
+test("legacy drafts without covers migrate without losing existing ranges or selections", () => {
+  const draft = snapshot();
+  delete draft.covers;
+  const restored = readClipDraft(JSON.stringify({ version: 1, context, draft }), context, clips, 100);
+  assert.deepEqual(plain(restored.covers), { 0: 0, 1: 0 });
+  assert.deepEqual(plain(restored.selected), [1, 0]);
+  assert.equal(restored.ranges[0].start, 12.85);
+});
+
+test("covers persist precisely and reject stale, nonfinite or forged per-clip values", () => {
+  const draft = snapshot();
+  draft.covers[0] = 34.9;
+  assert.equal(readClipDraft(serializeClipDraft(draft, context, clips, 100), context, clips, 100).covers[0], 34.9);
+  for (const covers of [{ 0: -1, 1: 0 }, { 0: 35, 1: 0 }, { 0: NaN, 1: 0 }, { 0: 0 },
+    { 0: 0, 99: 0 }, { 0: "1", 1: 0 }, null, [0, 0]]) {
+    assert.equal(serializeClipDraft({ ...draft, covers }, context, clips, 100), null);
+  }
+});
+
+test("shortening a clip does not silently move a cover beyond its new end", () => {
+  const draft = snapshot();
+  draft.covers[0] = 32;
+  draft.ranges[0] = { start: 10, end: 40 };
+  assert.equal(serializeClipDraft(draft, context, clips, 100), null);
+  draft.covers[0] = 29.9;
+  assert.ok(serializeClipDraft(draft, context, clips, 100));
+});
+
+test("cover bounds use clip-relative time and tolerate fractional boundary roundoff only", () => {
+  assert.equal(cover.clipCoverMax({ start: 40, end: 75 }), 34.9);
+  assert.equal(cover.clipCoverError(34.9, { start: 40, end: 75 }), null);
+  assert.ok(cover.clipCoverError(35, { start: 40, end: 75 }));
+  assert.ok(cover.clipCoverError(Infinity, { start: 40, end: 75 }));
+  assert.equal(cover.clipCoverError(30.2, { start: 0, end: 30.3 }), null);
+  assert.ok(cover.clipCoverError(30.20001, { start: 0, end: 30.3 }));
 });

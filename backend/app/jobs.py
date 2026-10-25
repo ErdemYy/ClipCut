@@ -404,9 +404,14 @@ def task_analyze_clips(progress, snapshot: dict, options: dict) -> dict:
 
 def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | None = None) -> dict:
     """Sequential batch with immutable editor snapshot and unique, job-local files."""
-    from .publishing import FORMAT_NAMES, clip_plan, export_plan
+    from .publishing import FORMAT_NAMES, clip_cover_time, clip_plan, export_plan
 
     p = Project.model_validate(snapshot)
+    # Validate every cover before any render; direct/recovered worker calls are
+    # protected too. Missing cover selections keep the legacy first-frame cover.
+    if clips is not None:
+        for entry in clips:
+            clip_cover_time(float(entry.get("cover_at", 0)), float(entry["end"]) - float(entry["start"]))
     pdir = project_dir(p.id)
     token = uuid.uuid4().hex
     out_dir = pdir / "outputs" / token
@@ -434,11 +439,14 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
         meta = render(req, lambda value: progress((i + value * 0.95) / len(entries), f"{i + 1}/{len(entries)} · {aspect}"))
         # Selected frame is in SOURCE time. Map it to each edited output;
         # if it was cut away, explicitly fall back to that output's first frame.
-        mapped = tl.map_time(options.get("thumbnail_at", entry.get("start", 0)))
+        selected_source = (entry["start"] + entry.get("cover_at", 0) if clips is not None
+                           else options.get("thumbnail_at", 0))
+        mapped = tl.map_time(selected_source)
         at = min(max(0, mapped or 0), max(0, tl.output_duration - 0.1))
         thumb = out_dir / f"{stem}.jpg"
         make_thumbnail(output, thumb, at=at)
-        outputs.append({"aspect_ratio": aspect, "label": stem, **meta,
+        cover_meta = {"cover_at": at, "cover_source_at": entry["start"] + at} if clips is not None else {}
+        outputs.append({"aspect_ratio": aspect, "label": stem, **meta, **cover_meta,
                         "start": entry.get("start"), "end": entry.get("end"),
                         "output": media_url(p.id, output.relative_to(pdir).as_posix()),
                         "thumbnail": media_url(p.id, thumb.relative_to(pdir).as_posix()),

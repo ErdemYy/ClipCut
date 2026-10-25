@@ -31,6 +31,10 @@ def test_publish_validation():
         ThumbnailBody(at=float("inf"))
     with pytest.raises(ValidationError):
         ClipExportBody(analysis_id="../../file", clip_ids=[0])
+    for covers in ([{"id": 0, "at": -1}], [{"id": 0, "at": float("nan")}],
+                   [{"id": 0, "at": float("inf")}], [{"id": 0, "at": 0}, {"id": 0, "at": 1}], []):
+        with pytest.raises(ValidationError):
+            ClipExportBody(analysis_id="abcdef123456", clip_ids=[0], clip_covers=covers)
     preview = ClipPreviewBody(analysis_id="abcdef123456", clip_id=0,
                               clip_range={"id": 0, "start": 30, "end": 65})
     assert preview.duration == 5 and preview.start == 0 and preview.clip_range.start == 30
@@ -238,6 +242,14 @@ def test_clip_api_rejects_foreign_and_invented_candidates(isolated_api):
     manual = {**body, "clip_ranges": [{"id": 0, "start": 40, "end": 75}]}
     assert client.post("/api/projects/video/clips/render", json=manual).status_code == 200
     assert (captures[-1][1][2][0]["start"], captures[-1][1][2][0]["end"]) == (40, 75)
+    assert captures[-1][1][2][0]["cover_at"] == 0
+    assert client.post("/api/projects/video/clips/render",
+                       json={**manual, "clip_covers": [{"id": 0, "at": 20}]}).status_code == 200
+    assert captures[-1][1][2][0]["cover_at"] == 20
+    for covers in ([{"id": 9, "at": 0}], [{"id": 0, "at": 35}], [{"id": 0, "at": 34.95}]):
+        count = len(captures)
+        assert client.post("/api/projects/video/clips/render", json={**manual, "clip_covers": covers}).status_code == 422
+        assert len(captures) == count
     assert client.post("/api/projects/video/clips/render",
                        json={**manual, "clip_ranges": [{"id": 9, "start": 40, "end": 75}]}).status_code == 422
     assert client.post("/api/projects/video/clips/render",
@@ -471,6 +483,67 @@ def test_preview_window_fractional_tail_tolerance_is_only_float_roundoff():
     assert preview_window(30.2, 5, 30.3) == pytest.approx(0.1)
     with pytest.raises(ValueError):
         preview_window(30.20001, 5, 30.3)
+
+
+@pytest.mark.parametrize("cover_at,dominant", [(0, 2), (26, 0)])
+def test_real_per_clip_cover_is_from_rendered_frame_and_in_zip(tmp_path, monkeypatch, cover_at, dominant):
+    import hashlib
+    from app import jobs
+    from app.ffmpeg import run_ffmpeg
+    from app.models import Project
+
+    monkeypatch.setattr(jobs, "project_dir", lambda _: tmp_path)
+    monkeypatch.setattr(jobs, "_save_project", lambda *_: pytest.fail("Independent clips must not save the project"))
+    source = tmp_path / "source.mp4"
+    run_ffmpeg(["-f", "lavfi", "-i", "color=blue:size=160x90:rate=15",
+                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                "-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=red:t=fill:enable='gte(t,30)'",
+                "-t", "36", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", str(source)])
+    before_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    p = Project(id="cover", name="Cover", source_file="source.mp4", thumbnail_file="preserved.jpg",
+                duration=36, width=160, height=90, has_audio=True, status="ready",
+                output_file="outputs/preserved.mp4", plan={"operations": [{"type": "color_grade", "preset": "warm"}]})
+    snapshot = p.model_dump()
+    before = copy.deepcopy(snapshot)
+    options = ClipExportBody(analysis_id="abcdef123456", clip_ids=[0], resolution="720p", quality="fast", fill="fit").model_dump()
+    result = jobs.task_publish(lambda *_: None, snapshot, options,
+                               [{"id": 0, "start": 5, "end": 35, "cover_at": cover_at}])
+    out = result["outputs"][0]
+    assert out["cover_at"] == cover_at and out["cover_source_at"] == 5 + cover_at
+    assert out["thumbnail_fallback"] is False
+    thumb = tmp_path / out["thumbnail"].split("/projects/cover/")[1]
+    raw = tmp_path / "cover.rgb"
+    run_ffmpeg(["-i", str(thumb), "-vf", "crop=2:2:(iw-2)/2:(ih-2)/2,scale=1:1",
+                "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", str(raw)])
+    pixel = raw.read_bytes()
+    assert len(pixel) == 3
+    assert pixel[dominant] > pixel[2 if dominant == 0 else 0] + 80
+    archive = tmp_path / result["archive"].split("/projects/cover/")[1]
+    with zipfile.ZipFile(archive) as zf:
+        assert set(zf.namelist()) == {thumb.name, thumb.with_suffix(".mp4").name}
+        assert zf.read(thumb.name) == thumb.read_bytes()
+    assert snapshot == before == p.model_dump()
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == before_hash
+
+
+def test_clip_cover_validation_precedes_all_worker_renders(tmp_path, monkeypatch):
+    from app import jobs
+    from app.models import Project
+    monkeypatch.setattr(jobs, "render", lambda *_: pytest.fail("Validate ALL covers before rendering"))
+    p = Project(name="Invalid covers", source_file="source.mp4", duration=100)
+    with pytest.raises(ValueError):
+        jobs.task_publish(lambda *_: None, p.model_dump(), {"aspect_ratio": "9:16"},
+                          [{"id": 0, "start": 0, "end": 30, "cover_at": 0},
+                           {"id": 1, "start": 30, "end": 60, "cover_at": 30}])
+
+
+def test_clip_cover_fractional_bounds():
+    from app.publishing import clip_cover_time
+    assert clip_cover_time(0, 30) == 0
+    assert clip_cover_time(30.2, 30.3) == 30.2
+    for value in (-1, 30, 29.95, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            clip_cover_time(value, 30)
 
 
 def test_batch_maps_selected_cover_after_trim_and_speed(tmp_path, monkeypatch):

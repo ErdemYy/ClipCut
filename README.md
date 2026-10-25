@@ -38,6 +38,12 @@ Sonuçta klip içi bölüm, kaynak zamanı ve istenen/gerçek süre ayrı göste
 
 Motor tam klibin filtre grafiğini koruyup yalnızca seçilen çıktı penceresini kodlar; bu sayede geç altyazılar doğru zamanda kalır. Geç bir bölümün hazırlanması önceki karelerin işlenmesini gerektirebilir; anlık sonuç garantisi yoktur. Önizleme dosyaları mevcut saklama davranışını izler, otomatik temizlik yoktur. Ücretli AI/TTS çağrısı yapılmaz.
 
+### Kısa klip kapağı (JPG)
+
+Her adayın **Kapak zamanı (klip içinde sn)** değeri klibin başlangıcına göre 0 ile (klip süresi − 0,1 sn) arasında seçilir. **İlk kare** ve **Klip ortası** hızlı seçenekleri, **Kaynak karesini göster** ise duraklatılmış yaklaşık kadraj önizlemesi sunar. Kesin JPG, klipler hazırlanırken altyazı/renk/reframe/dolgu uygulanmış MP4'ten çıkarılır ve ZIP'e MP4 ile birlikte eklenir. Ana projenin kapağı ve kaynak medya değişmez.
+
+Kapak zamanı klip aralığına göre saklanır. Klip kısaltılınca kapak yeni bitişin ötesinde kalırsa sessizce taşınmaz; satır içi hata gösterilir ve **Klipleri hazırla** kapatılır. Sunucu da geçersiz veya eksik kapak eşleşmelerini iş oluşturmadan reddeder. Eski taslaklar kapak 0 kabul edilerek açılır; **Taslağı sıfırla** kapakları da ilk kareye döndürür. Kapak seçimi ücretli AI çağrısı yapmaz; kare zamanı kare hassasiyetindedir, ancak geç karelerin hazırlanması render süresini artırabilir.
+
 ## Senaryodan çok sahneli video
 
 1. **Yeni Video → Senaryodan Üret** bölümüne konuyu veya hazır senaryoyu yazın; dil, format, ortak stil, 2–12 sahne ve sahne süresini seçin.

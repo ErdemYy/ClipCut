@@ -34,6 +34,8 @@ export function PublishingResults({ job }: { job?: Job }) {
     {result.outputs.map((out) => <div className={styles.output} key={out.output}>
       <strong>{out.label.replaceAll("_", " ")}</strong>
       <small>{out.aspect_ratio} · {out.width} × {out.height} · {formatTime(out.duration)}</small>
+      {typeof out.cover_at === "number" && <small>Kapak: klip içinde {out.cover_at.toFixed(1)} sn
+        {typeof out.cover_source_at === "number" ? ` · kaynakta ${out.cover_source_at.toFixed(1)} sn` : ""}. JPG render edilmiş videodan alınır; zamanlama kare hassasiyetindedir.</small>}
       <video controls preload="none" src={mediaUrl(out.output)} poster={mediaUrl(out.thumbnail)} aria-label={`${out.label} önizlemesi`} />
       <div className={styles.actions}>
         <a className="btn btn-sm" href={downloadUrl(out.output)} download>MP4 indir</a>

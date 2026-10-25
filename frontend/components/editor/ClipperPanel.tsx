@@ -6,13 +6,14 @@ import { clampClipRange, clipRangeError, snapClipEdge, type ClipRangeAction, typ
 import { clipDraftContext, clipDraftStorageKey, defaultClipDraft, readClipDraft, serializeClipDraft } from "@/lib/clip-draft";
 import { canRedoClipRanges, canUndoClipRanges, clipRangeHistoryReducer, emptyClipRangeHistory, type ClipRanges } from "@/lib/clip-range-history";
 import { clipPreviewIsStale, clipPreviewSelection, clipPreviewWindow, type ClipPreviewSelection } from "@/lib/clip-preview";
+import { clipCoverError, clipCoverMax } from "@/lib/clip-cover";
 import ClipRangeStrip from "./ClipRangeStrip";
 import { JobProgress } from "./SubtitlePanel";
 import { PublishingResults, RenderSettings } from "./PublishingControls";
 import styles from "./editor-parts.module.css";
 import pub from "./publishing.module.css";
 
-type PreviewSelection = { start: number; end: number };
+type PreviewSelection = { start: number; end: number; still?: boolean };
 type RangeField = keyof ClipRange;
 
 const FILL_LABELS: Record<FillMode, string> = {
@@ -29,6 +30,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const [maximum, setMaximum] = useState(60);
   const [count, setCount] = useState(5);
   const [selected, setSelected] = useState<number[]>([]);
+  const [covers, setCovers] = useState<Record<number, number>>({});
   const [rangeHistory, dispatchRanges] = useReducer(clipRangeHistoryReducer, emptyClipRangeHistory);
   const ranges = rangeHistory.present;
   const [rangeDragging, setRangeDragging] = useState(false);
@@ -93,6 +95,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     ? selected.map((id) => result.clips.find((clip) => clip.id === id)).filter((clip): clip is ClipCandidate => !!clip)
     : [];
   const invalidSelected = selectedClips.filter((clip) => clipRangeError(rangeFor(clip), project.duration));
+  const invalidCovers = selectedClips.filter((clip) => clipCoverError(covers[clip.id] ?? 0, rangeFor(clip)));
   const previewResultClip = shownClipPreview && result
     ? result.clips.find((clip) => clip.id === shownClipPreview.clip_id) : undefined;
   const clipPreviewStale = !!shownClipPreview && clipPreviewIsStale(shownClipPreview,
@@ -116,6 +119,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     dispatchRanges({ type: "reset", context: draftContext, ranges: draft.ranges });
     setRangeDragging(false);
     setSelected(draft.selected);
+    setCovers(draft.covers);
     setOptions(draft.options);
     setFill(draft.fill);
     setSnap(draft.snap);
@@ -126,16 +130,16 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   useEffect(() => {
     // The hydration render must never overwrite stored data with empty defaults.
     if (!draftContext || hydratedDraft !== draftContext || !result) return;
-    const raw = serializeClipDraft({ ranges, selected, options, fill, snap }, draftContext, result.clips, project.duration);
+    const raw = serializeClipDraft({ ranges, covers, selected, options, fill, snap }, draftContext, result.clips, project.duration);
     if (!raw) {
-      setDraftNotice("Geçersiz aralık saklanmadı; son geçerli taslak korunuyor.");
+      setDraftNotice("Geçersiz aralık veya kapak zamanı saklanmadı; son geçerli taslak korunuyor.");
       return;
     }
     try {
       localStorage.setItem(clipDraftStorageKey(project.id), raw);
       setDraftNotice("Taslak bu tarayıcıda saklandı; kaynak ve ana edit değişmedi.");
     } catch { setDraftNotice("Taslak saklanamadı (depolama kapalı veya dolu); değişiklikler yalnızca bu oturumda kalır."); }
-  }, [draftContext, hydratedDraft, result, project.id, project.duration, ranges, selected, options, fill, snap]);
+  }, [draftContext, hydratedDraft, result, project.id, project.duration, ranges, covers, selected, options, fill, snap]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const resetDraft = () => {
@@ -143,6 +147,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     const draft = defaultClipDraft(result.clips);
     dispatchRanges({ type: "reset", context: draftContext, ranges: draft.ranges });
     setSelected(draft.selected); setOptions(draft.options);
+    setCovers(draft.covers);
     setFill(draft.fill); setSnap(draft.snap); setPreview(null);
     setPreviewWindows({ context: draftContext, values: Object.fromEntries(result.clips.map((clip) =>
       [clip.id, { start: 0, duration: 5 as const }])) });
@@ -166,7 +171,10 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     const seek = () => {
       foreground.currentTime = preview.start;
       if (background && background.readyState >= 1) background.currentTime = preview.start;
-      foreground.play().catch(() => {});
+      if (preview.still) {
+        foreground.pause();
+        background?.pause();
+      } else foreground.play().catch(() => {});
     };
     if (foreground.readyState >= 1) seek();
     else foreground.addEventListener("loadedmetadata", seek, { once: true });
@@ -223,6 +231,12 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     const range = rangeFor(clip);
     setPreview({ start: range.start, end: range.end });
   };
+  const previewCover = (clip: ClipCandidate) => {
+    const range = rangeFor(clip);
+    const at = covers[clip.id] ?? 0;
+    if (clipCoverError(at, range) || clipRangeError(range, project.duration)) return;
+    setPreview({ start: range.start + at, end: range.end, still: true });
+  };
 
   const previewActual = async (clip: ClipCandidate) => {
     const range = rangeFor(clip);
@@ -251,8 +265,8 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   };
   const render = async () => {
     if (!analysis || !result) return;
-    if (invalidSelected.length > 0) {
-      notify("Seçili kliplerde geçersiz aralık var; başlangıç ve bitişi düzeltin.", true);
+    if (invalidSelected.length > 0 || invalidCovers.length > 0) {
+      notify("Seçili kliplerde geçersiz aralık veya kapak zamanı var; alanları düzeltin.", true);
       return;
     }
     setPending(true);
@@ -260,6 +274,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
       await track(await api.renderClips(project.id, {
         ...options, analysis_id: analysis.id, clip_ids: selected, aspect_ratio: "9:16", fill,
         clip_ranges: selectedClips.map((clip) => ({ id: clip.id, ...rangeFor(clip) })),
+        clip_covers: selectedClips.map((clip) => ({ id: clip.id, at: covers[clip.id] ?? 0 })),
       }), () => notify("Bağımsız klipler hazır."));
     } catch (e) { notify((e as Error).message, true); }
     finally { setPending(false); }
@@ -303,8 +318,8 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
             Yakın cümle sınırlarına yapıştır
           </label>
         </div>
-        <p className={pub.note} role="status">{draftNotice} Seçimler, geçerli aralıklar, yapıştırma ve çıktı ayarları yalnızca bu tarayıcıda saklanır; kaynak veya analiz değişince eski taslak kullanılmaz. Sıfırlama aday aralıklarını ve varsayılan ayarları geri getirir.</p>
-        <p className={pub.note}>Aralık geri al / ileri al yalnızca klip zamanlarını değiştirir; seçim, yapıştırma ve çıktı ayarlarını etkilemez. Bir sürükleme tek adımdır; sayı girişi alanından çıkınca tamamlanır. Geçersiz veya tamamlanmamış girişte geri al önce son tamamlanan aralığa döner. Son 30 adım bu panel oturumunda tutulur; sayfa/panel yeniden açılınca, kaynak/analiz değişince veya Taslağı sıfırla ile geçmiş temizlenir. Son aralıklar yine otomatik saklanır; ana video edit geçmişi değişmez.</p>
+        <p className={pub.note} role="status">{draftNotice} Seçimler, geçerli aralıklar, kapak zamanları, yapıştırma ve çıktı ayarları yalnızca bu tarayıcıda saklanır; kaynak veya analiz değişince eski taslak kullanılmaz. Sıfırlama aday aralıklarını, kapakları ve varsayılan ayarları geri getirir.</p>
+        <p className={pub.note}>Aralık geri al / ileri al yalnızca klip zamanlarını değiştirir; seçim, kapak, yapıştırma ve çıktı ayarlarını etkilemez. Bir sürükleme tek adımdır; sayı girişi alanından çıkınca tamamlanır. Geçersiz veya tamamlanmamış girişte geri al önce son tamamlanan aralığa döner. Son 30 adım bu panel oturumunda tutulur; sayfa/panel yeniden açılınca, kaynak/analiz değişince veya Taslağı sıfırla ile geçmiş temizlenir. Son aralıklar yine otomatik saklanır; ana video edit geçmişi değişmez.</p>
         {!canSnap && <p className={pub.note}>Kaynak transkripti veya cümle zamanı yok; yapıştırma kapalı. Başlangıç/bitiş yine elle ayarlanabilir.</p>}
         <p id={waveformHelpId} className={pub.note}>Başlangıç/bitiş tutamaçları süreyi ayarlar; aralığın ortasını sürüklemek süreyi koruyarak taşır. Sürükleme görünür dalga penceresiyle sınırlıdır. Odaklanan tutamaç veya aralıkta ok tuşları 0,1 sn, Shift ile 1 sn; Home/End kaynak sınırına taşır. Escape veya dokunma iptali sürüklemeyi geri alır. Taşırken cümleye yapıştırma uygulanmaz; 1 sn taşı düğmeleri sürükleme alternatifidir. 30–60 sn ve kaynak sınırları korunur. Sayı alanları hassas giriş içindir. Dalga, kaynak sesin mono tepe genliğidir; editin kesim/hız veya müzik karışımı değildir. Çizim görünür pencereye göre ölçeklenir; ses düzeyi ölçümü değildir.</p>
         <p className={pub.note}>Gerçek önizleme başlangıcı her klibin kendi sıfırına göredir. Bölümü ve 5/10 sn süreyi seçip render düğmesine basın; işlem otomatik başlamaz, ücretli AI çağrısı yapmaz. Geç bölümler önceki karelerin işlenmesini gerektirebilir. Bölüm seçimleri taslağa kaydedilmez; yeniden açılışta son önizlemenin bölümü geri gelir.</p>
@@ -318,6 +333,8 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
           const error = clipRangeError(range, project.duration);
           const previewSelection = previewWindowFor(clip.id);
           const previewPart = clipPreviewWindow(range, previewSelection);
+          const coverAt = covers[clip.id] ?? 0;
+          const coverError = clipCoverError(coverAt, range);
           return <article className={pub.candidate} key={clip.id}>
             <label className={pub.candidateLabel}>
               <input type="checkbox" checked={selected.includes(clip.id)} disabled={disabled} onChange={(e) => setSelected((current) => e.target.checked ? [...current, clip.id] : current.filter((i) => i !== clip.id))} />
@@ -348,6 +365,22 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
             </div>}
             <small>{clip.reason}</small>
             {clip.excerpt && <p>{clip.excerpt}</p>}
+            <fieldset className={pub.settings} disabled={disabled || !!error}>
+              <legend>{index + 1}. klip · JPG kapak karesi</legend>
+              <label>Kapak zamanı (klip içinde sn)<input className={`input ${pub.trimShiftButton}`} type="number"
+                min="0" max={clipCoverMax(range)} step="0.1" value={Number.isFinite(coverAt) ? coverAt : ""}
+                onChange={(e) => setCovers((current) => ({ ...current, [clip.id]: e.target.valueAsNumber }))} /></label>
+              <div className={pub.actions}>
+                <button type="button" className={`btn btn-sm ${pub.trimShiftButton}`}
+                  onClick={() => setCovers((current) => ({ ...current, [clip.id]: 0 }))}>İlk kare</button>
+                <button type="button" className={`btn btn-sm ${pub.trimShiftButton}`}
+                  onClick={() => setCovers((current) => ({ ...current, [clip.id]: Math.round((range.end - range.start) * 500) / 1000 }))}>Klip ortası</button>
+                <button type="button" className={`btn btn-sm ${pub.trimShiftButton}`} disabled={!!coverError}
+                  onClick={() => previewCover(clip)}>Kaynak karesini göster</button>
+              </div>
+            </fieldset>
+            {coverError && !error ? <p className={pub.error} role="alert">{coverError} En geç {clipCoverMax(range).toFixed(3)} sn seçin.</p>
+              : !error && <p className={pub.note}>Kapak kaynakta {(range.start + coverAt).toFixed(1)} sn karesinden seçilir. Kaynak önizleme yaklaşık kadrajdır; kesin JPG klip render edilince, altyazı/renk/dolgu uygulanmış MP4&apos;ten çıkarılır ve ZIP&apos;e eklenir. Ana proje kapağı değişmez; kare hassasiyeti geçerlidir. Klip aralığını değiştirince kapak zamanını kontrol edin; çıktıdaki kapağı değiştirmek için klipleri yeniden hazırlayın.</p>}
             <fieldset className={pub.settings} disabled={disabled || !!error}>
               <legend>{index + 1}. klip · gerçek önizleme bölümü</legend>
               <label>Önizleme başlangıcı (klip içinde sn)<input className={`input ${pub.trimShiftButton}`} type="number"
@@ -407,7 +440,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
                 } else alignBackdrop();
               }} />
           </div>
-          <p className={pub.note}>9:16 · {fillLabel} · {formatTime(preview.start)} – {formatTime(preview.end)}. Canlı önizleme çıktının kadraj ve dolgu görünümünü gösterir; kesin sonuç FFmpeg render çıktısıdır.</p>
+          <p className={pub.note}>9:16 · {fillLabel} · {preview.still ? `Kapak için kaynak kare: ${preview.start.toFixed(1)} sn` : `${formatTime(preview.start)} – ${formatTime(preview.end)}`}. Canlı önizleme çıktının kadraj ve dolgu görünümünü yaklaşık gösterir. {preview.still ? "Altyazı/renk uygulanmış kesin kapak JPG klip render edilince oluşur." : "Kesin sonuç gerçek FFmpeg render çıktısıdır."}</p>
         </section>}
         {(shownClipPreview || clipPreviewRunning || clipPreviewJob?.status === "failed") &&
           <section className={pub.actualPreview} aria-label="Gerçek FFmpeg klip önizlemesi">
@@ -426,7 +459,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
           </section>}
         <RenderSettings value={options} onChange={setOptions} fill={fill} onFill={setFill} disabled={disabled} />
         <p className={pub.note}>Elle ayarlanan klipler 30–60 saniye aralığında kalmalı ve kaynak video sınırlarını aşmamalıdır. 9:16 bağımsız MP4 dosyaları hazırlanır. Kaynak ses ve varsa altyazı/renk stili korunur; editteki hız, kesimler, seslendirme ve zamanlı katmanlar bu kliplere uygulanmaz.</p>
-        <button id="clips-render" className="btn btn-primary" disabled={disabled || selected.length === 0 || invalidSelected.length > 0} onClick={render}>
+        <button id="clips-render" className="btn btn-primary" disabled={disabled || selected.length === 0 || invalidSelected.length > 0 || invalidCovers.length > 0} onClick={render}>
           {selected.length} klibi hazırla
         </button>
       </>}

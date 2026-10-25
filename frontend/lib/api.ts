@@ -92,7 +92,8 @@ export type ClipPreviewResult = RenderOptions & {
 export type PublishResult = {
   archive: string;
   outputs: { label: string; aspect_ratio: ExportFormat; output: string; thumbnail: string;
-    width: number; height: number; duration: number; thumbnail_fallback: boolean }[];
+    width: number; height: number; duration: number; thumbnail_fallback: boolean;
+    cover_at?: number; cover_source_at?: number }[];
 };
 export type ClipCandidate = {
   id: number; start: number; end: number; duration: number; score: number;
@@ -297,6 +298,7 @@ export const api = {
   renderClips: (id: string, options: RenderOptions & {
     analysis_id: string; clip_ids: number[]; aspect_ratio: ExportFormat; fill: FillMode;
     clip_ranges?: ClipRangeOverride[];
+    clip_covers?: { id: number; at: number }[];
   }) => request<Job>(`/api/projects/${id}/clips/render`, json(options)),
   previewClip: (id: string, options: RenderOptions & {
     analysis_id: string; clip_id: number; clip_range?: ClipRangeOverride;

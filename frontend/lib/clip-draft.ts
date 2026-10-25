@@ -1,9 +1,11 @@
 import type { ClipCandidate, FillMode, RenderOptions } from "./api";
 import { clipRangeError, type ClipRange } from "./clip-trim";
+import { clipCoverError } from "./clip-cover";
 
 export type ClipDraft = {
   ranges: Record<number, ClipRange>; selected: number[];
   options: RenderOptions; fill: FillMode; snap: boolean;
+  covers: Record<number, number>;
 };
 
 export const clipDraftStorageKey = (projectId: string) => `clipcut:clip-draft:v1:${projectId}`;
@@ -16,6 +18,7 @@ export function clipDraftContext(projectId: string, source: string | null, durat
 
 export function defaultClipDraft(clips: ClipCandidate[]): ClipDraft {
   return { ranges: Object.fromEntries(clips.map(({ id, start, end }) => [id, { start, end }])),
+    covers: Object.fromEntries(clips.map(({ id }) => [id, 0])),
     selected: [], options: { resolution: "1080p", quality: "standard" }, fill: "blur", snap: true };
 }
 
@@ -35,12 +38,19 @@ export function readClipDraft(raw: string | null, context: string, clips: ClipCa
     if (Object.keys(d.ranges).length !== ids.size || new Set(d.selected).size !== d.selected.length
       || d.selected.some((id: unknown) => typeof id !== "number" || !ids.has(id))) return null;
     const ranges: Record<number, ClipRange> = {};
+    const covers: Record<number, number> = {};
+    // Additive v1 migration: snapshots saved before cover selection start at zero.
+    if (d.covers !== undefined && (!d.covers || typeof d.covers !== "object" || Array.isArray(d.covers)
+      || Object.keys(d.covers).length !== ids.size)) return null;
     for (const clip of clips) {
       const range = d.ranges[clip.id];
       if (!range || clipRangeError(range, duration)) return null;
       ranges[clip.id] = { start: range.start, end: range.end };
+      const cover = d.covers === undefined ? 0 : d.covers[clip.id];
+      if (clipCoverError(cover, range)) return null;
+      covers[clip.id] = cover;
     }
-    return { ranges, selected: [...d.selected], snap: d.snap, fill: d.fill,
+    return { ranges, covers, selected: [...d.selected], snap: d.snap, fill: d.fill,
       options: { resolution: d.options.resolution, quality: d.options.quality } };
   } catch { return null; }
 }
