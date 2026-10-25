@@ -335,17 +335,17 @@ def task_preview(progress, snapshot: dict, options: dict) -> dict:
 
 
 def task_preview_clip(progress, snapshot: dict, options: dict, clip: dict) -> dict:
-    """Render the first 5/10s of one clip with the same styling as its final export."""
-    from .publishing import ClipPreviewBody, clip_plan
+    """Render a clip-relative window with the same full-clip styling as export."""
+    from .publishing import ClipPreviewBody, clip_plan, preview_window
 
     p = Project.model_validate(snapshot)
     opts = ClipPreviewBody.model_validate(options)
     if not p.source_file:
         raise ValueError("Projede video yok.")
     start, end = float(clip["start"]), float(clip["end"])
-    preview_duration = min(float(opts.duration), end - start)
-    if not (0 <= start < end <= p.duration and preview_duration >= 0.1):
+    if not (0 <= start < end <= p.duration):
         raise ValueError("Klip önizleme aralığı geçersiz.")
+    preview_duration = preview_window(opts.start, opts.duration, end - start)
     pdir = project_dir(p.id)
     base = EditPlan.model_validate(p.plan)
     plan = clip_plan(base, start, end, opts.aspect_ratio, opts.fill)
@@ -361,7 +361,7 @@ def task_preview_clip(progress, snapshot: dict, options: dict, clip: dict) -> di
         fonts_dir=assets.fonts_dir(), resolve_track=lambda t: assets.resolve_track(t, pdir),
         resolve_overlay=lambda t: assets.resolve_overlay(t, pdir), voiceover=None,
         resolution=opts.resolution, quality=opts.quality,
-        output_start=0.0, output_duration=preview_duration,
+        output_start=opts.start, output_duration=preview_duration,
     )
     try:
         meta = render(req, lambda value: progress(0.05 + value * 0.94, "Gerçek klip önizlemesi render ediliyor"))
@@ -373,7 +373,8 @@ def task_preview_clip(progress, snapshot: dict, options: dict, clip: dict) -> di
         raise
     # Preview output only; project plan, source, render metadata and full clips stay untouched.
     return {"output": media_url(p.id, out_rel), **meta, "duration": preview_duration,
-            "start": start, "end": start + preview_duration,
+             "start": start + opts.start, "end": start + opts.start + preview_duration,
+             "preview_start": opts.start, "requested_duration": opts.duration,
             "clip_id": clip.get("id"), "clip_start": start, "clip_end": end,
             "analysis_id": opts.analysis_id, "aspect_ratio": opts.aspect_ratio,
             "fill": opts.fill, "resolution": opts.resolution, "quality": opts.quality,

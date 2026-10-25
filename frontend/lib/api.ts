@@ -87,6 +87,7 @@ export type ClipPreviewResult = RenderOptions & {
   output: string; start: number; end: number; duration: number;
   width: number; height: number; clip_id: number; clip_start: number; clip_end: number;
   analysis_id: string; aspect_ratio: ExportFormat; fill: FillMode; render_revision: string;
+  preview_start?: number; requested_duration?: 5 | 10;
 };
 export type PublishResult = {
   archive: string;
@@ -299,7 +300,7 @@ export const api = {
   }) => request<Job>(`/api/projects/${id}/clips/render`, json(options)),
   previewClip: (id: string, options: RenderOptions & {
     analysis_id: string; clip_id: number; clip_range?: ClipRangeOverride;
-    aspect_ratio: ExportFormat; fill: FillMode; duration?: 5 | 10;
+    aspect_ratio: ExportFormat; fill: FillMode; start?: number; duration?: 5 | 10;
   }) => request<Job>(`/api/projects/${id}/clips/preview`, json(options)),
   uploadAudio: (id: string, file: File) => {
     const fd = new FormData();

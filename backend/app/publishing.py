@@ -40,7 +40,7 @@ class PreviewBody(RenderOptions):
 
 def preview_window(start: float, duration: float, total: float) -> float:
     """Clamp to the edited output's end, never source time or an empty tail."""
-    if not all(math.isfinite(v) for v in (start, duration, total)) or start < 0 or duration <= 0 or total - start < 0.1:
+    if not all(math.isfinite(v) for v in (start, duration, total)) or start < 0 or duration <= 0 or total - start < 0.1 - 1e-9:
         raise ValueError("Başlangıç zamanı düzenlenmiş videonun bitişinden en az 0.1 sn önce olmalı.")
     return min(duration, total - start)
 
@@ -111,6 +111,8 @@ class ClipPreviewBody(RenderOptions):
     clip_range: ClipRange | None = None
     aspect_ratio: Format = "9:16"
     fill: Literal["blur", "fit", "crop"] = "blur"
+    # Seconds from the selected clip's beginning, NOT absolute source time.
+    start: float = Field(0, ge=0)
     duration: Literal[5, 10] = 5
 
     @model_validator(mode="after")

@@ -33,11 +33,14 @@ def test_publish_validation():
         ClipExportBody(analysis_id="../../file", clip_ids=[0])
     preview = ClipPreviewBody(analysis_id="abcdef123456", clip_id=0,
                               clip_range={"id": 0, "start": 30, "end": 65})
-    assert preview.duration == 5 and preview.clip_range.start == 30
+    assert preview.duration == 5 and preview.start == 0 and preview.clip_range.start == 30
     for body in (
         {"analysis_id": "abcdef123456", "clip_id": 0, "duration": 6},
         {"analysis_id": "abcdef123456", "clip_id": 1, "clip_range": {"id": 0, "start": 30, "end": 65}},
         {"analysis_id": "../../file", "clip_id": 0},
+        {"analysis_id": "abcdef123456", "clip_id": 0, "start": -1},
+        {"analysis_id": "abcdef123456", "clip_id": 0, "start": float("nan")},
+        {"analysis_id": "abcdef123456", "clip_id": 0, "start": float("inf")},
     ):
         with pytest.raises(ValidationError):
             ClipPreviewBody.model_validate(body)
@@ -248,6 +251,14 @@ def test_clip_api_rejects_foreign_and_invented_candidates(isolated_api):
     preview_manual = {**preview, "clip_range": {"id": 0, "start": 40, "end": 75}}
     assert client.post("/api/projects/video/clips/preview", json=preview_manual).status_code == 200
     assert (captures[-1][1][2]["start"], captures[-1][1][2]["end"]) == (40, 75)
+    assert client.post("/api/projects/video/clips/preview", json={**preview_manual, "start": 33, "duration": 10}).status_code == 200
+    assert captures[-1][1][1]["start"] == 33 and captures[-1][1][1]["duration"] == 10
+    assert (captures[-1][1][2]["start"], captures[-1][1][2]["end"]) == (40, 75)
+    for invalid_start in (35, 34.95, 40):
+        count = len(captures)
+        assert client.post("/api/projects/video/clips/preview",
+                           json={**preview_manual, "start": invalid_start}).status_code == 422
+        assert len(captures) == count  # Reject BEFORE creating a worker job.
     assert client.post("/api/projects/video/clips/preview",
                        json={**preview_manual, "clip_range": {"id": 9, "start": 40, "end": 75}}).status_code == 422
     assert client.post("/api/projects/video/clips/preview",
@@ -307,12 +318,14 @@ def test_real_four_format_batch_and_archive(tmp_path, monkeypatch):
     assert p.plan == before
 
 
-def test_clip_preview_uses_full_style_and_short_output_window(tmp_path, monkeypatch):
+@pytest.mark.parametrize("offset,requested,expected", [(0, 5, 5), (0, 10, 10), (12, 5, 5), (20, 10, 10), (28, 10, 2), (29.9, 5, 0.1)])
+def test_clip_preview_uses_full_style_and_short_output_window(tmp_path, monkeypatch, offset, requested, expected):
     from app import jobs
     from app.ffmpeg import MediaInfo
     from app.models import Project
 
     monkeypatch.setattr(jobs, "project_dir", lambda _: tmp_path)
+    monkeypatch.setattr(jobs, "_save_project", lambda *_: pytest.fail("Preview must not save a project"))
     p = Project(
         id="test", name="Preview", source_file="source.mp4", duration=80, width=640, height=360,
         has_audio=True, status="ready", subtitles={"segments": [{"start": 0, "end": 80, "text": "Deneme."}]},
@@ -327,19 +340,25 @@ def test_clip_preview_uses_full_style_and_short_output_window(tmp_path, monkeypa
         return {"duration": req.output_duration, "width": 720, "height": 1280}
     monkeypatch.setattr(jobs, "render", fake_render)
     monkeypatch.setattr(jobs, "probe", lambda _: MediaInfo(
-        duration=5, width=720, height=1280, fps=30, has_audio=True, has_video=True))
+        duration=expected, width=720, height=1280, fps=30, has_audio=True, has_video=True))
     options = ClipPreviewBody(analysis_id="abcdef123456", clip_id=2, resolution="720p",
-                              quality="fast", fill="crop").model_dump()
-    result = jobs.task_preview_clip(lambda *_: None, p.model_dump(), options,
+                              quality="fast", fill="crop", start=offset, duration=requested).model_dump()
+    snapshot = p.model_dump()
+    before = copy.deepcopy(snapshot)
+    result = jobs.task_preview_clip(lambda *_: None, snapshot, options,
                                     {"id": 2, "start": 10, "end": 40})
-    assert captured["output_start"] == 0 and captured["output_duration"] == 5
+    assert snapshot == before
+    assert captured["output_start"] == offset and captured["output_duration"] == pytest.approx(expected)
     assert captured["transcript"] == p.subtitles
     plan = captured["plan"]
     assert plan.first("trim").start == 10 and plan.first("trim").end == 40
     assert plan.first("subtitles") is not None and plan.first("color_grade") is not None
     assert plan.first("reframe").aspect_ratio == "9:16" and plan.first("reframe").mode == "crop"
     assert result["clip_id"] == 2 and result["analysis_id"] == "abcdef123456"
-    assert (result["start"], result["end"], result["duration"]) == (10, 15, 5)
+    assert result["start"] == 10 + offset
+    assert result["end"] == pytest.approx(10 + offset + expected)
+    assert result["duration"] == pytest.approx(expected)
+    assert result["preview_start"] == offset and result["requested_duration"] == requested
     assert result["clip_end"] == 40 and result["fill"] == "crop"
 
 
@@ -374,6 +393,84 @@ def test_real_clip_from_source_time(tmp_path, monkeypatch):
     assert (preview_info.width, preview_info.height) == (720, 1280)
     assert preview_info.duration == pytest.approx(5, abs=0.25)
     assert preview_info.has_audio and preview["clip_end"] == 35
+
+
+def test_real_late_clip_preview_matches_full_clip_with_subtitles(tmp_path, monkeypatch):
+    from array import array
+    import hashlib
+    from app import jobs
+    from app.edit.renderer import RenderRequest, render
+    from app.ffmpeg import probe, run_ffmpeg
+    from app.models import Project
+
+    monkeypatch.setattr(jobs, "project_dir", lambda _: tmp_path)
+    monkeypatch.setattr(jobs.assets, "fonts_dir", lambda: tmp_path)
+    monkeypatch.setattr(jobs, "_save_project", lambda *_: pytest.fail("Preview must not save a project"))
+    source = tmp_path / "source.mp4"
+    run_ffmpeg(["-f", "lavfi", "-i", "color=blue:size=160x90:rate=30",
+                "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000",
+                "-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=red:t=fill:enable='gte(t,30)'",
+                "-t", "36", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", str(source)])
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    p = Project(id="late", name="Late preview", source_file="source.mp4", status="ready",
+                duration=36, width=160, height=90, has_audio=True,
+                plan={"operations": [{"type": "subtitles", "style": "classic"},
+                                     {"type": "color_grade", "preset": "warm"}]},
+                subtitles={"segments": [{"id": 0, "start": 31, "end": 34, "text": "Late caption"}]},
+                output_file="outputs/preserved.mp4")
+    snapshot = copy.deepcopy(p.model_dump())
+    options = ClipPreviewBody(analysis_id="abcdef123456", clip_id=0, start=25,
+                              duration=10, resolution="720p", quality="fast", fill="fit").model_dump()
+    preview = jobs.task_preview_clip(lambda *_: None, snapshot, options, {"id": 0, "start": 5, "end": 35})
+    short = tmp_path / preview["output"].split("/projects/late/")[1]
+    assert (preview["start"], preview["end"], preview["duration"]) == (30, 35, 5)
+    assert preview["requested_duration"] == 10 and preview["preview_start"] == 25
+    assert probe(short).duration == pytest.approx(5, abs=0.15)
+    full_plan = clip_plan(EditPlan.model_validate(p.plan), 5, 35, "9:16", "fit")
+    full = tmp_path / "full.mp4"
+    render(RenderRequest(source=source, info=jobs.media_info(p), plan=full_plan,
+                         timeline=jobs.project_timeline(p, full_plan), transcript=p.subtitles,
+                         output=full, work_dir=tmp_path / "full-work", fonts_dir=tmp_path,
+                         resolution="720p", quality="fast", resolve_track=lambda _: None), lambda _: None)
+    for index, at in enumerate([0.5, 2, 4.5]):
+        frames = []
+        for label, path, time in [("short", short, at), ("full", full, 25 + at)]:
+            raw = tmp_path / f"{label}-{index}.rgb"
+            run_ffmpeg(["-ss", str(time), "-i", str(path), "-frames:v", "1", "-vf", "scale=90:160",
+                        "-pix_fmt", "rgb24", "-f", "rawvideo", str(raw)])
+            frames.append(raw.read_bytes())
+        assert len(frames[0]) == len(frames[1]) == 90 * 160 * 3
+        assert sum(abs(a-b) for a,b in zip(*frames)) / len(frames[0]) < 5
+    # Caption times stay on the full clip clock (26..29), not reset to preview zero.
+    ass = (tmp_path / "work" / "clip_previews" / short.stem / "subs.ass").read_text(encoding="utf-8")
+    assert "Late" in ass and "0:00:26" in ass
+    pcm = tmp_path / "preview.pcm"
+    run_ffmpeg(["-i", str(short), "-vn", "-ac", "1", "-ar", "48000", "-f", "f32le", str(pcm)])
+    samples = array("f")
+    samples.frombytes(pcm.read_bytes())
+    assert len(samples) / 48000 == pytest.approx(5, abs=0.1)
+    assert sum(abs(v) for v in samples) / len(samples) > 0.02
+    assert snapshot == p.model_dump()
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == source_hash
+
+
+def test_invalid_clip_preview_offset_rejected_by_worker_before_render(tmp_path, monkeypatch):
+    from app import jobs
+    from app.models import Project
+    monkeypatch.setattr(jobs, "render", lambda *_: pytest.fail("Invalid preview must not render"))
+    p = Project(source_file="source.mp4", name="Invalid", duration=80)
+    for offset in (30, 29.95, 31):
+        with pytest.raises(ValueError):
+            jobs.task_preview_clip(lambda *_: None, p.model_dump(),
+                                   {"analysis_id": "abcdef123456", "clip_id": 0, "start": offset},
+                                   {"id": 0, "start": 10, "end": 40})
+
+
+def test_preview_window_fractional_tail_tolerance_is_only_float_roundoff():
+    from app.publishing import preview_window
+    assert preview_window(30.2, 5, 30.3) == pytest.approx(0.1)
+    with pytest.raises(ValueError):
+        preview_window(30.20001, 5, 30.3)
 
 
 def test_batch_maps_selected_cover_after_trim_and_speed(tmp_path, monkeypatch):

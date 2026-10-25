@@ -5,6 +5,7 @@ import { api, downloadUrl, formatTime, mediaUrl, type ClipAnalysis, type ClipCan
 import { clampClipRange, clipRangeError, snapClipEdge, type ClipRangeAction, type ClipRange } from "@/lib/clip-trim";
 import { clipDraftContext, clipDraftStorageKey, defaultClipDraft, readClipDraft, serializeClipDraft } from "@/lib/clip-draft";
 import { canRedoClipRanges, canUndoClipRanges, clipRangeHistoryReducer, emptyClipRangeHistory, type ClipRanges } from "@/lib/clip-range-history";
+import { clipPreviewIsStale, clipPreviewSelection, clipPreviewWindow, type ClipPreviewSelection } from "@/lib/clip-preview";
 import ClipRangeStrip from "./ClipRangeStrip";
 import { JobProgress } from "./SubtitlePanel";
 import { PublishingResults, RenderSettings } from "./PublishingControls";
@@ -39,6 +40,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const waveformHelpId = useId();
   const [options, setOptions] = useState<RenderOptions>({ resolution: "1080p", quality: "standard" });
   const [fill, setFill] = useState<FillMode>("blur");
+  const [previewWindows, setPreviewWindows] = useState<{ context: string | null; values: Record<number, ClipPreviewSelection> }>({ context: null, values: {} });
   const previewVideo = useRef<HTMLVideoElement>(null);
   const backdropVideo = useRef<HTMLVideoElement>(null);
   const initializedAnalysis = useRef<string | null>(null);
@@ -53,6 +55,17 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const clipPreview = clipPreviewJob?.status === "done" && clipPreviewJob.result
     ? clipPreviewJob.result as unknown as ClipPreviewResult : null;
   const shownClipPreview = clipPreview && analysis && clipPreview.analysis_id === analysis.id ? clipPreview : null;
+  const previewWindowFor = (clipId: number): ClipPreviewSelection =>
+    (previewWindows.context === draftContext ? previewWindows.values[clipId] : undefined)
+    ?? clipPreviewSelection(shownClipPreview?.clip_id === clipId && shownClipPreview.render_revision === project.render_revision
+      ? shownClipPreview : null);
+  const updatePreviewWindow = (clipId: number, patch: Partial<ClipPreviewSelection>) => {
+    setPreviewWindows((current) => {
+      const values = current.context === draftContext ? current.values : {};
+      return { context: draftContext, values: { ...values,
+        [clipId]: { ...(values[clipId] ?? previewWindowFor(clipId)), ...patch } } };
+    });
+  };
   const boundaries = result?.sentence_boundaries;
   const canSnap = !!boundaries && (boundaries.starts.length > 0 || boundaries.ends.length > 0);
   const smart = result ? (result.transcript_used ?? result.clips.some((clip) => clip.transcript_used)) : false;
@@ -82,18 +95,9 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const invalidSelected = selectedClips.filter((clip) => clipRangeError(rangeFor(clip), project.duration));
   const previewResultClip = shownClipPreview && result
     ? result.clips.find((clip) => clip.id === shownClipPreview.clip_id) : undefined;
-  const previewCurrentRange = shownClipPreview
-    ? (previewResultClip ? rangeFor(previewResultClip) : { start: shownClipPreview.clip_start, end: shownClipPreview.clip_end })
-    : null;
-  const clipPreviewStale = !!shownClipPreview && (
-    !previewResultClip || !previewCurrentRange
-    || previewCurrentRange.start !== shownClipPreview.clip_start
-    || previewCurrentRange.end !== shownClipPreview.clip_end
-    || fill !== shownClipPreview.fill
-    || options.resolution !== shownClipPreview.resolution
-    || options.quality !== shownClipPreview.quality
-    || shownClipPreview.render_revision !== project.render_revision
-  );
+  const clipPreviewStale = !!shownClipPreview && clipPreviewIsStale(shownClipPreview,
+    previewResultClip ? rangeFor(previewResultClip) : undefined,
+    previewWindowFor(shownClipPreview.clip_id), options, fill, project.render_revision);
 
   // These effects synchronize React drafts with synchronous browser storage.
   // Context-gated hydration happens once; status updates are not dependencies
@@ -140,6 +144,8 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     dispatchRanges({ type: "reset", context: draftContext, ranges: draft.ranges });
     setSelected(draft.selected); setOptions(draft.options);
     setFill(draft.fill); setSnap(draft.snap); setPreview(null);
+    setPreviewWindows({ context: draftContext, values: Object.fromEntries(result.clips.map((clip) =>
+      [clip.id, { start: 0, duration: 5 as const }])) });
   };
 
   useEffect(() => {
@@ -220,16 +226,19 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
 
   const previewActual = async (clip: ClipCandidate) => {
     const range = rangeFor(clip);
-    if (!analysis || clipRangeError(range, project.duration)) return;
+    const selection = previewWindowFor(clip.id);
+    const window = clipPreviewWindow(range, selection);
+    if (!analysis || clipRangeError(range, project.duration) || !window.valid) return;
+    updatePreviewWindow(clip.id, selection);
     setPreview({ start: range.start, end: range.end });
     setPending(true);
     try {
       const next = await api.previewClip(project.id, {
         ...options, analysis_id: analysis.id, clip_id: clip.id,
         clip_range: { id: clip.id, start: range.start, end: range.end },
-        aspect_ratio: "9:16", fill, duration: 5,
+        aspect_ratio: "9:16", fill, start: selection.start, duration: selection.duration,
       });
-      await track(next, () => notify("Gerçek 5 sn klip önizlemesi hazır; tam klip ve kaynak değişmedi."));
+      await track(next, () => notify("Seçilen bölümün gerçek klip önizlemesi hazır; tam klip ve kaynak değişmedi."));
     } catch (e) { notify((e as Error).message, true); }
     finally { setPending(false); }
   };
@@ -298,6 +307,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
         <p className={pub.note}>Aralık geri al / ileri al yalnızca klip zamanlarını değiştirir; seçim, yapıştırma ve çıktı ayarlarını etkilemez. Bir sürükleme tek adımdır; sayı girişi alanından çıkınca tamamlanır. Geçersiz veya tamamlanmamış girişte geri al önce son tamamlanan aralığa döner. Son 30 adım bu panel oturumunda tutulur; sayfa/panel yeniden açılınca, kaynak/analiz değişince veya Taslağı sıfırla ile geçmiş temizlenir. Son aralıklar yine otomatik saklanır; ana video edit geçmişi değişmez.</p>
         {!canSnap && <p className={pub.note}>Kaynak transkripti veya cümle zamanı yok; yapıştırma kapalı. Başlangıç/bitiş yine elle ayarlanabilir.</p>}
         <p id={waveformHelpId} className={pub.note}>Başlangıç/bitiş tutamaçları süreyi ayarlar; aralığın ortasını sürüklemek süreyi koruyarak taşır. Sürükleme görünür dalga penceresiyle sınırlıdır. Odaklanan tutamaç veya aralıkta ok tuşları 0,1 sn, Shift ile 1 sn; Home/End kaynak sınırına taşır. Escape veya dokunma iptali sürüklemeyi geri alır. Taşırken cümleye yapıştırma uygulanmaz; 1 sn taşı düğmeleri sürükleme alternatifidir. 30–60 sn ve kaynak sınırları korunur. Sayı alanları hassas giriş içindir. Dalga, kaynak sesin mono tepe genliğidir; editin kesim/hız veya müzik karışımı değildir. Çizim görünür pencereye göre ölçeklenir; ses düzeyi ölçümü değildir.</p>
+        <p className={pub.note}>Gerçek önizleme başlangıcı her klibin kendi sıfırına göredir. Bölümü ve 5/10 sn süreyi seçip render düğmesine basın; işlem otomatik başlamaz, ücretli AI çağrısı yapmaz. Geç bölümler önceki karelerin işlenmesini gerektirebilir. Bölüm seçimleri taslağa kaydedilmez; yeniden açılışta son önizlemenin bölümü geri gelir.</p>
         {waveformLoading && <p className={pub.note} role="status">Kaynak ses dalgası hazırlanıyor; tutamaçlar şimdiden kullanılabilir.</p>}
         {waveformError && <div className={pub.actions} role="alert">
           <span className={pub.note}>Ses dalgası yüklenemedi; tutamaçlar düz çizgi üzerinde çalışır. {waveformError}</span>
@@ -306,6 +316,8 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
         {result.clips.map((clip, index) => {
           const range = rangeFor(clip);
           const error = clipRangeError(range, project.duration);
+          const previewSelection = previewWindowFor(clip.id);
+          const previewPart = clipPreviewWindow(range, previewSelection);
           return <article className={pub.candidate} key={clip.id}>
             <label className={pub.candidateLabel}>
               <input type="checkbox" checked={selected.includes(clip.id)} disabled={disabled} onChange={(e) => setSelected((current) => e.target.checked ? [...current, clip.id] : current.filter((i) => i !== clip.id))} />
@@ -336,13 +348,33 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
             </div>}
             <small>{clip.reason}</small>
             {clip.excerpt && <p>{clip.excerpt}</p>}
+            <fieldset className={pub.settings} disabled={disabled || !!error}>
+              <legend>{index + 1}. klip · gerçek önizleme bölümü</legend>
+              <label>Önizleme başlangıcı (klip içinde sn)<input className={`input ${pub.trimShiftButton}`} type="number"
+                min="0" max={previewPart.maxStart} step="0.1"
+                value={Number.isFinite(previewSelection.start) ? previewSelection.start : ""}
+                onChange={(e) => updatePreviewWindow(clip.id, { start: e.target.valueAsNumber })} /></label>
+              <label>Önizleme süresi<select className="select" value={previewSelection.duration}
+                onChange={(e) => updatePreviewWindow(clip.id, { duration: Number(e.target.value) as 5 | 10 })}>
+                <option value="5">5 saniye</option><option value="10">10 saniye</option>
+              </select></label>
+              <div className={pub.actions}>
+                <button type="button" className={`btn btn-sm ${pub.trimShiftButton}`}
+                  onClick={() => updatePreviewWindow(clip.id, { start: 0 })}>Klip başı</button>
+                <button type="button" className={`btn btn-sm ${pub.trimShiftButton}`}
+                  onClick={() => updatePreviewWindow(clip.id, { start: Math.max(0, Math.round((range.end - range.start - previewSelection.duration) * 1000) / 1000) })}>Son {previewSelection.duration} sn</button>
+              </div>
+            </fieldset>
+            {!error && (previewPart.valid
+              ? <p className={pub.note}>Klip içinde {previewSelection.start.toFixed(1)} – {(previewSelection.start + previewPart.duration).toFixed(1)} sn · kaynakta {previewPart.sourceStart.toFixed(1)} – {previewPart.sourceEnd.toFixed(1)} sn. Gerçekte {previewPart.duration.toFixed(1)} sn render edilir; klip sonunda kalan süre kullanılır.</p>
+              : <p className={pub.error} role="alert">Önizleme başlangıcı 0 ile {previewPart.maxStart.toFixed(3)} sn arasında olmalı; klip sonunda en az 0,1 sn kalmalı.</p>)}
             <div className={pub.actions}>
               <button type="button" className="btn btn-sm" onClick={() => previewClip(clip)}>Bu aralığı 9:16 önizle</button>
-              <button type="button" className="btn btn-sm" disabled={disabled || !!error}
-                title="Seçili aralığın ilk 5 saniyesini altyazı, renk ve reframe ile FFmpeg'de render eder."
+              <button type="button" className="btn btn-sm" disabled={disabled || !!error || !previewPart.valid}
+                title="Klip içinde seçilen bölümü altyazı, renk ve reframe ile FFmpeg'de render eder."
                 onClick={() => previewActual(clip)}>
                 {clipPreviewJob?.status === "running" || clipPreviewJob?.status === "queued"
-                  ? "Gerçek önizleme hazırlanıyor…" : "Gerçek 5 sn önizle"}
+                  ? "Gerçek önizleme hazırlanıyor…" : `Gerçek ${previewSelection.duration} sn önizle`}
               </button>
             </div>
           </article>;
@@ -384,8 +416,8 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
             {clipPreviewJob?.status === "failed" &&
               <p className={pub.error} role="alert">{clipPreviewJob.error || "Klip önizlemesi oluşturulamadı; yeniden deneyin."}</p>}
             {shownClipPreview && <>
-              <p className={pub.note}>Tam klip aralığı {formatTime(shownClipPreview.clip_start)} – {formatTime(shownClipPreview.clip_end)}. Bu dosya, tam çıktının ilk {shownClipPreview.duration.toFixed(1)} saniyesidir; altyazı, renk ve seçili dolgu dahildir. Tam klip ve kaynak değişmez.</p>
-              {clipPreviewStale && <p className={pub.note} role="status">Aralık veya render ayarları değişti. Güncel gerçek önizleme için yeniden oluşturun.</p>}
+              <p className={pub.note}>Tam klip kaynakta {shownClipPreview.clip_start.toFixed(1)} – {shownClipPreview.clip_end.toFixed(1)} sn. Bu dosya klip içinde {clipPreviewSelection(shownClipPreview).start.toFixed(1)} – {(clipPreviewSelection(shownClipPreview).start + shownClipPreview.duration).toFixed(1)} sn bölümüdür (kaynakta {shownClipPreview.start.toFixed(1)} – {shownClipPreview.end.toFixed(1)} sn). İstenen {clipPreviewSelection(shownClipPreview).duration} sn, gerçek {shownClipPreview.duration.toFixed(1)} sn; altyazı, renk ve seçili dolgu dahildir. Tam klip ve kaynak değişmez.</p>
+              {clipPreviewStale && <p className={pub.note} role="status">Aralık, önizleme bölümü veya render ayarları değişti. Güncel gerçek önizleme için yeniden oluşturun.</p>}
               <video key={shownClipPreview.output} src={mediaUrl(shownClipPreview.output)} controls playsInline preload="metadata"
                 aria-label="Seçilen klip aralığının gerçek FFmpeg önizlemesi" />
               <p className={pub.note}>{shownClipPreview.width} × {shownClipPreview.height} · {shownClipPreview.duration.toFixed(1)} sn · {FILL_LABELS[shownClipPreview.fill]} · {shownClipPreview.resolution} / {shownClipPreview.quality}</p>

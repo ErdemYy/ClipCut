@@ -1093,6 +1093,10 @@ def preview_clip(project_id: str, body: ClipPreviewBody, session: Session = Depe
     if not (0 <= start < end <= p.duration and 29.99 <= end - start <= 60.01):
         raise HTTPException(422, "Klip aralıkları geçersiz; yeniden analiz edin.")
     selected = {**clip, "start": start, "end": end}
+    try:
+        preview_window(body.start, body.duration, end - start)
+    except ValueError as exc:
+        raise HTTPException(422, "Önizleme başlangıcı klibin bitişinden en az 0.1 sn önce olmalı.") from exc
     return job_dict(jobs.submit(p.id, "clip_preview", jobs.task_preview_clip, p.model_dump(), body.model_dump(), selected))
 
 
