@@ -12,7 +12,7 @@ vm.runInNewContext(ts.transpileModule(source, { compilerOptions: {
 const { clipPreviewWindow, clipPreviewSelection, clipPreviewIsStale } = exported;
 const range = { start: 40, end: 75 };
 const options = { resolution: "720p", quality: "high" };
-const result = { ...options, clip_id: 0, clip_start: 40, clip_end: 75, start: 73, end: 75,
+const result = { ...options, clip_id: 0, clip_start: 40, clip_end: 75, start: 73, end: 75, aspect_ratio: "9:16",
   duration: 2, preview_start: 33, requested_duration: 10, fill: "crop", render_revision: "rev" };
 
 test("clip-relative windows map to source time and clamp only the end", () => {
@@ -44,15 +44,16 @@ test("old results recover zero/5 or zero/10 and new tail results keep requested 
 
 test("staleness includes window selection, full range, style and source revision", () => {
   const selection = { start: 33, duration: 10 };
-  const stale = (r = range, s = selection, o = options, f = "crop", rev = "rev") =>
-    clipPreviewIsStale(result, r, s, o, f, rev);
+  const stale = (r = range, s = selection, o = options, f = "crop", a = "9:16", rev = "rev") =>
+    clipPreviewIsStale(result, r, s, o, f, a, rev);
   assert.equal(stale(), false);
   assert.equal(stale(range, { ...selection, start: 32 }), true);
   assert.equal(stale(range, { ...selection, duration: 5 }), true); // Both render 2s; request still changed.
   assert.equal(stale({ ...range, start: 41 }), true);
-  assert.equal(clipPreviewIsStale(result, undefined, selection, options, "crop", "rev"), true);
+  assert.equal(clipPreviewIsStale(result, undefined, selection, options, "crop", "9:16", "rev"), true);
   assert.equal(stale(range, selection, { ...options, quality: "fast" }), true);
   assert.equal(stale(range, selection, { ...options, resolution: "1080p" }), true);
   assert.equal(stale(range, selection, options, "fit"), true);
-  assert.equal(stale(range, selection, options, "crop", "new-rev"), true);
+  assert.equal(stale(range, selection, options, "crop", "16:9"), true);
+  assert.equal(stale(range, selection, options, "crop", "9:16", "new-rev"), true);
 });

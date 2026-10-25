@@ -239,6 +239,8 @@ def test_clip_api_rejects_foreign_and_invented_candidates(isolated_api):
     assert client.post("/api/projects/video/clips/render", json=body).status_code == 200
     assert captures[-1][0] == "clip_render"
     assert captures[-1][1][2][0]["start"] == 30
+    assert client.post("/api/projects/video/clips/render", json={**body, "aspect_ratio": "1:1"}).status_code == 200
+    assert captures[-1][1][1]["aspect_ratio"] == "1:1"
     manual = {**body, "clip_ranges": [{"id": 0, "start": 40, "end": 75}]}
     assert client.post("/api/projects/video/clips/render", json=manual).status_code == 200
     assert (captures[-1][1][2][0]["start"], captures[-1][1][2][0]["end"]) == (40, 75)
@@ -260,6 +262,11 @@ def test_clip_api_rejects_foreign_and_invented_candidates(isolated_api):
     assert client.post("/api/projects/video/clips/preview", json=preview).status_code == 200
     assert captures[-1][0] == "clip_preview"
     assert (captures[-1][1][2]["start"], captures[-1][1][2]["end"]) == (30, 65)
+    assert client.post("/api/projects/video/clips/preview",
+                       json={**preview, "aspect_ratio": "4:5"}).status_code == 200
+    assert captures[-1][1][1]["aspect_ratio"] == "4:5"
+    assert client.post("/api/projects/video/clips/preview",
+                       json={**preview, "aspect_ratio": "21:9"}).status_code == 422
     preview_manual = {**preview, "clip_range": {"id": 0, "start": 40, "end": 75}}
     assert client.post("/api/projects/video/clips/preview", json=preview_manual).status_code == 200
     assert (captures[-1][1][2]["start"], captures[-1][1][2]["end"]) == (40, 75)

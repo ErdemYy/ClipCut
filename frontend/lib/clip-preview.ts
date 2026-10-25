@@ -1,4 +1,4 @@
-import type { ClipPreviewResult, FillMode, RenderOptions } from "./api";
+import type { ClipPreviewResult, ExportFormat, FillMode, RenderOptions } from "./api";
 import type { ClipRange } from "./clip-trim";
 
 export type ClipPreviewSelection = { start: number; duration: 5 | 10 };
@@ -24,11 +24,12 @@ export function clipPreviewWindow(range: ClipRange, selection: ClipPreviewSelect
 }
 
 export function clipPreviewIsStale(result: ClipPreviewResult, range: ClipRange | undefined,
-  selection: ClipPreviewSelection, options: RenderOptions, fill: FillMode, revision?: string): boolean {
+  selection: ClipPreviewSelection, options: RenderOptions, fill: FillMode, aspect: ExportFormat, revision?: string): boolean {
   const original = clipPreviewSelection(result);
   return !range || !clipPreviewWindow(range, selection).valid
     || range.start !== result.clip_start || range.end !== result.clip_end
     || selection.start !== original.start || selection.duration !== original.duration
     || options.resolution !== result.resolution || options.quality !== result.quality
-    || fill !== result.fill || !revision || revision !== result.render_revision;
+    || fill !== result.fill || aspect !== result.aspect_ratio
+    || !revision || revision !== result.render_revision;
 }

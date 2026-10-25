@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useId, useReducer, useRef, useState } from "react";
-import { api, downloadUrl, formatTime, mediaUrl, type ClipAnalysis, type ClipCandidate, type ClipPreviewResult, type FillMode, type Job, type JobMap, type Project, type RenderOptions, type Waveform } from "@/lib/api";
+import { api, downloadUrl, formatTime, mediaUrl, type ClipAnalysis, type ClipCandidate, type ClipPreviewResult, type ExportFormat, type FillMode, type Job, type JobMap, type Project, type RenderOptions, type Waveform } from "@/lib/api";
 import { clampClipRange, clipRangeError, snapClipEdge, type ClipRangeAction, type ClipRange } from "@/lib/clip-trim";
-import { clipDraftContext, clipDraftStorageKey, defaultClipDraft, readClipDraft, serializeClipDraft } from "@/lib/clip-draft";
+import { CLIP_FORMATS, clipDraftContext, clipDraftStorageKey, defaultClipDraft, readClipDraft, serializeClipDraft } from "@/lib/clip-draft";
 import { canRedoClipRanges, canUndoClipRanges, clipRangeHistoryReducer, emptyClipRangeHistory, type ClipRanges } from "@/lib/clip-range-history";
 import { clipPreviewIsStale, clipPreviewSelection, clipPreviewWindow, type ClipPreviewSelection } from "@/lib/clip-preview";
 import { clipCoverError, clipCoverMax } from "@/lib/clip-cover";
@@ -20,6 +20,13 @@ const FILL_LABELS: Record<FillMode, string> = {
   blur: "bulanık arka plan",
   fit: "siyah kenar",
   crop: "merkez kırpma",
+};
+
+const FORMAT_LABELS: Record<ExportFormat, string> = {
+  "9:16": "9:16 · TikTok / Reels / Shorts",
+  "1:1": "1:1 · Instagram kare",
+  "4:5": "4:5 · Instagram portre",
+  "16:9": "16:9 · YouTube / yatay",
 };
 
 export default function ClipperPanel({ project, jobs, track, notify }: {
@@ -42,6 +49,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const waveformHelpId = useId();
   const [options, setOptions] = useState<RenderOptions>({ resolution: "1080p", quality: "standard" });
   const [fill, setFill] = useState<FillMode>("blur");
+  const [aspect, setAspect] = useState<ExportFormat>("9:16");
   const [previewWindows, setPreviewWindows] = useState<{ context: string | null; values: Record<number, ClipPreviewSelection> }>({ context: null, values: {} });
   const previewVideo = useRef<HTMLVideoElement>(null);
   const backdropVideo = useRef<HTMLVideoElement>(null);
@@ -100,7 +108,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     ? result.clips.find((clip) => clip.id === shownClipPreview.clip_id) : undefined;
   const clipPreviewStale = !!shownClipPreview && clipPreviewIsStale(shownClipPreview,
     previewResultClip ? rangeFor(previewResultClip) : undefined,
-    previewWindowFor(shownClipPreview.clip_id), options, fill, project.render_revision);
+    previewWindowFor(shownClipPreview.clip_id), options, fill, aspect, project.render_revision);
 
   // These effects synchronize React drafts with synchronous browser storage.
   // Context-gated hydration happens once; status updates are not dependencies
@@ -122,6 +130,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     setCovers(draft.covers);
     setOptions(draft.options);
     setFill(draft.fill);
+    setAspect(draft.aspect);
     setSnap(draft.snap);
     setPreview(null);
     setHydratedDraft(draftContext);
@@ -130,16 +139,16 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   useEffect(() => {
     // The hydration render must never overwrite stored data with empty defaults.
     if (!draftContext || hydratedDraft !== draftContext || !result) return;
-    const raw = serializeClipDraft({ ranges, covers, selected, options, fill, snap }, draftContext, result.clips, project.duration);
+    const raw = serializeClipDraft({ ranges, covers, selected, options, fill, aspect, snap }, draftContext, result.clips, project.duration);
     if (!raw) {
-      setDraftNotice("Geçersiz aralık veya kapak zamanı saklanmadı; son geçerli taslak korunuyor.");
+      setDraftNotice("Geçersiz aralık, kapak veya format saklanmadı; son geçerli taslak korunuyor.");
       return;
     }
     try {
       localStorage.setItem(clipDraftStorageKey(project.id), raw);
       setDraftNotice("Taslak bu tarayıcıda saklandı; kaynak ve ana edit değişmedi.");
     } catch { setDraftNotice("Taslak saklanamadı (depolama kapalı veya dolu); değişiklikler yalnızca bu oturumda kalır."); }
-  }, [draftContext, hydratedDraft, result, project.id, project.duration, ranges, covers, selected, options, fill, snap]);
+  }, [draftContext, hydratedDraft, result, project.id, project.duration, ranges, covers, selected, options, fill, aspect, snap]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const resetDraft = () => {
@@ -148,7 +157,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     dispatchRanges({ type: "reset", context: draftContext, ranges: draft.ranges });
     setSelected(draft.selected); setOptions(draft.options);
     setCovers(draft.covers);
-    setFill(draft.fill); setSnap(draft.snap); setPreview(null);
+    setFill(draft.fill); setAspect(draft.aspect); setSnap(draft.snap); setPreview(null);
     setPreviewWindows({ context: draftContext, values: Object.fromEntries(result.clips.map((clip) =>
       [clip.id, { start: 0, duration: 5 as const }])) });
   };
@@ -250,7 +259,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
       const next = await api.previewClip(project.id, {
         ...options, analysis_id: analysis.id, clip_id: clip.id,
         clip_range: { id: clip.id, start: range.start, end: range.end },
-        aspect_ratio: "9:16", fill, start: selection.start, duration: selection.duration,
+        aspect_ratio: aspect, fill, start: selection.start, duration: selection.duration,
       });
       await track(next, () => notify("Seçilen bölümün gerçek klip önizlemesi hazır; tam klip ve kaynak değişmedi."));
     } catch (e) { notify((e as Error).message, true); }
@@ -272,7 +281,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     setPending(true);
     try {
       await track(await api.renderClips(project.id, {
-        ...options, analysis_id: analysis.id, clip_ids: selected, aspect_ratio: "9:16", fill,
+        ...options, analysis_id: analysis.id, clip_ids: selected, aspect_ratio: aspect, fill,
         clip_ranges: selectedClips.map((clip) => ({ id: clip.id, ...rangeFor(clip) })),
         clip_covers: selectedClips.map((clip) => ({ id: clip.id, at: covers[clip.id] ?? 0 })),
       }), () => notify("Bağımsız klipler hazır."));
@@ -282,7 +291,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
 
   return <div className={styles.section}>
     <header className={pub.intro}><h3>Uzun videodan kısa klipler</h3>
-      <p>Kaynak sesteki duraklama ve konuşma yoğunluğuna göre 30–60 saniyelik adaylar bulunur. Gerçek kaynak transkripti varsa tam cümle sınırları, soru/merak kancası, konuşma temposu ve tekrar eden konu terimleri de yerel olarak puanlanır. Dalga formundaki tutamaçları sürükleyin veya sayı alanlarını kullanın; cümle sınırlarına yapıştırın ve 9:16 çıktı kadrajını önizleyin. Ücretli AI çağrısı yapmaz; viral başarı veya anlamsal önem garantisi değildir.</p>
+      <p>Kaynak sesteki duraklama ve konuşma yoğunluğuna göre 30–60 saniyelik adaylar bulunur. Gerçek kaynak transkripti varsa tam cümle sınırları, soru/merak kancası, konuşma temposu ve tekrar eden konu terimleri de yerel olarak puanlanır. Dalga formundaki tutamaçları sürükleyin veya sayı alanlarını kullanın; cümle sınırlarına yapıştırın ve seçtiğiniz formatta çıktı kadrajını önizleyin. Ücretli AI çağrısı yapmaz; viral başarı veya anlamsal önem garantisi değildir.</p>
     </header>
     <fieldset className={pub.settings} disabled={disabled}>
       <legend>Analiz aralığı</legend>
@@ -318,8 +327,8 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
             Yakın cümle sınırlarına yapıştır
           </label>
         </div>
-        <p className={pub.note} role="status">{draftNotice} Seçimler, geçerli aralıklar, kapak zamanları, yapıştırma ve çıktı ayarları yalnızca bu tarayıcıda saklanır; kaynak veya analiz değişince eski taslak kullanılmaz. Sıfırlama aday aralıklarını, kapakları ve varsayılan ayarları geri getirir.</p>
-        <p className={pub.note}>Aralık geri al / ileri al yalnızca klip zamanlarını değiştirir; seçim, kapak, yapıştırma ve çıktı ayarlarını etkilemez. Bir sürükleme tek adımdır; sayı girişi alanından çıkınca tamamlanır. Geçersiz veya tamamlanmamış girişte geri al önce son tamamlanan aralığa döner. Son 30 adım bu panel oturumunda tutulur; sayfa/panel yeniden açılınca, kaynak/analiz değişince veya Taslağı sıfırla ile geçmiş temizlenir. Son aralıklar yine otomatik saklanır; ana video edit geçmişi değişmez.</p>
+        <p className={pub.note} role="status">{draftNotice} Seçimler, geçerli aralıklar, kapak zamanları, çıktı formatı, yapıştırma ve render ayarları yalnızca bu tarayıcıda saklanır; kaynak veya analiz değişince eski taslak kullanılmaz. Sıfırlama aday aralıklarını, kapakları, formatı ve varsayılan ayarları geri getirir.</p>
+        <p className={pub.note}>Aralık geri al / ileri al yalnızca klip zamanlarını değiştirir; seçim, kapak, format, yapıştırma ve çıktı ayarlarını etkilemez. Bir sürükleme tek adımdır; sayı girişi alanından çıkınca tamamlanır. Geçersiz veya tamamlanmamış girişte geri al önce son tamamlanan aralığa döner. Son 30 adım bu panel oturumunda tutulur; sayfa/panel yeniden açılınca, kaynak/analiz değişince veya Taslağı sıfırla ile geçmiş temizlenir. Son aralıklar yine otomatik saklanır; ana video edit geçmişi değişmez.</p>
         {!canSnap && <p className={pub.note}>Kaynak transkripti veya cümle zamanı yok; yapıştırma kapalı. Başlangıç/bitiş yine elle ayarlanabilir.</p>}
         <p id={waveformHelpId} className={pub.note}>Başlangıç/bitiş tutamaçları süreyi ayarlar; aralığın ortasını sürüklemek süreyi koruyarak taşır. Sürükleme görünür dalga penceresiyle sınırlıdır. Odaklanan tutamaç veya aralıkta ok tuşları 0,1 sn, Shift ile 1 sn; Home/End kaynak sınırına taşır. Escape veya dokunma iptali sürüklemeyi geri alır. Taşırken cümleye yapıştırma uygulanmaz; 1 sn taşı düğmeleri sürükleme alternatifidir. 30–60 sn ve kaynak sınırları korunur. Sayı alanları hassas giriş içindir. Dalga, kaynak sesin mono tepe genliğidir; editin kesim/hız veya müzik karışımı değildir. Çizim görünür pencereye göre ölçeklenir; ses düzeyi ölçümü değildir.</p>
         <p className={pub.note}>Gerçek önizleme başlangıcı her klibin kendi sıfırına göredir. Bölümü ve 5/10 sn süreyi seçip render düğmesine basın; işlem otomatik başlamaz, ücretli AI çağrısı yapmaz. Geç bölümler önceki karelerin işlenmesini gerektirebilir. Bölüm seçimleri taslağa kaydedilmez; yeniden açılışta son önizlemenin bölümü geri gelir.</p>
@@ -402,7 +411,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
               ? <p className={pub.note}>Klip içinde {previewSelection.start.toFixed(1)} – {(previewSelection.start + previewPart.duration).toFixed(1)} sn · kaynakta {previewPart.sourceStart.toFixed(1)} – {previewPart.sourceEnd.toFixed(1)} sn. Gerçekte {previewPart.duration.toFixed(1)} sn render edilir; klip sonunda kalan süre kullanılır.</p>
               : <p className={pub.error} role="alert">Önizleme başlangıcı 0 ile {previewPart.maxStart.toFixed(3)} sn arasında olmalı; klip sonunda en az 0,1 sn kalmalı.</p>)}
             <div className={pub.actions}>
-              <button type="button" className="btn btn-sm" onClick={() => previewClip(clip)}>Bu aralığı 9:16 önizle</button>
+              <button type="button" className="btn btn-sm" onClick={() => previewClip(clip)}>Bu aralığı {aspect} önizle</button>
               <button type="button" className="btn btn-sm" disabled={disabled || !!error || !previewPart.valid}
                 title="Klip içinde seçilen bölümü altyazı, renk ve reframe ile FFmpeg'de render eder."
                 onClick={() => previewActual(clip)}>
@@ -412,14 +421,14 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
             </div>
           </article>;
         })}
-        {preview && <section className={pub.previewSection} aria-label="9:16 klip önizlemesi">
-          <div className={pub.previewFrame}>
+        {preview && <section className={pub.previewSection} aria-label={`${aspect} klip önizlemesi`}>
+          <div className={pub.previewFrame} style={{ aspectRatio: aspect.replace(":", " / ") }}>
             <video ref={backdropVideo} className={`${pub.previewBackdrop} ${fill === "blur" ? "" : pub.previewBackdropHidden}`}
               src={mediaUrl(project.source_url)} muted playsInline preload="metadata" aria-hidden="true" tabIndex={-1}
               onLoadedMetadata={(e) => { const foreground = previewVideo.current; if (foreground) e.currentTarget.currentTime = foreground.currentTime; }} />
             <video ref={previewVideo} className={`${pub.previewVideo} ${fill === "crop" ? pub.previewCover : pub.previewContain}`}
               src={mediaUrl(project.source_url)} controls playsInline preload="metadata"
-              aria-label="Seçilen klip aralığının 9:16 önizlemesi"
+              aria-label={`Seçilen klip aralığının ${aspect} önizlemesi`}
               onPlay={(e) => {
                 if (e.currentTarget.currentTime < preview.start || e.currentTarget.currentTime >= preview.end)
                   e.currentTarget.currentTime = preview.start;
@@ -440,7 +449,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
                 } else alignBackdrop();
               }} />
           </div>
-          <p className={pub.note}>9:16 · {fillLabel} · {preview.still ? `Kapak için kaynak kare: ${preview.start.toFixed(1)} sn` : `${formatTime(preview.start)} – ${formatTime(preview.end)}`}. Canlı önizleme çıktının kadraj ve dolgu görünümünü yaklaşık gösterir. {preview.still ? "Altyazı/renk uygulanmış kesin kapak JPG klip render edilince oluşur." : "Kesin sonuç gerçek FFmpeg render çıktısıdır."}</p>
+          <p className={pub.note}>{aspect} · {fillLabel} · {preview.still ? `Kapak için kaynak kare: ${preview.start.toFixed(1)} sn` : `${formatTime(preview.start)} – ${formatTime(preview.end)}`}. Canlı önizleme çıktının kadraj ve dolgu görünümünü yaklaşık gösterir. {preview.still ? "Altyazı/renk uygulanmış kesin kapak JPG klip render edilince oluşur." : "Kesin sonuç gerçek FFmpeg render çıktısıdır."}</p>
         </section>}
         {(shownClipPreview || clipPreviewRunning || clipPreviewJob?.status === "failed") &&
           <section className={pub.actualPreview} aria-label="Gerçek FFmpeg klip önizlemesi">
@@ -449,16 +458,24 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
             {clipPreviewJob?.status === "failed" &&
               <p className={pub.error} role="alert">{clipPreviewJob.error || "Klip önizlemesi oluşturulamadı; yeniden deneyin."}</p>}
             {shownClipPreview && <>
-              <p className={pub.note}>Tam klip kaynakta {shownClipPreview.clip_start.toFixed(1)} – {shownClipPreview.clip_end.toFixed(1)} sn. Bu dosya klip içinde {clipPreviewSelection(shownClipPreview).start.toFixed(1)} – {(clipPreviewSelection(shownClipPreview).start + shownClipPreview.duration).toFixed(1)} sn bölümüdür (kaynakta {shownClipPreview.start.toFixed(1)} – {shownClipPreview.end.toFixed(1)} sn). İstenen {clipPreviewSelection(shownClipPreview).duration} sn, gerçek {shownClipPreview.duration.toFixed(1)} sn; altyazı, renk ve seçili dolgu dahildir. Tam klip ve kaynak değişmez.</p>
-              {clipPreviewStale && <p className={pub.note} role="status">Aralık, önizleme bölümü veya render ayarları değişti. Güncel gerçek önizleme için yeniden oluşturun.</p>}
+              <p className={pub.note}>Tam klip kaynakta {shownClipPreview.clip_start.toFixed(1)} – {shownClipPreview.clip_end.toFixed(1)} sn. Bu dosya {shownClipPreview.aspect_ratio} formatında, klip içinde {clipPreviewSelection(shownClipPreview).start.toFixed(1)} – {(clipPreviewSelection(shownClipPreview).start + shownClipPreview.duration).toFixed(1)} sn bölümüdür (kaynakta {shownClipPreview.start.toFixed(1)} – {shownClipPreview.end.toFixed(1)} sn). İstenen {clipPreviewSelection(shownClipPreview).duration} sn, gerçek {shownClipPreview.duration.toFixed(1)} sn; altyazı, renk ve seçili dolgu dahildir. Tam klip ve kaynak değişmez.</p>
+              {clipPreviewStale && <p className={pub.note} role="status">Aralık, önizleme bölümü, format veya render ayarları değişti. Güncel gerçek önizleme için yeniden oluşturun.</p>}
               <video key={shownClipPreview.output} src={mediaUrl(shownClipPreview.output)} controls playsInline preload="metadata"
                 aria-label="Seçilen klip aralığının gerçek FFmpeg önizlemesi" />
               <p className={pub.note}>{shownClipPreview.width} × {shownClipPreview.height} · {shownClipPreview.duration.toFixed(1)} sn · {FILL_LABELS[shownClipPreview.fill]} · {shownClipPreview.resolution} / {shownClipPreview.quality}</p>
               <a className="btn btn-sm" href={downloadUrl(shownClipPreview.output)} download>Bu önizlemeyi indir</a>
             </>}
           </section>}
+        <fieldset className={pub.settings} disabled={disabled}>
+          <legend>Kısa klip çıktı formatı</legend>
+          <label>Format<select className="select" value={aspect}
+            onChange={(e) => setAspect(e.target.value as ExportFormat)}>
+            {CLIP_FORMATS.map((format) => <option key={format} value={format}>{FORMAT_LABELS[format]}</option>)}
+          </select></label>
+        </fieldset>
+        <p className={pub.note}>Seçilen format tüm kliplerin canlı/gerçek önizlemesine, MP4 boyutlarına, JPG kapaklarına ve ZIP dosya adlarına uygulanır. Kaynak medya ve ana projenin çıktı formatı değişmez. Format değişince eski gerçek önizleme eskimiş olarak işaretlenir; hazır dosyaları güncellemek için klipleri yeniden hazırlayın.</p>
         <RenderSettings value={options} onChange={setOptions} fill={fill} onFill={setFill} disabled={disabled} />
-        <p className={pub.note}>Elle ayarlanan klipler 30–60 saniye aralığında kalmalı ve kaynak video sınırlarını aşmamalıdır. 9:16 bağımsız MP4 dosyaları hazırlanır. Kaynak ses ve varsa altyazı/renk stili korunur; editteki hız, kesimler, seslendirme ve zamanlı katmanlar bu kliplere uygulanmaz.</p>
+        <p className={pub.note}>Elle ayarlanan klipler 30–60 saniye aralığında kalmalı ve kaynak video sınırlarını aşmamalıdır. Seçilen formatta bağımsız MP4 dosyaları hazırlanır. Kaynak ses ve varsa altyazı/renk stili korunur; editteki hız, kesimler, seslendirme ve zamanlı katmanlar bu kliplere uygulanmaz.</p>
         <button id="clips-render" className="btn btn-primary" disabled={disabled || selected.length === 0 || invalidSelected.length > 0 || invalidCovers.length > 0} onClick={render}>
           {selected.length} klibi hazırla
         </button>

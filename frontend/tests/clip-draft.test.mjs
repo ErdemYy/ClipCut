@@ -18,7 +18,7 @@ function load(file, dependencies = {}) {
 }
 const trim = load("../lib/clip-trim.ts");
 const cover = load("../lib/clip-cover.ts");
-const { clipDraftStorageKey, clipDraftContext, defaultClipDraft, readClipDraft, serializeClipDraft } =
+const { CLIP_FORMATS, clipDraftStorageKey, clipDraftContext, defaultClipDraft, readClipDraft, serializeClipDraft } =
   load("../lib/clip-draft.ts", { "./clip-trim": trim, "./clip-cover": cover });
 const clips = [{ id: 0, start: 10, end: 45 }, { id: 1, start: 50, end: 80 }];
 const context = clipDraftContext("project-a", "/source.mp4", 100, true, "analysis-a", clips);
@@ -27,7 +27,7 @@ const snapshot = () => {
   const draft = defaultClipDraft(clips);
   draft.ranges[0] = { start: 12.85, end: 47.85 };
   draft.selected = [1, 0]; draft.options = { resolution: "720p", quality: "high" };
-  draft.fill = "crop"; draft.snap = false;
+  draft.fill = "crop"; draft.snap = false; draft.aspect = "4:5";
   draft.covers[0] = 12.5;
   return draft;
 };
@@ -67,7 +67,7 @@ test("invalid ranges, unknown or duplicate selections and forged output settings
     (d) => { d.selected = [99]; }, (d) => { d.selected = [0, 0]; },
     (d) => { d.selected = ["0"]; }, (d) => { d.fill = "stretch"; },
     (d) => { d.options.resolution = "8k"; }, (d) => { d.options.quality = "ultra"; },
-    (d) => { d.snap = "false"; },
+    (d) => { d.snap = "false"; }, (d) => { d.aspect = "21:9"; }, (d) => { d.aspect = null; },
   ];
   for (const mutate of mutations) {
     const draft = snapshot(); mutate(draft);
@@ -81,14 +81,17 @@ test("reset defaults are fresh objects and do not mutate candidates", () => {
   assert.equal(b.ranges[0].start, 10);
   assert.equal(b.selected.length, 0);
   assert.equal(b.options.quality, "standard");
+  assert.equal(b.aspect, "9:16");
+  assert.deepEqual([...CLIP_FORMATS], ["9:16", "1:1", "4:5", "16:9"]);
   assert.equal(clips[0].start, 10);
 });
 
-test("legacy drafts without covers migrate without losing existing ranges or selections", () => {
+test("legacy drafts without covers or aspect migrate without losing existing data", () => {
   const draft = snapshot();
-  delete draft.covers;
+  delete draft.covers; delete draft.aspect;
   const restored = readClipDraft(JSON.stringify({ version: 1, context, draft }), context, clips, 100);
   assert.deepEqual(plain(restored.covers), { 0: 0, 1: 0 });
+  assert.equal(restored.aspect, "9:16");
   assert.deepEqual(plain(restored.selected), [1, 0]);
   assert.equal(restored.ranges[0].start, 12.85);
 });
