@@ -18,6 +18,7 @@ function harness() {
   let cursor = 0;
   let range = { start: 20, end: 55 };
   const commits = [];
+  const gestures = [];
   let disabled = false;
   const jsx = (type, props) => ({ type, props });
   const react = {
@@ -45,7 +46,8 @@ function harness() {
   function render() {
     cursor = 0;
     const tree = exported.default({ label: "1. aday", duration: 100, range, disabled,
-      onChange(next) { range = next; }, onCommit(next, action) { commits.push({ ...next, action }); } });
+      onChange(next) { range = next; }, onCommit(next, action) { commits.push({ ...next, action }); },
+      onGestureChange(active) { gestures.push(active); } });
     const all = nodes(tree);
     for (const node of all) {
       if (node.props?.ref) node.props.ref.current = { getBoundingClientRect: () => ({ width: 700 }) };
@@ -56,7 +58,7 @@ function harness() {
   const event = (extra = {}) => ({ button: 0, pointerId: 1, clientX: 0, currentTarget: target,
     preventDefault() {}, ...extra });
   const slider = (name) => render().find((node) => node.props?.["aria-label"] === `1. aday ${name}`);
-  return { render, slider, event, commits, get range() { return range; }, setDisabled(value) { disabled = value; } };
+  return { render, slider, event, commits, gestures, get range() { return range; }, setDisabled(value) { disabled = value; } };
 }
 
 test("whole-range slider translates, commits once, and exposes its start and duration", () => {
@@ -74,6 +76,7 @@ test("whole-range slider translates, commits once, and exposes its start and dur
   slider.props.onLostPointerCapture(h.event());
   assert.equal(h.commits.length, 1);
   assert.equal(h.commits[0].action, "move");
+  assert.deepEqual(h.gestures, [true, false]);
 });
 
 for (const cancel of ["onPointerCancel", "onLostPointerCapture", "Escape"]) {
@@ -87,6 +90,7 @@ for (const cancel of ["onPointerCancel", "onLostPointerCapture", "Escape"]) {
     assert.equal(h.range.start, 20);
     assert.equal(h.range.end, 55);
     assert.equal(h.commits.length, 0);
+    assert.deepEqual(h.gestures, [true, false]);
   });
 }
 

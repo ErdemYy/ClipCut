@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useReducer, useRef, useState } from "react";
 import { api, downloadUrl, formatTime, mediaUrl, type ClipAnalysis, type ClipCandidate, type ClipPreviewResult, type FillMode, type Job, type JobMap, type Project, type RenderOptions, type Waveform } from "@/lib/api";
 import { clampClipRange, clipRangeError, snapClipEdge, type ClipRangeAction, type ClipRange } from "@/lib/clip-trim";
 import { clipDraftContext, clipDraftStorageKey, defaultClipDraft, readClipDraft, serializeClipDraft } from "@/lib/clip-draft";
+import { canRedoClipRanges, canUndoClipRanges, clipRangeHistoryReducer, emptyClipRangeHistory, type ClipRanges } from "@/lib/clip-range-history";
 import ClipRangeStrip from "./ClipRangeStrip";
 import { JobProgress } from "./SubtitlePanel";
 import { PublishingResults, RenderSettings } from "./PublishingControls";
@@ -27,7 +28,9 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const [maximum, setMaximum] = useState(60);
   const [count, setCount] = useState(5);
   const [selected, setSelected] = useState<number[]>([]);
-  const [ranges, setRanges] = useState<Record<number, ClipRange>>({});
+  const [rangeHistory, dispatchRanges] = useReducer(clipRangeHistoryReducer, emptyClipRangeHistory);
+  const ranges = rangeHistory.present;
+  const [rangeDragging, setRangeDragging] = useState(false);
   const [snap, setSnap] = useState(true);
   const [preview, setPreview] = useState<PreviewSelection | null>(null);
   const [pending, setPending] = useState(false);
@@ -64,6 +67,12 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const peaks = waveformLoaded?.data?.peaks;
   const waveformError = waveformLoaded?.error;
   const waveformLoading = hasCandidates && project.has_audio && !waveformLoaded;
+  const setRanges = (update: ClipRanges | ((current: ClipRanges) => ClipRanges)) => {
+    if (draftContext) dispatchRanges({ type: "preview", context: draftContext, ranges: update, duration: project.duration });
+  };
+  const commitRanges = (update: ClipRanges | ((current: ClipRanges) => ClipRanges)) => {
+    if (draftContext) dispatchRanges({ type: "commit", context: draftContext, ranges: update, duration: project.duration });
+  };
 
   const rangeFor = (clip: ClipCandidate): ClipRange =>
     ranges[clip.id] ?? { start: clip.start, end: clip.end };
@@ -100,7 +109,8 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
       if (restored) draft = restored;
       setDraftNotice(restored ? "Yerel klip taslağı geri yüklendi." : "Taslak bu tarayıcıda otomatik saklanır.");
     } catch { setDraftNotice("Tarayıcı depolamasına erişilemiyor; taslak yalnızca bu oturumda kalır."); }
-    setRanges(draft.ranges);
+    dispatchRanges({ type: "reset", context: draftContext, ranges: draft.ranges });
+    setRangeDragging(false);
     setSelected(draft.selected);
     setOptions(draft.options);
     setFill(draft.fill);
@@ -125,9 +135,10 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const resetDraft = () => {
-    if (disabled || !result) return;
+    if (disabled || rangeDragging || !result || !draftContext) return;
     const draft = defaultClipDraft(result.clips);
-    setRanges(draft.ranges); setSelected(draft.selected); setOptions(draft.options);
+    dispatchRanges({ type: "reset", context: draftContext, ranges: draft.ranges });
+    setSelected(draft.selected); setOptions(draft.options);
     setFill(draft.fill); setSnap(draft.snap); setPreview(null);
   };
 
@@ -173,7 +184,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     });
   };
   const finalizeRange = (clip: ClipCandidate, field: RangeField) => {
-    setRanges((current) => {
+    commitRanges((current) => {
       const base = current[clip.id] ?? { start: clip.start, end: clip.end };
       const clamped = clampClipRange(base, project.duration);
       const edges = field === "start" ? boundaries?.starts : boundaries?.ends;
@@ -189,7 +200,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const commitStripRange = (clip: ClipCandidate, field: ClipRangeAction, next: ClipRange) => {
     // Whole-range moves preserve duration; snapping a single edge would resize it.
     if (field === "move") {
-      setClipRange(clip, next);
+      commitRanges((current) => ({ ...current, [clip.id]: next }));
       return;
     }
     const clamped = clampClipRange(next, project.duration);
@@ -197,10 +208,10 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     const value = snap && edges
       ? snapClipEdge(field, clamped[field], clamped, edges, project.duration)
       : clamped[field];
-    setRanges((current) => ({ ...current, [clip.id]: { ...clamped, [field]: value } }));
+    commitRanges((current) => ({ ...current, [clip.id]: { ...clamped, [field]: value } }));
   };
   const resetRange = (clip: ClipCandidate) => {
-    setRanges((current) => ({ ...current, [clip.id]: { start: clip.start, end: clip.end } }));
+    commitRanges((current) => ({ ...current, [clip.id]: { start: clip.start, end: clip.end } }));
   };
   const previewClip = (clip: ClipCandidate) => {
     const range = rangeFor(clip);
@@ -267,13 +278,24 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
         <h4>{result.clips.length} bağımsız aday{smart ? " · transkript destekli akıllı skor" : ""}</h4>
         <div className={pub.actions}>
           <button className="btn btn-sm" disabled={disabled} onClick={() => setSelected(result.clips.map((c) => c.id))}>Tümünü seç</button>
-          <button type="button" className="btn btn-sm" disabled={disabled} onClick={resetDraft}>Taslağı sıfırla</button>
+          <button type="button" className={`btn btn-sm ${pub.trimShiftButton}`} disabled={disabled || rangeDragging} onClick={resetDraft}>Taslağı sıfırla</button>
+          <button type="button" className={`btn btn-sm ${pub.trimShiftButton}`}
+            disabled={disabled || rangeDragging || !canUndoClipRanges(rangeHistory)} onClick={() => {
+              if (draftContext) dispatchRanges({ type: "undo", context: draftContext });
+              setPreview(null);
+            }}>Aralık geri al</button>
+          <button type="button" className={`btn btn-sm ${pub.trimShiftButton}`}
+            disabled={disabled || rangeDragging || !canRedoClipRanges(rangeHistory)} onClick={() => {
+              if (draftContext) dispatchRanges({ type: "redo", context: draftContext });
+              setPreview(null);
+            }}>Aralık ileri al</button>
           <label className={pub.snapToggle} title="2 saniye yakınındaki cümle başlangıç/bitişlerine yapıştırır">
             <input type="checkbox" checked={snap} disabled={disabled || !canSnap} onChange={(e) => setSnap(e.target.checked)} />
             Yakın cümle sınırlarına yapıştır
           </label>
         </div>
         <p className={pub.note} role="status">{draftNotice} Seçimler, geçerli aralıklar, yapıştırma ve çıktı ayarları yalnızca bu tarayıcıda saklanır; kaynak veya analiz değişince eski taslak kullanılmaz. Sıfırlama aday aralıklarını ve varsayılan ayarları geri getirir.</p>
+        <p className={pub.note}>Aralık geri al / ileri al yalnızca klip zamanlarını değiştirir; seçim, yapıştırma ve çıktı ayarlarını etkilemez. Bir sürükleme tek adımdır; sayı girişi alanından çıkınca tamamlanır. Geçersiz veya tamamlanmamış girişte geri al önce son tamamlanan aralığa döner. Son 30 adım bu panel oturumunda tutulur; sayfa/panel yeniden açılınca, kaynak/analiz değişince veya Taslağı sıfırla ile geçmiş temizlenir. Son aralıklar yine otomatik saklanır; ana video edit geçmişi değişmez.</p>
         {!canSnap && <p className={pub.note}>Kaynak transkripti veya cümle zamanı yok; yapıştırma kapalı. Başlangıç/bitiş yine elle ayarlanabilir.</p>}
         <p id={waveformHelpId} className={pub.note}>Başlangıç/bitiş tutamaçları süreyi ayarlar; aralığın ortasını sürüklemek süreyi koruyarak taşır. Sürükleme görünür dalga penceresiyle sınırlıdır. Odaklanan tutamaç veya aralıkta ok tuşları 0,1 sn, Shift ile 1 sn; Home/End kaynak sınırına taşır. Escape veya dokunma iptali sürüklemeyi geri alır. Taşırken cümleye yapıştırma uygulanmaz; 1 sn taşı düğmeleri sürükleme alternatifidir. 30–60 sn ve kaynak sınırları korunur. Sayı alanları hassas giriş içindir. Dalga, kaynak sesin mono tepe genliğidir; editin kesim/hız veya müzik karışımı değildir. Çizim görünür pencereye göre ölçeklenir; ses düzeyi ölçümü değildir.</p>
         {waveformLoading && <p className={pub.note} role="status">Kaynak ses dalgası hazırlanıyor; tutamaçlar şimdiden kullanılabilir.</p>}
@@ -302,6 +324,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
             </div>
             <ClipRangeStrip label={`${index + 1}. aday`} duration={project.duration} range={range}
               peaks={peaks} disabled={disabled || !!error} describedBy={waveformHelpId}
+              onGestureChange={setRangeDragging}
               onChange={(next) => setClipRange(clip, next)}
               onCommit={(next, edge) => commitStripRange(clip, edge, next)} />
             {error && <small className={pub.error} role="alert">{error}</small>}

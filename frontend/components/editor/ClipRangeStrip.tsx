@@ -23,6 +23,7 @@ type Props = {
   describedBy?: string;
   onChange: (range: ClipRange) => void;
   onCommit: (range: ClipRange, edge: ClipRangeAction) => void;
+  onGestureChange?: (active: boolean) => void;
 };
 
 type View = { start: number; end: number };
@@ -78,7 +79,7 @@ const WaveformBars = memo(function WaveformBars({
 });
 
 export default function ClipRangeStrip({
-  label, duration, range, peaks, disabled = false, describedBy, onChange, onCommit,
+  label, duration, range, peaks, disabled = false, describedBy, onChange, onCommit, onGestureChange,
 }: Props) {
   const total = Number.isFinite(duration) && duration > 0 ? duration : 0;
   const safe = clampClipRange(range, total);
@@ -123,6 +124,7 @@ export default function ClipRangeStrip({
       viewStart: view.start, viewEnd: view.end, lastValue: actionValue(base, edge),
     };
     setDragView(view);
+    onGestureChange?.(true);
   };
 
   const move = (event: PointerEvent<HTMLButtonElement>) => {
@@ -138,6 +140,7 @@ export default function ClipRangeStrip({
     const state = drag.current;
     if (!state || state.pointerId !== event.pointerId) return;
     drag.current = null;
+    onGestureChange?.(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId))
       event.currentTarget.releasePointerCapture(event.pointerId);
     setDragView(null);
@@ -158,6 +161,7 @@ export default function ClipRangeStrip({
     if (event.key === "Escape" && active) {
       event.preventDefault();
       drag.current = null;
+      onGestureChange?.(false);
       if (event.currentTarget.hasPointerCapture(active.pointerId))
         event.currentTarget.releasePointerCapture(active.pointerId);
       setDragView(null);
