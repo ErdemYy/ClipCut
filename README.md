@@ -58,6 +58,12 @@ Klipler hazırlanırken seçilen sıra, aralıklar, kapak zamanları, format lis
 
 Bu özellikten önce hazırlanmış sonuçlarda istek özeti yoktur; bunlar yanlışlıkla “güncel” sayılmaz ve “güncellik bilgisi olmadan hazırlandı” uyarısı gösterir. Tek formatlı eski sonuçlar, seçim hâlâ o tek formatla eşleşiyorsa güncel kalabilir. Otomatik yeniden render yapılmaz. Uyarı yalnızca kısa klip sonuçlarına aittir; ana proje renderı, kaynak medya veya edit geçmişi değişmez.
 
+### Hazır çıktıları kontrollü oynatma
+
+Klip, transkript klibi ve toplu dışa aktarma sonuçlarında **Oynatıcıyı aç** düğmesi son hazırlanan MP4 dosyasını gösterir. Başlangıçta yalnızca kapaklar vardır; MP4, oynatıcı açılmadan yüklenmez ve otomatik oynatılmaz. Panelde başka bir sonuç açılınca önceki oynatıcı kaldırılır ve oynatma durur. **Oynatıcıyı kapat** ile kapağa dönülür. Yükleme/oynatma hatasında açıklama ve **Oynatmayı yeniden dene** düğmesi görünür; MP4, JPG ve ZIP indirme bağlantıları korunur. Yeni render sonucu eski açık oynatıcıyı devralmaz.
+
+Oynatılan video son render dosyasıdır; henüz render edilmemiş düzenlemeleri içermez. Kısa kliplerdeki güncellik uyarısı oynatıcı açıkken de korunur. Oynatıcı seçimi sayfa yenilenince sıfırlanır; kaynak medya ve ana proje değiştirilmez.
+
 ## Senaryodan çok sahneli video
 
 1. **Yeni Video → Senaryodan Üret** bölümüne konuyu veya hazır senaryoyu yazın; dil, format, ortak stil, 2–12 sahne ve sahne süresini seçin.

@@ -10,6 +10,7 @@
 .formats small, .output small, .candidate small { color: var(--text-dim); line-height: 1.5; }
 .cover { display: grid; gap: 10px; border-top: 1px solid var(--border); padding-top: 16px; }
 .cover video, .output video { width: 100%; max-height: 250px; background: #000; }
+.outputPoster { display: block; width: 100%; height: auto; max-height: 250px; object-fit: contain; background: #000; }
 .cover label { display: grid; gap: 8px; font-size: 0.85rem; }
 .cover input[type="range"] { width: 100%; min-height: 32px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }

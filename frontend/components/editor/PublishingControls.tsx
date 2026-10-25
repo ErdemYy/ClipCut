@@ -1,5 +1,7 @@
 "use client";
 
+import { useId, useRef, useState } from "react";
+import Image from "next/image";
 import { downloadUrl, mediaUrl, formatTime, type FillMode, type Job, type PublishResult, type RenderOptions } from "@/lib/api";
 import styles from "./publishing.module.css";
 
@@ -27,6 +29,9 @@ export function RenderSettings({ value, onChange, fill, onFill, disabled }: {
 export function PublishingResults({ job, freshness }: {
   job?: Job; freshness?: "stale" | "unknown";
 }) {
+  const previewId = useId();
+  const previewAttempt = useRef(0);
+  const [preview, setPreview] = useState<{ key: string; attempt: number; failed: boolean } | null>(null);
   if (job?.status === "failed") return <p className={styles.error} role="alert">{job.error || "Render başarısız. Yeniden deneyebilirsiniz."}</p>;
   if (job?.status !== "done" || !Array.isArray(job.result?.outputs)) return null;
   const result = job.result as unknown as PublishResult;
@@ -38,17 +43,42 @@ export function PublishingResults({ job, freshness }: {
         : "Bu sonuç güncellik bilgisi olmadan hazırlandı. İndirmeden önce klipleri yeniden hazırlayarak güncel olduğunu doğrulayın."}
     </p>}
     <a className="btn btn-primary" href={downloadUrl(result.archive)} download>Tümünü ZIP olarak indir</a>
-    {result.outputs.map((out) => <div className={styles.output} key={out.output}>
-      <strong>{out.label.replaceAll("_", " ")}</strong>
-      <small>{out.aspect_ratio} · {out.width} × {out.height} · {formatTime(out.duration)}</small>
-      {typeof out.cover_at === "number" && <small>Kapak: klip içinde {out.cover_at.toFixed(1)} sn
-        {typeof out.cover_source_at === "number" ? ` · kaynakta ${out.cover_source_at.toFixed(1)} sn` : ""}. JPG render edilmiş videodan alınır; zamanlama kare hassasiyetindedir.</small>}
-      <video controls preload="none" src={mediaUrl(out.output)} poster={mediaUrl(out.thumbnail)} aria-label={`${out.label} önizlemesi`} />
-      <div className={styles.actions}>
-        <a className="btn btn-sm" href={downloadUrl(out.output)} download>MP4 indir</a>
-        <a className="btn btn-sm" href={downloadUrl(out.thumbnail)} download>Kapak JPG</a>
-      </div>
-      {out.thumbnail_fallback && <small>Seçilen kaynak karesi kesildiği için ilk çıktı karesi kapak olarak kullanıldı.</small>}
-    </div>)}
+    <p className={styles.note}>Oynatıcıyı açarak hazırlanan dosyayı kontrol edin. Aynı anda tek çıktı açılır; video otomatik oynatılmaz. Bu, son hazırlanan dosyadır ve henüz uygulanmamış değişiklikleri içermez.</p>
+    {result.outputs.map((out, index) => {
+      const key = JSON.stringify([job.id, result.archive, out.output]);
+      const opened = preview?.key === key;
+      const attempt = opened ? preview.attempt : 0;
+      const label = out.label.replaceAll("_", " ");
+      const thumbnail = mediaUrl(out.thumbnail);
+      const regionId = `${previewId}-${index}`;
+      return <div className={styles.output} key={out.output}>
+        <strong>{label}</strong>
+        <small>{out.aspect_ratio} · {out.width} × {out.height} · {formatTime(out.duration)}</small>
+        {typeof out.cover_at === "number" && <small>Kapak: klip içinde {out.cover_at.toFixed(1)} sn
+          {typeof out.cover_source_at === "number" ? ` · kaynakta ${out.cover_source_at.toFixed(1)} sn` : ""}. JPG render edilmiş videodan alınır; zamanlama kare hassasiyetindedir.</small>}
+        {!opened && thumbnail && <Image className={styles.outputPoster} src={thumbnail}
+          width={out.width} height={out.height} unoptimized alt={`${label} kapak karesi`} />}
+        <div className={styles.actions}>
+          <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
+            aria-expanded={opened} aria-controls={regionId} aria-label={`${label} oynatıcısını ${opened ? "kapat" : "aç"}`}
+            onClick={() => setPreview(opened ? null : { key, attempt: ++previewAttempt.current, failed: false })}>
+            {opened ? "Oynatıcıyı kapat" : "Oynatıcıyı aç"}
+          </button>
+          <a className="btn btn-sm" href={downloadUrl(out.output)} download>MP4 indir</a>
+          <a className="btn btn-sm" href={downloadUrl(out.thumbnail)} download>Kapak JPG</a>
+        </div>
+        <div id={regionId} hidden={!opened}>
+          {opened && (preview.failed ? <>
+            <p className={styles.error} role="alert">Video yüklenemedi veya bu tarayıcıda oynatılamıyor. Yeniden deneyebilir ya da MP4 dosyasını indirebilirsiniz.</p>
+            <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
+              onClick={() => setPreview({ key, attempt: ++previewAttempt.current, failed: false })}>Oynatmayı yeniden dene</button>
+          </> : <video key={`${key}:${attempt}`} controls playsInline preload="metadata"
+            src={mediaUrl(out.output)} poster={mediaUrl(out.thumbnail)} aria-label={`${label} hazırlanmış videosu`}
+            onError={() => setPreview((current) => current?.key === key && current.attempt === attempt
+              ? { ...current, failed: true } : current)} />)}
+        </div>
+        {out.thumbnail_fallback && <small>Seçilen kaynak karesi kesildiği için ilk çıktı karesi kapak olarak kullanıldı.</small>}
+      </div>;
+    })}
   </section>;
 }
