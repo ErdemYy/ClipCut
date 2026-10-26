@@ -98,6 +98,7 @@ export type ClipRenderSnapshot = {
 };
 export type PublishResult = {
   archive: string;
+  format_archives?: Partial<Record<ExportFormat, string>>;
   outputs: { label: string; aspect_ratio: ExportFormat; output: string; thumbnail: string;
     width: number; height: number; duration: number; thumbnail_fallback: boolean;
     cover_at?: number; cover_source_at?: number }[];

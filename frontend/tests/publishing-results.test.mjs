@@ -193,3 +193,46 @@ test("unsupported filter values are ignored and freshness warnings remain visibl
   assert.ok(h.render().some(n => typeof n.props?.children === "string" && n.props.children.includes("son hazırlanan dosyalardan farklı")));
   assert.equal(h.buttons().length, 1);
 });
+
+test("filtered ZIP link targets only the selected format and leaves the full archive intact", () => {
+  const h = harness();
+  h.setJob({ ...h.job, result: { ...h.job.result,
+    format_archives: { "1:1": "square.zip", "9:16": "portrait.zip" } } });
+  const before = JSON.stringify(h.job);
+  assert.equal(h.render().filter(n => n.type === "a" && n.props.download).length, 5);
+  for (const [format, url] of [["1:1", "square.zip"], ["9:16", "portrait.zip"]]) {
+    h.filter().props.onChange({ target: { value: format } });
+    const links = h.render().filter(n => n.type === "a" && n.props.download);
+    assert.equal(links.length, 4);
+    assert.equal(links[0].props.href, "download:all.zip");
+    assert.equal(links[1].props.href, `download:${url}`);
+    assert.ok(links[1].props.children.includes(format));
+  }
+  h.filter().props.onChange({ target: { value: "all" } });
+  assert.equal(h.render().filter(n => n.type === "a" && n.props.download).length, 5);
+  assert.equal(JSON.stringify(h.job), before);
+});
+
+test("legacy or partially indexed archives never offer a misleading format download", () => {
+  const h = harness();
+  for (const format_archives of [undefined, {}, { "9:16": "portrait.zip" }]) {
+    h.setJob({ ...h.job, result: { ...h.job.result, format_archives } });
+    h.filter().props.onChange({ target: { value: "1:1" } });
+    assert.equal(h.render().filter(n => n.type === "a" && n.props.download).length, 3);
+    assert.ok(h.render().some(n => Array.isArray(n.props?.children)
+      && n.props.children.join("").includes("ayrı 1:1 ZIP arşivi bulunmuyor")));
+    assert.equal(h.render().find(n => n.type === "a").props.href, "download:all.zip");
+  }
+});
+
+test("filtered archive download keeps stale and unknown-result warnings", () => {
+  const h = harness();
+  h.setJob({ ...h.job, result: { ...h.job.result, format_archives: { "1:1": "square.zip" } } });
+  h.filter().props.onChange({ target: { value: "1:1" } });
+  for (const freshness of ["stale", "unknown"]) {
+    h.setFreshness(freshness);
+    assert.ok(h.render().some(n => n.type === "a" && n.props.href === "download:square.zip"));
+    const message = freshness === "stale" ? "son hazırlanan dosyalardan farklı" : "güncellik bilgisi olmadan";
+    assert.ok(h.render().some(n => typeof n.props?.children === "string" && n.props.children.includes(message)));
+  }
+});

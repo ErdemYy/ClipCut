@@ -42,6 +42,7 @@ export function PublishingResults({ job, freshness }: {
     ? formatFilter.format : "all";
   const shownOutputs = selectedFormat === "all" ? result.outputs
     : result.outputs.filter((out) => out.aspect_ratio === selectedFormat);
+  const formatArchive = selectedFormat === "all" ? undefined : result.format_archives?.[selectedFormat];
   const filterHelpId = `${previewId}-filter-help`;
   return <section className={styles.results} aria-label="Hazır dosyalar">
     <h4>Dosyalar hazır</h4>
@@ -67,8 +68,13 @@ export function PublishingResults({ job, freshness }: {
       </select></label>
     </fieldset>}
     <p id={filterHelpId} className={styles.note} role="status" aria-atomic="true">
-      {shownOutputs.length} / {result.outputs.length} çıktı gösteriliyor. ZIP tüm {result.outputs.length} çıktıyı içerir; filtre yalnızca bu listeyi değiştirir.
+      {shownOutputs.length} / {result.outputs.length} çıktı gösteriliyor. Tümünü ZIP bağlantısı bütün {result.outputs.length} çıktıyı içerir.
     </p>
+    {selectedFormat !== "all" && (formatArchive
+      ? <a className={`btn btn-sm ${styles.trimShiftButton}`} href={downloadUrl(formatArchive)} download>
+        Yalnızca {selectedFormat} ZIP indir
+      </a>
+      : <p className={styles.note}>Bu sonuç için ayrı {selectedFormat} ZIP arşivi bulunmuyor. MP4/JPG bağlantılarını veya tüm çıktıları içeren ZIP dosyasını kullanabilirsiniz. Format arşivleri yeni hazırlanan sonuçlarda oluşturulur.</p>)}
     <p className={styles.note}>Oynatıcıyı açarak hazırlanan dosyayı kontrol edin. Aynı anda tek çıktı açılır; video otomatik oynatılmaz. Bu, son hazırlanan dosyadır ve henüz uygulanmamış değişiklikleri içermez.</p>
     {shownOutputs.map((out, index) => {
       const key = JSON.stringify([job.id, result.archive, out.output]);

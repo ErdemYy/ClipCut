@@ -343,6 +343,11 @@ def test_real_four_format_batch_and_archive(tmp_path, monkeypatch):
     with zipfile.ZipFile(archive) as zf:
         assert len(zf.namelist()) == 8
         assert all("/" not in name for name in zf.namelist())
+    assert set(result["format_archives"]) == {"9:16", "1:1", "4:5", "16:9"}
+    for out in result["outputs"]:
+        path = tmp_path / result["format_archives"][out["aspect_ratio"]].split("/projects/test/")[1]
+        with zipfile.ZipFile(path) as zf:
+            assert set(zf.namelist()) == {f"{out['label']}.mp4", f"{out['label']}.jpg"}
     assert "clip_request" not in result
     assert p.plan == before
 
@@ -539,6 +544,13 @@ def test_real_multi_format_clip_render_outputs_and_archive(tmp_path, monkeypatch
         assert set(zf.namelist()) == {
             "clip_01_reels_tiktok.mp4", "clip_01_reels_tiktok.jpg",
             "clip_01_instagram_square.mp4", "clip_01_instagram_square.jpg"}
+    assert set(result["format_archives"]) == {"9:16", "1:1"}
+    for out in result["outputs"]:
+        path = tmp_path / result["format_archives"][out["aspect_ratio"]].split("/projects/multi/")[1]
+        with zipfile.ZipFile(path) as zf:
+            assert set(zf.namelist()) == {f"{out['label']}.mp4", f"{out['label']}.jpg"}
+            for name in zf.namelist():
+                assert zf.read(name) == (path.parent / name).read_bytes()
     assert result["clip_request"] == {
         "analysis_id": "abcdef123456",
         "clips": [{"id": 0, "start": 0.1, "end": 0.9, "cover_at": 0.4}],
@@ -548,6 +560,52 @@ def test_real_multi_format_clip_render_outputs_and_archive(tmp_path, monkeypatch
     }
     assert snapshot == p.model_dump()
     assert hashlib.sha256(source.read_bytes()).hexdigest() == before_hash
+
+
+@pytest.mark.parametrize("mode", ["batch", "clip", "transcript"])
+@pytest.mark.parametrize("formats", [["9:16"], ["9:16", "1:1"]])
+def test_format_archives_reuse_outputs_without_extra_renders(tmp_path, monkeypatch, mode, formats):
+    from app import jobs
+    from app.models import Project
+
+    monkeypatch.setattr(jobs, "project_dir", lambda _: tmp_path)
+    monkeypatch.setattr(jobs, "_save_project", lambda *_: pytest.fail("Publishing must not save the project"))
+    renders = []
+    def fake_render(req, progress):
+        renders.append(req.output.name)
+        req.output.write_bytes(f"video:{req.output.stem}".encode())
+        return {"width": 720, "height": 720, "duration": 30}
+    monkeypatch.setattr(jobs, "render", fake_render)
+    monkeypatch.setattr(jobs, "make_thumbnail", lambda source, dest, **_: dest.write_bytes(f"jpg:{source.stem}".encode()))
+    p = Project(id="archives", name="Archives", source_file="source.mp4", duration=80,
+                width=160, height=90, status="ready", thumbnail_file="preserved.jpg")
+    snapshot = copy.deepcopy(p.model_dump())
+    options = {"formats": formats, "aspect_ratio": formats[0], "aspect_ratios": formats,
+               "resolution": "720p", "quality": "fast", "fill": "fit"}
+    if mode == "clip":
+        options["analysis_id"] = "abcdef123456"
+    clips = None if mode == "batch" else [
+        {"id": 0, "start": 0, "end": 30}, {"id": 1, "start": 40, "end": 70}]
+    result = jobs.task_publish(lambda *_: None, snapshot, options, clips)
+    assert len(renders) == len(formats) * (1 if clips is None else len(clips))
+    assert set(result["format_archives"]) == set(formats)
+    archive = tmp_path / result["archive"].split("/projects/archives/")[1]
+    assert len(list(archive.parent.glob("*.zip"))) == (1 if len(formats) == 1 else len(formats) + 1)
+    if len(formats) == 1:
+        assert result["format_archives"][formats[0]] == result["archive"]
+    all_names = set()
+    for aspect, url in result["format_archives"].items():
+        path = tmp_path / url.split("/projects/archives/")[1]
+        expected = {f"{out['label']}.{ext}" for out in result["outputs"]
+                    if out["aspect_ratio"] == aspect for ext in ("mp4", "jpg")}
+        with zipfile.ZipFile(path) as zf:
+            assert set(zf.namelist()) == expected
+            for name in zf.namelist():
+                assert zf.read(name) == (path.parent / name).read_bytes()
+        all_names.update(expected)
+    with zipfile.ZipFile(archive) as zf:
+        assert set(zf.namelist()) == all_names
+    assert snapshot == p.model_dump()
 
 
 @pytest.mark.parametrize("cover_at,dominant", [(0, 2), (26, 0)])

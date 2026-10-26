@@ -66,6 +66,10 @@ Oynatılan video son render dosyasıdır; henüz render edilmemiş düzenlemeler
 
 Birden fazla format içeren sonuçlarda **Gösterilen format** alanıyla listeyi 9:16, 1:1 gibi bir formata daraltabilirsiniz. Seçeneklerde format başına çıktı sayısı, listenin üstünde gösterilen/toplam çıktı sayısı yer alır. Filtre yalnızca görünümü değiştirir: çıktı sırası, render ayarları ve güncellik uyarısı korunur; **Tümünü ZIP olarak indir** her zaman bütün çıktıları indirir. Filtre değişince açık oynatıcı kapanır. **Tüm formatlar** seçimi listeyi geri getirir; yeni render sonucu veya sayfa açılışı tüm formatlarla başlar. Tek formatlı sonuçlarda gereksiz filtre gösterilmez.
 
+Yeni hazırlanan çok formatlı sonuçlarda, bir format seçildiğinde **Yalnızca 1:1 ZIP indir** gibi ek bir bağlantı görünür. Bu ZIP yalnızca seçilen formattaki bütün MP4/JPG çiftlerini içerir; tüm çıktıları içeren ZIP bağlantısı değişmez. Format arşivleri render edilen dosyalardan aynı iş içinde hazırlanır, ek video renderı veya AI çağrısı yapılmaz. Tek formatlı işlerde mevcut tam ZIP yeniden kullanılır. Çok formatlı işlerde ek ZIP dosyaları disk alanı kullanır; otomatik temizleme yoktur.
+
+Eski sonuçlarda format arşivi bilgisi bulunmayabilir. Bu durumda yanlış içerikli bir indirme sunulmaz; açıklama ile mevcut MP4/JPG ve tam ZIP bağlantıları korunur. Ayrı format ZIP'leri yalnızca yeni hazırlanan sonuçlarda mevcuttur; otomatik yeniden render yapılmaz.
+
 ## Senaryodan çok sahneli video
 
 1. **Yeni Video → Senaryodan Üret** bölümüne konuyu veya hazır senaryoyu yazın; dil, format, ortak stil, 2–12 sahne ve sahne süresini seçin.

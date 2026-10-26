@@ -424,6 +424,7 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
     else:
         tasks = [(None, None, aspect) for aspect in options["formats"]]
     outputs = []
+    files_by_format = {}
     for i, (clip_index, entry, aspect) in enumerate(tasks):
         plan = (clip_plan(base, entry["start"], entry["end"], aspect, options["fill"])
                 if entry is not None else export_plan(base, aspect, options["fill"]))
@@ -450,6 +451,7 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
         at = min(max(0, mapped or 0), max(0, tl.output_duration - 0.1))
         thumb = out_dir / f"{stem}.jpg"
         make_thumbnail(output, thumb, at=at)
+        files_by_format.setdefault(aspect, []).extend([output, thumb])
         cover_meta = {"cover_at": at, "cover_source_at": entry["start"] + at} if entry is not None else {}
         outputs.append({"aspect_ratio": aspect, "label": stem, **meta, **cover_meta,
                         "start": entry.get("start") if entry is not None else None,
@@ -464,6 +466,18 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
                 zf.write(file, file.name)
     result = {"outputs": outputs, "archive": media_url(p.id, archive.relative_to(pdir).as_posix()),
               "rendered_at": datetime.now(timezone.utc).isoformat()}
+    # Reuse the rendered files: per-format downloads never invoke FFmpeg again.
+    # A single-format job already has exactly the right full archive.
+    result["format_archives"] = {}
+    for aspect, files in files_by_format.items():
+        if len(files_by_format) == 1:
+            result["format_archives"][aspect] = result["archive"]
+            continue
+        format_archive = out_dir / f"clipcut_exports_{FORMAT_NAMES[aspect]}.zip"
+        with zipfile.ZipFile(format_archive, "w", compression=zipfile.ZIP_STORED) as zf:
+            for file in sorted(files, key=lambda item: item.name):
+                zf.write(file, file.name)
+        result["format_archives"][aspect] = media_url(p.id, format_archive.relative_to(pdir).as_posix())
     if clips is not None and options.get("analysis_id"):
         result["clip_request"] = {
             "analysis_id": options["analysis_id"],
