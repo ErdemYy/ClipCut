@@ -10,7 +10,8 @@ const code = ts.transpileModule(fs.readFileSync(new URL("../components/editor/Pu
 
 // Exercise actual component handlers; browser media decoding is tested separately.
 function harness() {
-  let state = null;
+  const states = [];
+  let cursor = 0;
   const ref = { current: 0 };
   const jsx = (type, props, key) => ({ type, props, key });
   const exports = {};
@@ -18,7 +19,11 @@ function harness() {
     if (name === "react") return {
       useId: () => ":preview:",
       useRef: () => ref,
-      useState: () => [state, (next) => { state = typeof next === "function" ? next(state) : next; }],
+      useState(value) {
+        const index = cursor++;
+        if (!(index in states)) states[index] = value;
+        return [states[index], (next) => { states[index] = typeof next === "function" ? next(states[index]) : next; }];
+      },
     };
     if (name === "react/jsx-runtime") return { jsx, jsxs: jsx };
     if (name === "next/image") return { default: "img" };
@@ -26,15 +31,16 @@ function harness() {
     if (name.endsWith(".css")) return { default: new Proxy({}, { get: (_, key) => key }) };
     throw new Error(`Unexpected import ${name}`);
   } });
-  const output = (name) => ({ label: `clip_01_${name}`, aspect_ratio: name, width: 720, height: 720,
+  const output = (name) => ({ label: `clip_01_${name}`, aspect_ratio: name === "square" ? "1:1" : "9:16", width: 720, height: 720,
     duration: 30, output: `${name}.mp4`, thumbnail: `${name}.jpg`, thumbnail_fallback: false });
   let job = { id: "job-a", status: "done", result: { archive: "all.zip", outputs: [output("square"), output("portrait")] } };
   let freshness;
   const nodes = (n) => !n || typeof n !== "object" ? []
     : [n, ...[n.props?.children].flat(Infinity).flatMap(nodes)];
-  const render = () => nodes(exports.PublishingResults({ job, freshness }));
+  const render = () => { cursor = 0; return nodes(exports.PublishingResults({ job, freshness })); };
   const buttons = () => render().filter(n => n.type === "button" && n.props["aria-controls"]);
   return { render, buttons, videos: () => render().filter(n => n.type === "video"),
+    filter: () => render().find(n => n.type === "select"),
     setJob: (next) => { job = next; }, get job() { return job; }, setFreshness: (value) => { freshness = value; } };
 }
 
@@ -108,7 +114,9 @@ test("stale and legacy warnings coexist with playback without mutating results",
   h.buttons()[0].props.onClick();
   for (const freshness of ["stale", "unknown"]) {
     h.setFreshness(freshness);
-    assert.ok(h.render().some(n => n.props?.role === "status"));
+    const message = freshness === "stale" ? "son hazırlanan dosyalardan farklı" : "güncellik bilgisi olmadan";
+    assert.ok(h.render().some(n => n.props?.role === "status"
+      && typeof n.props.children === "string" && n.props.children.includes(message)));
     assert.equal(h.videos().length, 1);
   }
   assert.equal(JSON.stringify(h.job), before);
@@ -121,4 +129,67 @@ test("failed, unfinished and malformed jobs have no playback controls", () => {
     assert.equal(h.videos().length, 0);
     assert.equal(h.buttons().length, 0);
   }
+});
+
+test("format filter counts outputs and preserves their order and the complete archive", () => {
+  const h = harness();
+  const first = h.job.result.outputs[0];
+  h.setJob({ ...h.job, result: { ...h.job.result,
+    outputs: [...h.job.result.outputs, { ...first, label: "clip_02_square", output: "square-2.mp4" }] } });
+  const before = JSON.stringify(h.job);
+  const values = h.render().filter(n => n.type === "option").map(n => n.props.value);
+  assert.deepEqual(values, ["all", "1:1", "9:16"]);
+  h.filter().props.onChange({ target: { value: "1:1" } });
+  assert.equal(h.filter().props.value, "1:1");
+  assert.deepEqual(h.render().filter(n => n.type === "strong").map(n => n.props.children), ["clip 01 square", "clip 02 square"]);
+  const count = h.render().find(n => n.props?.id === ":preview:-filter-help");
+  assert.match(count.props.children.join(""), /2 \/ 3 çıktı gösteriliyor/);
+  assert.equal(h.render().find(n => n.type === "a").props.href, "download:all.zip");
+  assert.equal(JSON.stringify(h.job), before);
+});
+
+test("filter changes close playback and returning to all does not reopen it", () => {
+  const h = harness(); h.buttons()[0].props.onClick();
+  const previous = h.videos()[0];
+  h.filter().props.onChange({ target: { value: "9:16" } });
+  assert.equal(h.videos().length, 0);
+  previous.props.onError();
+  h.filter().props.onChange({ target: { value: "all" } });
+  assert.equal(h.videos().length, 0);
+  assert.equal(h.buttons().length, 2);
+});
+
+test("new jobs, archives and removed formats fall back to all results", () => {
+  const h = harness();
+  h.filter().props.onChange({ target: { value: "1:1" } });
+  h.setJob({ ...h.job, id: "job-b" });
+  assert.equal(h.filter().props.value, "all");
+  h.filter().props.onChange({ target: { value: "1:1" } });
+  h.setJob({ ...h.job, result: { ...h.job.result, archive: "next.zip" } });
+  assert.equal(h.filter().props.value, "all");
+  h.filter().props.onChange({ target: { value: "1:1" } });
+  h.setJob({ ...h.job, result: { ...h.job.result, outputs: [h.job.result.outputs[1]] } });
+  assert.equal(h.filter(), undefined);
+  assert.equal(h.buttons().length, 1);
+});
+
+test("single-format and empty results need no selector and retain their archive", () => {
+  const h = harness();
+  for (const outputs of [[h.job.result.outputs[0]], []]) {
+    h.setJob({ ...h.job, result: { ...h.job.result, outputs } });
+    assert.equal(h.filter(), undefined);
+    assert.equal(h.buttons().length, outputs.length);
+    assert.equal(h.render().find(n => n.type === "a").props.href, "download:all.zip");
+  }
+});
+
+test("unsupported filter values are ignored and freshness warnings remain visible", () => {
+  const h = harness(); h.buttons()[0].props.onClick();
+  h.filter().props.onChange({ target: { value: "21:9" } });
+  assert.equal(h.filter().props.value, "all");
+  assert.equal(h.videos().length, 1);
+  h.setFreshness("stale");
+  h.filter().props.onChange({ target: { value: "1:1" } });
+  assert.ok(h.render().some(n => typeof n.props?.children === "string" && n.props.children.includes("son hazırlanan dosyalardan farklı")));
+  assert.equal(h.buttons().length, 1);
 });

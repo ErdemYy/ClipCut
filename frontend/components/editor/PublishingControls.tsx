@@ -2,7 +2,7 @@
 
 import { useId, useRef, useState } from "react";
 import Image from "next/image";
-import { downloadUrl, mediaUrl, formatTime, type FillMode, type Job, type PublishResult, type RenderOptions } from "@/lib/api";
+import { downloadUrl, mediaUrl, formatTime, type ExportFormat, type FillMode, type Job, type PublishResult, type RenderOptions } from "@/lib/api";
 import styles from "./publishing.module.css";
 
 export function RenderSettings({ value, onChange, fill, onFill, disabled }: {
@@ -32,9 +32,17 @@ export function PublishingResults({ job, freshness }: {
   const previewId = useId();
   const previewAttempt = useRef(0);
   const [preview, setPreview] = useState<{ key: string; attempt: number; failed: boolean } | null>(null);
+  const [formatFilter, setFormatFilter] = useState<{ key: string; format: ExportFormat | "all" } | null>(null);
   if (job?.status === "failed") return <p className={styles.error} role="alert">{job.error || "Render başarısız. Yeniden deneyebilirsiniz."}</p>;
   if (job?.status !== "done" || !Array.isArray(job.result?.outputs)) return null;
   const result = job.result as unknown as PublishResult;
+  const resultKey = JSON.stringify([job.id, result.archive]);
+  const formats = [...new Set(result.outputs.map((out) => out.aspect_ratio))];
+  const selectedFormat = formatFilter?.key === resultKey && formats.includes(formatFilter.format as ExportFormat)
+    ? formatFilter.format : "all";
+  const shownOutputs = selectedFormat === "all" ? result.outputs
+    : result.outputs.filter((out) => out.aspect_ratio === selectedFormat);
+  const filterHelpId = `${previewId}-filter-help`;
   return <section className={styles.results} aria-label="Hazır dosyalar">
     <h4>Dosyalar hazır</h4>
     {freshness && <p className={styles.stale} role="status">
@@ -43,8 +51,26 @@ export function PublishingResults({ job, freshness }: {
         : "Bu sonuç güncellik bilgisi olmadan hazırlandı. İndirmeden önce klipleri yeniden hazırlayarak güncel olduğunu doğrulayın."}
     </p>}
     <a className="btn btn-primary" href={downloadUrl(result.archive)} download>Tümünü ZIP olarak indir</a>
+    {formats.length > 1 && <fieldset className={styles.settings}>
+      <legend>Sonuçları filtrele</legend>
+      <label>Gösterilen format<select className={`select ${styles.trimShiftButton}`}
+        value={selectedFormat} aria-describedby={filterHelpId} onChange={(e) => {
+          const format = e.target.value as ExportFormat | "all";
+          if (format !== "all" && !formats.includes(format)) return;
+          setFormatFilter({ key: resultKey, format });
+          setPreview(null);
+        }}>
+        <option value="all">Tüm formatlar</option>
+        {formats.map((format) => <option key={format} value={format}>
+          {format} · {result.outputs.filter((out) => out.aspect_ratio === format).length} çıktı
+        </option>)}
+      </select></label>
+    </fieldset>}
+    <p id={filterHelpId} className={styles.note} role="status" aria-atomic="true">
+      {shownOutputs.length} / {result.outputs.length} çıktı gösteriliyor. ZIP tüm {result.outputs.length} çıktıyı içerir; filtre yalnızca bu listeyi değiştirir.
+    </p>
     <p className={styles.note}>Oynatıcıyı açarak hazırlanan dosyayı kontrol edin. Aynı anda tek çıktı açılır; video otomatik oynatılmaz. Bu, son hazırlanan dosyadır ve henüz uygulanmamış değişiklikleri içermez.</p>
-    {result.outputs.map((out, index) => {
+    {shownOutputs.map((out, index) => {
       const key = JSON.stringify([job.id, result.archive, out.output]);
       const opened = preview?.key === key;
       const attempt = opened ? preview.attempt : 0;

@@ -64,6 +64,8 @@ Klip, transkript klibi ve toplu dışa aktarma sonuçlarında **Oynatıcıyı a�
 
 Oynatılan video son render dosyasıdır; henüz render edilmemiş düzenlemeleri içermez. Kısa kliplerdeki güncellik uyarısı oynatıcı açıkken de korunur. Oynatıcı seçimi sayfa yenilenince sıfırlanır; kaynak medya ve ana proje değiştirilmez.
 
+Birden fazla format içeren sonuçlarda **Gösterilen format** alanıyla listeyi 9:16, 1:1 gibi bir formata daraltabilirsiniz. Seçeneklerde format başına çıktı sayısı, listenin üstünde gösterilen/toplam çıktı sayısı yer alır. Filtre yalnızca görünümü değiştirir: çıktı sırası, render ayarları ve güncellik uyarısı korunur; **Tümünü ZIP olarak indir** her zaman bütün çıktıları indirir. Filtre değişince açık oynatıcı kapanır. **Tüm formatlar** seçimi listeyi geri getirir; yeni render sonucu veya sayfa açılışı tüm formatlarla başlar. Tek formatlı sonuçlarda gereksiz filtre gösterilmez.
+
 ## Senaryodan çok sahneli video
 
 1. **Yeni Video → Senaryodan Üret** bölümüne konuyu veya hazır senaryoyu yazın; dil, format, ortak stil, 2–12 sahne ve sahne süresini seçin.
