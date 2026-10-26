@@ -16,6 +16,9 @@
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .results { display: grid; gap: 14px; border-top: 1px solid var(--border); padding-top: 16px; }
 .output { display: grid; gap: 8px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
+.clipGroup { display: grid; gap: 12px; min-width: 0; border-top: 1px solid var(--border); padding-top: 16px; }
+.clipGroup h5 { font-size: 1rem; }
+.formatButton[aria-pressed="true"] { border-color: var(--text); background: var(--bg-elev); }
 .stale { border-left: 3px solid var(--violet); padding: 8px 10px; background: var(--bg-elev); color: var(--text); font-size: 0.85rem; line-height: 1.5; }
 .candidate { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .candidateLabel { justify-content: flex-start; font-weight: 600; }
@@ -70,4 +73,4 @@
   .trimRow button { grid-column: 1 / -1; }
 }
 .error { color: var(--danger, #ffb4b4); font-size: 0.85rem; line-height: 1.5; }
-.settings :focus-visible, .formats :focus-visible, .cover :focus-visible, .candidate :focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.settings :focus-visible, .formats :focus-visible, .cover :focus-visible, .candidate :focus-visible, .clipGroup :focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }

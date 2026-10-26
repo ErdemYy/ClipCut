@@ -99,9 +99,10 @@ export type ClipRenderSnapshot = {
 export type PublishResult = {
   archive: string;
   format_archives?: Partial<Record<ExportFormat, string>>;
+  clip_archives?: { clip_index: number; start: number; end: number; archive: string }[];
   outputs: { label: string; aspect_ratio: ExportFormat; output: string; thumbnail: string;
     width: number; height: number; duration: number; thumbnail_fallback: boolean;
-    cover_at?: number; cover_source_at?: number }[];
+    cover_at?: number; cover_source_at?: number; clip_index?: number }[];
   clip_request?: ClipRenderSnapshot;
 };
 export type ClipCandidate = {

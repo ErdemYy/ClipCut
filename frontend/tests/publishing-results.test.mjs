@@ -7,6 +7,21 @@ import ts from "typescript";
 const code = ts.transpileModule(fs.readFileSync(new URL("../components/editor/PublishingControls.tsx", import.meta.url), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2017, jsx: ts.JsxEmit.ReactJSX },
 }).outputText;
+const grouping = {};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL("../lib/publishing-results.ts", import.meta.url), "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2017 },
+}).outputText, { exports: grouping });
+
+function groupedJob() {
+  const clips = [1, 2].map((clip_index) => ({ clip_index, start: clip_index * 30,
+    end: clip_index * 30 + 30, archive: `clip-${clip_index}.zip` }));
+  return { id: "group-job", status: "done", result: { archive: "group-all.zip", clip_archives: clips,
+    format_archives: { "9:16": "group-portrait.zip", "1:1": "group-square.zip" },
+    outputs: clips.flatMap(({ clip_index }) => ["9:16", "1:1"].map((aspect_ratio) => ({
+      clip_index, aspect_ratio, label: `clip_${clip_index}_${aspect_ratio}`, width: 720, height: 720,
+      duration: 30, output: `clip-${clip_index}-${aspect_ratio}.mp4`, thumbnail: "cover.jpg", thumbnail_fallback: false,
+    }))) } };
+}
 
 // Exercise actual component handlers; browser media decoding is tested separately.
 function harness() {
@@ -27,6 +42,7 @@ function harness() {
     };
     if (name === "react/jsx-runtime") return { jsx, jsxs: jsx };
     if (name === "next/image") return { default: "img" };
+    if (name === "@/lib/publishing-results") return grouping;
     if (name === "@/lib/api") return { mediaUrl: (s) => `media:${s}`, downloadUrl: (s) => `download:${s}`, formatTime: String };
     if (name.endsWith(".css")) return { default: new Proxy({}, { get: (_, key) => key }) };
     throw new Error(`Unexpected import ${name}`);
@@ -38,9 +54,10 @@ function harness() {
   const nodes = (n) => !n || typeof n !== "object" ? []
     : [n, ...[n.props?.children].flat(Infinity).flatMap(nodes)];
   const render = () => { cursor = 0; return nodes(exports.PublishingResults({ job, freshness })); };
-  const buttons = () => render().filter(n => n.type === "button" && n.props["aria-controls"]);
+  const buttons = () => render().filter(n => n.type === "button" && typeof n.props["aria-expanded"] === "boolean");
   return { render, buttons, videos: () => render().filter(n => n.type === "video"),
     filter: () => render().find(n => n.type === "select"),
+    formats: () => render().filter(n => n.type === "button" && typeof n.props["aria-pressed"] === "boolean"),
     setJob: (next) => { job = next; }, get job() { return job; }, setFreshness: (value) => { freshness = value; } };
 }
 
@@ -235,4 +252,89 @@ test("filtered archive download keeps stale and unknown-result warnings", () => 
     const message = freshness === "stale" ? "son hazırlanan dosyalardan farklı" : "güncellik bilgisi olmadan";
     assert.ok(h.render().some(n => typeof n.props?.children === "string" && n.props.children.includes(message)));
   }
+});
+
+test("clip grouping uses explicit metadata, preserving order without mutating results", () => {
+  const job = groupedJob(); const before = JSON.stringify(job);
+  const groups = grouping.groupPublishedClips(job.result);
+  assert.deepEqual([...groups].map(g => g.clip_index), [1, 2]);
+  assert.equal(groups[0].outputs.length, 2);
+  assert.equal(groups[1].archive, "clip-2.zip");
+  assert.equal(JSON.stringify(job), before);
+  assert.equal(grouping.groupPublishedClips({ ...job.result, clip_archives: undefined }), null);
+});
+
+test("incomplete, ambiguous or invalid grouping metadata falls back to the flat list", () => {
+  const mutate = [
+    r => { r.clip_archives = []; },
+    r => { r.clip_archives.push({ ...r.clip_archives[0] }); },
+    r => { r.clip_archives[0].start = -1; },
+    r => { r.clip_archives[0].end = r.clip_archives[0].start; },
+    r => { r.clip_archives[0].archive = ""; },
+    r => { r.clip_archives[0].clip_index = 1.5; },
+    r => { delete r.outputs[0].clip_index; },
+    r => { r.outputs[0].clip_index = 99; },
+    r => { r.outputs = r.outputs.filter(o => o.clip_index !== 2); },
+    r => { r.outputs.push({ ...r.outputs[0] }); },
+  ];
+  for (const change of mutate) {
+    const result = groupedJob().result; change(result);
+    assert.equal(grouping.groupPublishedClips(result), null);
+  }
+});
+
+test("grouped results show one format card per clip and all-format clip ZIPs", () => {
+  const h = harness(); h.setJob(groupedJob());
+  assert.equal(h.render().filter(n => n.type === "h5").length, 2);
+  assert.deepEqual(h.render().filter(n => n.type === "strong").map(n => n.props.children), ["clip 1 9:16", "clip 2 9:16"]);
+  assert.ok(h.render().some(n => n.type === "a" && n.props.href === "download:clip-1.zip"));
+  assert.ok(h.render().some(n => n.type === "a" && n.props.href === "download:clip-2.zip"));
+  const count = h.render().find(n => n.props?.id === ":preview:-filter-help");
+  assert.match(count.props.children.join(""), /4 \/ 4 çıktı filtreyle eşleşiyor/);
+  assert.equal(h.videos().length, 0);
+  for (const b of h.formats()) assert.ok(h.render().some(n => n.props?.id === b.props["aria-controls"]));
+});
+
+test("clip format switching is independent, stops playback and ignores late errors", () => {
+  const h = harness(); h.setJob(groupedJob());
+  h.buttons()[0].props.onClick(); const oldVideo = h.videos()[0];
+  h.formats().find(b => b.props["aria-label"] === "Klip 1 9:16 formatını göster").props.onClick();
+  assert.equal(h.videos().length, 1);
+  h.formats().find(b => b.props["aria-label"] === "Klip 1 1:1 formatını göster").props.onClick();
+  oldVideo.props.onError();
+  assert.equal(h.videos().length, 0);
+  assert.deepEqual(h.render().filter(n => n.type === "strong").map(n => n.props.children), ["clip 1 1:1", "clip 2 9:16"]);
+  assert.equal(h.formats().filter(b => b.props["aria-pressed"]).length, 2);
+  h.buttons()[0].props.onClick();
+  assert.equal(h.videos()[0].props.src, "media:clip-1-1:1.mp4");
+});
+
+test("global filters narrow clip cards but never change the all-format clip archive", () => {
+  const h = harness(); h.setJob(groupedJob());
+  h.formats().find(b => b.props["aria-label"] === "Klip 1 1:1 formatını göster").props.onClick();
+  h.filter().props.onChange({ target: { value: "1:1" } });
+  assert.deepEqual(h.render().filter(n => n.type === "strong").map(n => n.props.children), ["clip 1 1:1", "clip 2 1:1"]);
+  assert.equal(h.formats().length, 0);
+  assert.ok(h.render().some(n => n.type === "a" && n.props.href === "download:clip-1.zip"));
+  assert.ok(h.render().some(n => n.type === "a" && n.props.href === "download:group-square.zip"));
+  h.filter().props.onChange({ target: { value: "all" } });
+  assert.deepEqual(h.render().filter(n => n.type === "strong").map(n => n.props.children), ["clip 1 1:1", "clip 2 9:16"]);
+});
+
+test("new result identity resets per-clip format choices", () => {
+  const h = harness(); h.setJob(groupedJob());
+  for (const patch of [{ id: "next-job" }, { result: { ...groupedJob().result, archive: "next-all.zip" } }]) {
+    h.formats().find(b => b.props["aria-label"] === "Klip 1 1:1 formatını göster").props.onClick();
+    h.setJob({ ...h.job, ...patch });
+    assert.equal(h.render().find(n => n.type === "strong").props.children, "clip 1 9:16");
+  }
+});
+
+test("legacy or incomplete clip metadata keeps flat downloads and freshness warnings", () => {
+  const h = harness(); const job = groupedJob(); delete job.result.outputs[0].clip_index;
+  h.setJob(job); h.setFreshness("stale");
+  assert.equal(h.render().filter(n => n.type === "h5").length, 0);
+  assert.equal(h.render().filter(n => n.type === "strong").length, 4);
+  assert.equal(h.render().filter(n => n.type === "a" && n.props.download).length, 9);
+  assert.ok(h.render().some(n => typeof n.props?.children === "string" && n.props.children.includes("son hazırlanan dosyalardan farklı")));
 });

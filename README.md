@@ -70,6 +70,14 @@ Yeni hazırlanan çok formatlı sonuçlarda, bir format seçildiğinde **Yalnız
 
 Eski sonuçlarda format arşivi bilgisi bulunmayabilir. Bu durumda yanlış içerikli bir indirme sunulmaz; açıklama ile mevcut MP4/JPG ve tam ZIP bağlantıları korunur. Ayrı format ZIP'leri yalnızca yeni hazırlanan sonuçlarda mevcuttur; otomatik yeniden render yapılmaz.
 
+### Klip bazlı sonuç grupları
+
+Yeni hazırlanan kısa klip ve transkript klibi sonuçları **Klip 1**, **Klip 2** şeklinde, render için seçilen sırayla gruplanır. Her grubun kaynak aralığı ve bir çıktı kartı gösterilir. Gruptaki **9:16**, **1:1** gibi düğmeler yalnızca o klibin görünen formatını değiştirir; başka kliplerin seçimi ve dosyaların güncelliği değişmez. Format değiştirmek açık oynatıcıyı kapatır, yeni video otomatik başlamaz. Üstteki format filtresi gruplarda incelenebilecek formatları daraltır; sayaç filtreyle eşleşen toplam çıktı sayısını belirtir.
+
+**Klip 1 · tüm formatları ZIP indir** bağlantısı, görünümdeki format ve üstteki filtreden bağımsız olarak yalnızca o klibin bütün MP4/JPG çiftlerini indirir. **Tümünü ZIP** ve format bazlı ZIP bağlantıları da korunur. Arşivler aynı render işinde hazır dosyalardan oluşturulur; ek render yapılmaz. Tek klipli işlerde tam ZIP yeniden kullanılır; çok klipli işlerde klip ZIP'leri ilave disk alanı kullanır.
+
+Eski sonuçlarda açık klip metadata'sı yoksa dosya adından tahmin yapılmaz; çıktılar mevcut düz listede ve indirme bağlantılarıyla gösterilir. Toplu ana video dışa aktarımları da düz liste olarak kalır. Grup içi format tercihleri yalnızca açık panel oturumundadır; yeni sonuç veya sayfa açılışında ilk uygun format gösterilir. Kaynak video, proje planı ve edit geçmişi değişmez.
+
 ## Senaryodan çok sahneli video
 
 1. **Yeni Video → Senaryodan Üret** bölümüne konuyu veya hazır senaryoyu yazın; dil, format, ortak stil, 2–12 sahne ve sahne süresini seçin.

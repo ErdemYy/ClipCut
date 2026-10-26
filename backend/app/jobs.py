@@ -425,6 +425,7 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
         tasks = [(None, None, aspect) for aspect in options["formats"]]
     outputs = []
     files_by_format = {}
+    files_by_clip = {}
     for i, (clip_index, entry, aspect) in enumerate(tasks):
         plan = (clip_plan(base, entry["start"], entry["end"], aspect, options["fill"])
                 if entry is not None else export_plan(base, aspect, options["fill"]))
@@ -452,8 +453,11 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
         thumb = out_dir / f"{stem}.jpg"
         make_thumbnail(output, thumb, at=at)
         files_by_format.setdefault(aspect, []).extend([output, thumb])
+        if clip_index is not None:
+            files_by_clip.setdefault(clip_index + 1, []).extend([output, thumb])
         cover_meta = {"cover_at": at, "cover_source_at": entry["start"] + at} if entry is not None else {}
-        outputs.append({"aspect_ratio": aspect, "label": stem, **meta, **cover_meta,
+        clip_meta = {"clip_index": clip_index + 1} if clip_index is not None else {}
+        outputs.append({"aspect_ratio": aspect, "label": stem, **meta, **cover_meta, **clip_meta,
                         "start": entry.get("start") if entry is not None else None,
                         "end": entry.get("end") if entry is not None else None,
                         "output": media_url(p.id, output.relative_to(pdir).as_posix()),
@@ -478,6 +482,18 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
             for file in sorted(files, key=lambda item: item.name):
                 zf.write(file, file.name)
         result["format_archives"][aspect] = media_url(p.id, format_archive.relative_to(pdir).as_posix())
+    if clips is not None:
+        result["clip_archives"] = []
+        for index, entry in enumerate(clips, start=1):
+            clip_archive_url = result["archive"]
+            if len(clips) > 1:
+                clip_archive = out_dir / f"clip_{index:02d}_all_formats.zip"
+                with zipfile.ZipFile(clip_archive, "w", compression=zipfile.ZIP_STORED) as zf:
+                    for file in sorted(files_by_clip[index], key=lambda item: item.name):
+                        zf.write(file, file.name)
+                clip_archive_url = media_url(p.id, clip_archive.relative_to(pdir).as_posix())
+            result["clip_archives"].append({"clip_index": index, "start": entry["start"],
+                                            "end": entry["end"], "archive": clip_archive_url})
     if clips is not None and options.get("analysis_id"):
         result["clip_request"] = {
             "analysis_id": options["analysis_id"],
