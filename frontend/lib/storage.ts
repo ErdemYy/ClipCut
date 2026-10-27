@@ -1,5 +1,6 @@
 import type {
-  OutputStorageProtectedDir, OutputStorageProtectedRender, OutputTrashEntry, StorageCategoryId,
+  OutputStorageProtectedDir, OutputStorageProtectedRender, OutputStorageProtectedWork, OutputTrashEntry,
+  StorageCategoryId, WorkKind,
 } from "./api";
 
 export type TrashBatch = {
@@ -74,13 +75,26 @@ export function renderProtectionSummary(protectedRenders: OutputStorageProtected
     `${count} ${STORAGE_RENDER_PROTECTED_LABELS[reason as OutputStorageProtectedRender["reason"]] ?? reason}`).join(" · ");
 }
 
+export function workProtectionSummary(protectedWork: OutputStorageProtectedWork[]): string {
+  const counts = new Map<string, number>();
+  for (const item of protectedWork) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+  return [...counts].map(([reason, count]) =>
+    `${count} ${STORAGE_PROTECTED_LABELS[reason as OutputStorageProtectedWork["reason"]] ?? reason}`).join(" · ");
+}
+
 export function storageUsageSummary(totalBytes: number, moveableBytes: number, trashBytes: number): string {
   return `Toplam ${formatBytes(totalBytes)} · ${formatBytes(moveableBytes)} çöpe taşınabilir · ` +
     `${formatBytes(trashBytes)} çöpte.`;
 }
 
-export function storageTrashLabel(entry: { kind: "staging" | "render"; name: string }): string {
-  return entry.kind === "render" ? entry.name : `Hazırlama · ${entry.name.slice(0, 8)}…`;
+export function storageTrashLabel(entry: { kind: "staging" | "render" | WorkKind; name: string }): string {
+  if (entry.kind === "render") return entry.name;
+  if (entry.kind === "staging") return `Hazırlama · ${entry.name.slice(0, 8)}…`;
+  if (entry.kind === "work_render") return `Çalışma · ${entry.name}`;
+  if (entry.kind === "work_publish") return `Yayın çalışması · ${entry.name.slice(0, 8)}…`;
+  if (entry.kind === "work_preview") return `Önizleme çalışması · ${entry.name.slice(0, 8)}…`;
+  if (entry.kind === "work_clip_preview") return `Klip önizlemesi · ${entry.name.slice(0, 8)}…`;
+  return "Dalga formu önbelleği";
 }
 
 export function formatTrashExpiry(seconds: number): string {

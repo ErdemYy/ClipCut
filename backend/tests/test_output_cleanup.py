@@ -10,9 +10,10 @@ import pytest
 
 from app.output_cleanup import (
     MIN_AGE_SECONDS, TRASH_RETENTION_SECONDS, OutputCleanupBody, RenderCleanupBody,
-    TrashEmptyBody, TrashRestoreBody, empty_trash, purge_all_expired_trash, purge_expired_trash,
-    render_references, referenced_tokens, restore_trash, scan_outputs, scan_renders, scan_storage,
-    scan_trash, trash_outputs, trash_renders,
+    TrashEmptyBody, TrashRestoreBody, WorkCleanupBody, WorkCleanupItem, empty_trash,
+    purge_all_expired_trash, purge_expired_trash, render_references, referenced_tokens,
+    restore_trash, scan_outputs, scan_renders, scan_storage, scan_trash, scan_work, trash_outputs,
+    trash_renders, trash_work,
 )
 
 
@@ -50,6 +51,16 @@ def _render_name(hex_part: str) -> str:
 
 def _render_media(project: str, name: str) -> str:
     return f"/media/projects/{project}/outputs/{name}"
+
+
+def _work_dir(root: Path, relative: str, *, age: float = 7200,
+              files: tuple[tuple[str, int], ...] = (("command.txt", 100),)) -> Path:
+    folder = root / "work" / relative
+    folder.mkdir(parents=True)
+    for name, size in files:
+        (folder / name).write_bytes(b"x" * size)
+    _age(folder, age)
+    return folder
 
 
 def test_referenced_tokens_read_nested_results_and_scope_absolute_urls():
@@ -196,6 +207,90 @@ def test_scan_renders_protects_referenced_recent_and_reports_links(tmp_path):
     assert result["skipped"] == [referenced.name, recent.name]
     assert not eligible.exists() and referenced.exists() and recent.exists()
     assert [item["name"] for item in scan_trash(tmp_path)["entries"]] == [eligible.name]
+
+
+def test_scan_work_finds_generated_scratch_and_protects_unsafe_entries(tmp_path):
+    render_dir = _work_dir(tmp_path, "20261021_210709", files=(("command.txt", 100), ("subs.ass", 50)))
+    preview_token = "a" * 32
+    clip_token = "b" * 32
+    publish_token = "d" * 32
+    preview_dir = _work_dir(tmp_path, f"previews/{preview_token}", files=(("subs.ass", 60),))
+    clip_dir = _work_dir(tmp_path, f"clip_previews/{clip_token}", files=(("subs.ass", 70),))
+    publish_dir = _work_dir(tmp_path, publish_token, files=(("command.txt", 5),))
+    (publish_dir / "clip_01").mkdir()
+    (publish_dir / "clip_01" / "subs.ass").write_bytes(b"x" * 15)
+    _age(publish_dir, 7200)
+    wave_dir = _work_dir(tmp_path, "waveforms", files=(("cache.json", 80),))
+    recent = _work_dir(tmp_path, "20261022_120000_abcdef12", age=0)
+    nested = _work_dir(tmp_path, "20261023_120000_abcdef12", files=(("command.txt", 40),))
+    (nested / "inner").mkdir()
+    (nested / "inner" / "temp.pcm").write_bytes(b"x" * 10)
+    _age(nested, 7200)
+    ignored = _work_dir(tmp_path, "unrelated", files=(("command.txt", 10),))
+
+    eligible, protected = scan_work(tmp_path, now=time.time())
+    eligible_keys = {(item["kind"], item["name"]) for item in eligible}
+    assert eligible_keys == {
+        ("work_render", render_dir.name), ("work_publish", publish_token),
+        ("work_preview", preview_token), ("work_clip_preview", clip_token),
+        ("work_waveforms", "waveforms"),
+    }
+    by_name = {item["name"]: item for item in eligible}
+    assert by_name[render_dir.name]["bytes"] == 150 and by_name[render_dir.name]["files"] == 2
+    assert by_name[publish_token]["bytes"] == 20 and by_name[publish_token]["files"] == 2
+    assert by_name[preview_token]["bytes"] == 60
+    assert by_name[clip_token]["bytes"] == 70
+    assert by_name["waveforms"]["bytes"] == 80
+    reasons = {(item["kind"], item["name"]): item["reason"] for item in protected}
+    assert reasons == {
+        ("work_render", recent.name): "recent",
+        ("work_render", nested.name): "nested",
+    }
+    assert preview_dir.is_dir() and clip_dir.is_dir() and wave_dir.is_dir()
+    assert ignored.is_dir()
+
+
+def test_trash_work_moves_nested_preview_and_restores_the_same_path(tmp_path):
+    token = "c" * 32
+    folder = _work_dir(tmp_path, f"previews/{token}", files=(("subs.ass", 66),))
+    result = trash_work(tmp_path, [("work_preview", token)])
+    entry = result["trashed"][0]
+    assert entry["kind"] == "work_preview" and entry["name"] == token
+    assert not folder.exists()
+    assert [item["kind"] for item in scan_trash(tmp_path)["entries"]] == ["work_preview"]
+    restored = restore_trash(tmp_path, [entry["id"]])
+    assert len(restored["restored"]) == 1
+    assert (folder / "subs.ass").read_bytes() == b"x" * 66
+    assert scan_trash(tmp_path)["entries"] == []
+
+
+def test_trash_work_supports_nested_publish_folders(tmp_path):
+    token = "e" * 32
+    folder = _work_dir(tmp_path, token, files=(("command.txt", 5),))
+    (folder / "clip_01").mkdir()
+    (folder / "clip_01" / "subs.ass").write_bytes(b"x" * 15)
+    _age(folder, 7200)
+    result = trash_work(tmp_path, [("work_publish", token)])
+    entry = result["trashed"][0]
+    assert entry["kind"] == "work_publish" and entry["files"] == 2 and entry["bytes"] == 20
+    assert not folder.exists()
+    assert restore_trash(tmp_path, [entry["id"]])["restored"][0]["id"] == entry["id"]
+    assert (folder / "clip_01" / "subs.ass").read_bytes() == b"x" * 15
+
+
+def test_work_cleanup_body_validates_kind_name_and_uniqueness():
+    valid = WorkCleanupBody(items=[WorkCleanupItem(kind="work_render", name="20261021_210709")])
+    assert valid.items[0].kind == "work_render"
+    for items in (
+        [WorkCleanupItem(kind="work_render", name="20261021_210709")] * 2,
+        [WorkCleanupItem(kind="work_render", name="../source")],
+        [WorkCleanupItem(kind="work_preview", name="a" * 31)],
+        [WorkCleanupItem(kind="work_waveforms", name="not-waveforms")],
+    ):
+        with pytest.raises(ValueError):
+            WorkCleanupBody(items=items)
+    with pytest.raises(ValueError):
+        WorkCleanupBody(items=[WorkCleanupItem(kind="work_render", name="20261021_210709")] * 51)
 
 
 def test_cleanup_bodies_accept_only_unique_safe_names():
@@ -630,6 +725,60 @@ def test_output_api_validation_and_missing_project(storage_api):
     assert client.post("/api/projects/missing/outputs/renders/cleanup", json={"files": [name]}).status_code == 404
     assert client.post("/api/projects/missing/outputs/trash/restore", json={"ids": [token]}).status_code == 404
     assert client.post("/api/projects/missing/outputs/trash/empty", json={}).status_code == 404
+
+
+def test_output_api_moves_selected_work_and_restores_it(storage_api):
+    client, engine, root = storage_api
+    render_name = "20261021_210709"
+    preview_token = "a" * 32
+    render_dir = _work_dir(root, render_name, files=(("command.txt", 30),))
+    preview_dir = _work_dir(root, f"previews/{preview_token}", files=(("subs.ass", 20),))
+
+    data = client.get("/api/projects/store/outputs").json()
+    assert {(item["kind"], item["name"]) for item in data["work"]["eligible"]} == {
+        ("work_render", render_name), ("work_preview", preview_token),
+    }
+    assert data["work_busy"] is False
+
+    response = client.post("/api/projects/store/outputs/work/cleanup",
+                           json={"items": [{"kind": "work_render", "name": render_name}]})
+    assert response.status_code == 200
+    entry = response.json()["trashed"][0]
+    assert entry["kind"] == "work_render" and entry["name"] == render_name
+    assert not render_dir.exists() and preview_dir.is_dir()
+    remaining = client.get("/api/projects/store/outputs").json()["work"]["eligible"]
+    assert [(item["kind"], item["name"]) for item in remaining] == [("work_preview", preview_token)]
+
+    response = client.post("/api/projects/store/outputs/trash/restore", json={"ids": [entry["id"]]})
+    assert response.status_code == 200
+    assert (render_dir / "command.txt").read_bytes() == b"x" * 30
+    assert [item["id"] for item in client.get("/api/projects/store/outputs").json()["trash"]["entries"]] == []
+
+
+def test_work_cleanup_refuses_while_output_writer_is_active(storage_api):
+    client, engine, root = storage_api
+    _work_dir(root, "20261021_210709")
+    _job(engine, kind="preview", status="running", result=None)
+
+    data = client.get("/api/projects/store/outputs").json()
+    assert data["work_busy"] is True
+    response = client.post("/api/projects/store/outputs/work/cleanup",
+                           json={"items": [{"kind": "work_render", "name": "20261021_210709"}]})
+    assert response.status_code == 409
+    assert (root / "work" / "20261021_210709").is_dir()
+
+
+def test_output_api_work_validation_and_missing_project(storage_api):
+    client, engine, root = storage_api
+    valid = {"kind": "work_render", "name": "20261021_210709"}
+    _work_dir(root, valid["name"])
+    assert client.post("/api/projects/store/outputs/work/cleanup", json={"items": []}).status_code == 422
+    assert client.post("/api/projects/store/outputs/work/cleanup",
+                       json={"items": [valid, valid]}).status_code == 422
+    assert client.post("/api/projects/store/outputs/work/cleanup",
+                       json={"items": [{"kind": "work_render", "name": "../source"}]}).status_code == 422
+    assert client.post("/api/projects/missing/outputs/work/cleanup",
+                       json={"items": [valid]}).status_code == 404
 
 
 def test_output_api_moves_only_selected_eligible_items(storage_api):

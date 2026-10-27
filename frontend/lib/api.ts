@@ -125,8 +125,21 @@ export type OutputStorageRenders = {
   eligible_bytes: number;
   protected_bytes: number;
 };
+export type WorkKind = "work_render" | "work_publish" | "work_preview" | "work_clip_preview" | "work_waveforms";
+export type OutputStorageWork = {
+  kind: WorkKind; name: string; bytes: number; files: number; age_seconds: number;
+};
+export type OutputStorageProtectedWork = OutputStorageWork & {
+  reason: "recent" | "symlink" | "nested" | "special" | "unreadable";
+};
+export type OutputStorageWorkInventory = {
+  eligible: OutputStorageWork[];
+  protected: OutputStorageProtectedWork[];
+  eligible_bytes: number;
+  protected_bytes: number;
+};
 export type OutputTrashEntry = {
-  id: string; kind: "staging" | "render"; name: string; bytes: number; files: number;
+  id: string; kind: "staging" | "render" | WorkKind; name: string; bytes: number; files: number;
   deleted_at: string; batch_id: string | null; age_seconds: number; expires_in_seconds: number;
 };
 export type OutputStorageTrash = {
@@ -138,6 +151,7 @@ export type OutputStorageInfo = {
   eligible_bytes: number;
   protected_bytes: number;
   renders: OutputStorageRenders;
+  work: OutputStorageWorkInventory;
   categories: StorageCategory[];
   total_bytes: number;
   reclaimable_bytes: number;
@@ -145,6 +159,7 @@ export type OutputStorageInfo = {
   min_age_seconds: number;
   busy: boolean;
   render_busy: boolean;
+  work_busy: boolean;
 };
 export type OutputCleanupResult = {
   trashed: OutputTrashEntry[];
@@ -161,6 +176,15 @@ export type RenderCleanupResult = {
   skipped: string[];
   eligible: OutputStorageRender[];
   protected: OutputStorageProtectedRender[];
+};
+export type WorkCleanupItem = { kind: WorkKind; name: string };
+export type WorkCleanupResult = {
+  trashed: OutputTrashEntry[];
+  moved_bytes: number;
+  failed: string[];
+  skipped: string[];
+  eligible: OutputStorageWork[];
+  protected: OutputStorageProtectedWork[];
 };
 export type TrashRestoreResult = {
   restored: OutputTrashEntry[];
@@ -353,6 +377,8 @@ export const api = {
     request<OutputCleanupResult>(`/api/projects/${id}/outputs/cleanup`, json({ tokens })),
   cleanupRenders: (id: string, files: string[]) =>
     request<RenderCleanupResult>(`/api/projects/${id}/outputs/renders/cleanup`, json({ files })),
+  cleanupWork: (id: string, items: WorkCleanupItem[]) =>
+    request<WorkCleanupResult>(`/api/projects/${id}/outputs/work/cleanup`, json({ items })),
   restoreTrash: (id: string, ids: string[]) =>
     request<TrashRestoreResult>(`/api/projects/${id}/outputs/trash/restore`, json({ ids })),
   emptyTrash: (id: string, ids: string[] = []) =>

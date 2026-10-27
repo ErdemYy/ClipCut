@@ -124,6 +124,7 @@ def job_dict(j: Job) -> dict[str, Any]:
 
 
 PUBLISH_JOB_KINDS = ("export_batch", "clip_render", "transcript_clip")
+WORK_JOB_KINDS = (*PUBLISH_JOB_KINDS, "render", "preview", "clip_preview")
 
 
 def publishing_busy(project_id: str, session: Session) -> bool:
@@ -146,6 +147,15 @@ def render_cleanup_busy(project_id: str, session: Session) -> bool:
     row = session.exec(
         select(Job.id).where(Job.project_id == project_id, Job.status.in_(("queued", "running")),
                              Job.kind.in_((*PUBLISH_JOB_KINDS, "render"))).limit(1)
+    ).first()
+    return row is not None
+
+
+def work_cleanup_busy(project_id: str, session: Session) -> bool:
+    """Whether any job could still be writing into the project's work directory."""
+    row = session.exec(
+        select(Job.id).where(Job.project_id == project_id, Job.status.in_(("queued", "running")),
+                             Job.kind.in_(WORK_JOB_KINDS)).limit(1)
     ).first()
     return row is not None
 
@@ -588,11 +598,13 @@ def output_storage(project_id: str, session: Session = Depends(get_session)) -> 
     eligible, protected = output_cleanup.scan_outputs(root, referenced)
     render_eligible, render_protected = output_cleanup.scan_renders(
         root, output_render_references(p, session))
+    work_eligible, work_protected = output_cleanup.scan_work(root)
     categories, total_bytes = output_cleanup.scan_storage(
         root, (p.source_file, p.thumbnail_file, p.voiceover_file))
     trash = output_cleanup.scan_trash(root)
     eligible_bytes = sum(item["bytes"] for item in eligible)
     render_eligible_bytes = sum(item["bytes"] for item in render_eligible)
+    work_eligible_bytes = sum(item["bytes"] for item in work_eligible)
     return {
         "eligible": eligible, "protected": protected,
         "eligible_bytes": eligible_bytes,
@@ -603,13 +615,20 @@ def output_storage(project_id: str, session: Session = Depends(get_session)) -> 
             "eligible_bytes": render_eligible_bytes,
             "protected_bytes": sum(item["bytes"] for item in render_protected),
         },
+        "work": {
+            "eligible": work_eligible,
+            "protected": work_protected,
+            "eligible_bytes": work_eligible_bytes,
+            "protected_bytes": sum(item["bytes"] for item in work_protected),
+        },
         "categories": categories,
         "total_bytes": total_bytes,
-        "reclaimable_bytes": eligible_bytes + render_eligible_bytes,
+        "reclaimable_bytes": eligible_bytes + render_eligible_bytes + work_eligible_bytes,
         "trash": trash,
         "min_age_seconds": output_cleanup.MIN_AGE_SECONDS,
         "busy": publishing_busy(p.id, session),
         "render_busy": render_cleanup_busy(p.id, session),
+        "work_busy": work_cleanup_busy(p.id, session),
     }
 
 
@@ -638,6 +657,20 @@ def cleanup_output_renders(project_id: str, body: output_cleanup.RenderCleanupBo
     result = output_cleanup.trash_renders(jobs.project_dir(p.id), referenced, body.files)
     if not result["trashed"]:
         raise HTTPException(409, "İstenen ana render'lar artık temizlenebilir değil; listeyi yenileyin.")
+    return result
+
+
+@app.post("/api/projects/{project_id}/outputs/work/cleanup")
+def cleanup_output_work(project_id: str, body: output_cleanup.WorkCleanupBody,
+                        session: Session = Depends(get_session)) -> dict:
+    """Move only old scratch work folders that remain eligible at request time."""
+    p = get_project(project_id, session)
+    if work_cleanup_busy(p.id, session):
+        raise HTTPException(409, "Süren bir render, önizleme veya hazırlama işi var; bitince yeniden deneyin.")
+    result = output_cleanup.trash_work(
+        jobs.project_dir(p.id), [(item.kind, item.name) for item in body.items])
+    if not result["trashed"]:
+        raise HTTPException(409, "İstenen çalışma klasörleri artık temizlenebilir değil; listeyi yenileyin.")
     return result
 
 

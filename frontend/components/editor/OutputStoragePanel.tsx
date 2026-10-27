@@ -1,37 +1,44 @@
 "use client";
 
 import { useState } from "react";
-import { api, type OutputStorageInfo } from "@/lib/api";
+import { api, type OutputStorageInfo, type WorkCleanupItem, type WorkKind } from "@/lib/api";
 import {
   formatBytes, formatMinAge, formatTrashExpiry, renderProtectionSummary, storageCategoryLabel,
   storageProtectionSummary, storageTrashLabel, storageUsageSummary, trashBatches,
+  workProtectionSummary,
 } from "@/lib/storage";
 import styles from "./publishing.module.css";
 
 type CleanupKind = "staging" | "renders";
-type Selection = { tokens: string[]; files: string[] };
+type Selection = { tokens: string[]; files: string[]; work: string[] };
+
+const workKey = (kind: WorkKind, name: string) => `${kind}:${name}`;
 
 export default function OutputStoragePanel({ projectId, disabled, notify }: {
   projectId: string; disabled?: boolean; notify: (text: string, error?: boolean) => void;
 }) {
   const [scanned, setScanned] = useState<{ projectId: string; data: OutputStorageInfo } | null>(null);
-  const [pending, setPending] = useState<"scan" | CleanupKind | "selected" | "restore" | "empty" | null>(null);
-  const [selected, setSelected] = useState<Selection>({ tokens: [], files: [] });
+  const [pending, setPending] = useState<"scan" | CleanupKind | "work" | "selected" | "restore" | "empty" | null>(null);
+  const [selected, setSelected] = useState<Selection>({ tokens: [], files: [], work: [] });
   const data = scanned?.projectId === projectId ? scanned.data : null;
   const minAge = formatMinAge(data?.min_age_seconds ?? 3600);
   const trashDays = formatMinAge(data?.trash.retention_seconds ?? 7 * 86400);
   const selectedTokens = data ? data.eligible.filter((item) => selected.tokens.includes(item.token)) : [];
   const selectedRenders = data ? data.renders.eligible.filter((item) => selected.files.includes(item.file)) : [];
-  const selectionCount = selectedTokens.length + selectedRenders.length;
+  const selectedWork = data ? data.work.eligible.filter((item) =>
+    selected.work.includes(workKey(item.kind, item.name))) : [];
+  const selectionCount = selectedTokens.length + selectedRenders.length + selectedWork.length;
   const selectionBytes = selectedTokens.reduce((sum, item) => sum + item.bytes, 0) +
-    selectedRenders.reduce((sum, item) => sum + item.bytes, 0);
-  const eligibleCount = data ? data.eligible.length + data.renders.eligible.length : 0;
+    selectedRenders.reduce((sum, item) => sum + item.bytes, 0) +
+    selectedWork.reduce((sum, item) => sum + item.bytes, 0);
+  const eligibleCount = data
+    ? data.eligible.length + data.renders.eligible.length + data.work.eligible.length : 0;
   const allSelected = eligibleCount > 0 && selectionCount === eligibleCount;
 
   const refresh = async () => {
     const next = await api.outputStorage(projectId);
     setScanned({ projectId, data: next });
-    setSelected({ tokens: [], files: [] });
+    setSelected({ tokens: [], files: [], work: [] });
   };
 
   const toggleToken = (token: string) => {
@@ -52,11 +59,21 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
     }));
   };
 
+  const toggleWork = (key: string) => {
+    setSelected((current) => ({
+      ...current,
+      work: current.work.includes(key)
+        ? current.work.filter((value) => value !== key)
+        : [...current.work, key],
+    }));
+  };
+
   const selectAll = () => {
     if (!data) return;
-    setSelected(allSelected ? { tokens: [], files: [] } : {
+    setSelected(allSelected ? { tokens: [], files: [], work: [] } : {
       tokens: data.eligible.map((item) => item.token),
       files: data.renders.eligible.map((item) => item.file),
+      work: data.work.eligible.map((item) => workKey(item.kind, item.name)),
     });
   };
 
@@ -111,17 +128,55 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
     } finally { setPending(null); }
   };
 
+  const cleanWork = async () => {
+    if (!data || data.work.eligible.length === 0) return;
+    if (data.work_busy) {
+      notify("Süren bir render, önizleme veya hazırlama işi var; iş bitince yeniden tarayın.", true);
+      return;
+    }
+    const items: WorkCleanupItem[] = data.work.eligible.map((item) => ({ kind: item.kind, name: item.name }));
+    if (!window.confirm(`${items.length} çalışma klasörü (${formatBytes(data.work.eligible_bytes)}) çöp kutusuna taşınsın mı?\n\n` +
+      `Kaynak video, güncel render, önizlemeler ve proje verisi korunur. ` +
+      `Seçilen çalışma klasörleri ${trashDays} boyunca geri alınabilir.`)) return;
+    setPending("work");
+    try {
+      let trashed = 0;
+      let moved = 0;
+      let atRisk = 0;
+      let firstError = "";
+      for (let start = 0; start < items.length; start += 50) {
+        try {
+          const result = await api.cleanupWork(projectId, items.slice(start, start + 50));
+          trashed += result.trashed.length;
+          moved += result.moved_bytes;
+          atRisk += result.failed.length + result.skipped.length;
+        } catch (e) {
+          if (!firstError) firstError = (e as Error).message;
+        }
+      }
+      notify([
+        `${trashed} çalışma klasörü çöp kutusuna taşındı · ${formatBytes(moved)} ${trashDays} içinde geri alınabilir.`,
+        atRisk > 0 ? `${atRisk} öğe güvenlik denetimi nedeniyle atlandı.` : "",
+        firstError ? `Bazı öğeler taşınamadı: ${firstError}` : "",
+      ].filter(Boolean).join(" "), atRisk > 0 || !!firstError);
+      try { await refresh(); } catch { setScanned(null); }
+    } finally { setPending(null); }
+  };
+
   const moveSelected = async () => {
     if (!data || selectionCount === 0) return;
-    if ((selectedTokens.length > 0 && data.busy) || (selectedRenders.length > 0 && data.render_busy)) {
+    if ((selectedTokens.length > 0 && data.busy) || (selectedRenders.length > 0 && data.render_busy) ||
+        (selectedWork.length > 0 && data.work_busy)) {
       notify("Süren bir işlem var; seçili öğeleri taşımak için iş bitince yeniden tarayın.", true);
       return;
     }
     const tokens = selectedTokens.map((item) => item.token);
     const files = selectedRenders.map((item) => item.file);
+    const work: WorkCleanupItem[] = selectedWork.map((item) => ({ kind: item.kind, name: item.name }));
     const parts = [
       tokens.length > 0 ? `${tokens.length} hazırlama klasörü` : "",
       files.length > 0 ? `${files.length} ana render` : "",
+      work.length > 0 ? `${work.length} çalışma klasörü` : "",
     ].filter(Boolean).join(" + ");
     if (!window.confirm(`Seçilen ${parts} (${formatBytes(selectionBytes)}) çöp kutusuna taşınsın mı?\n\n` +
       `Kaynak video, proje kapağı, güncel ana render, önizlemeler ve proje verisi korunur. ` +
@@ -145,6 +200,16 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
       for (let start = 0; start < files.length; start += 50) {
         try {
           const result = await api.cleanupRenders(projectId, files.slice(start, start + 50));
+          trashed += result.trashed.length;
+          moved += result.moved_bytes;
+          atRisk += result.failed.length + result.skipped.length;
+        } catch (e) {
+          if (!firstError) firstError = (e as Error).message;
+        }
+      }
+      for (let start = 0; start < work.length; start += 50) {
+        try {
+          const result = await api.cleanupWork(projectId, work.slice(start, start + 50));
           trashed += result.trashed.length;
           moved += result.moved_bytes;
           atRisk += result.failed.length + result.skipped.length;
@@ -206,9 +271,9 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
   return <section className={styles.storage} aria-label="Depolama">
     <h4>Depolama</h4>
     <p className={styles.note}>Projenin toplam disk kullanımını kategori bazında görün. Yalnızca en az {minAge}{" "}
-      önce oluşturulmuş ve kullanılmayan hazırlama klasörleri ile eski ana render MP4&apos;leri çöpe taşınabilir.
-      Bunlar hemen silinmez; {trashDays} boyunca çöp kutusunda tutulur. Kaynak medya, kapak, güncel ana render,
-      önizlemeler ve proje verisi korunur.</p>
+      önce oluşturulmuş ve kullanılmayan hazırlama klasörleri, eski ana render MP4&apos;leri ve work/ çalışma
+      klasörleri çöpe taşınabilir. Bunlar hemen silinmez; {trashDays} boyunca çöp kutusunda tutulur. Kaynak medya,
+      kapak, güncel ana render, önizlemeler ve proje verisi korunur.</p>
     <div className={styles.actions}>
       <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`} disabled={disabled || pending !== null} onClick={scan}>
         {pending === "scan" ? "Taranıyor…" : data ? "Depolamayı yeniden tara" : "Depolamayı tara"}
@@ -220,6 +285,10 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
       {data && data.renders.eligible.length > 0 && <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
         disabled={disabled || pending !== null || data.render_busy} onClick={() => clean("renders")}>
         {pending === "renders" ? "Taşınıyor…" : `${data.renders.eligible.length} eski ana render'ı çöpe taşı · ${formatBytes(data.renders.eligible_bytes)}`}
+      </button>}
+      {data && data.work.eligible.length > 0 && <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
+        disabled={disabled || pending !== null || data.work_busy} onClick={cleanWork}>
+        {pending === "work" ? "Taşınıyor…" : `${data.work.eligible.length} çalışma klasörünü çöpe taşı`}
       </button>}
     </div>
     {data && <>
@@ -244,6 +313,14 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
           : `${data.renders.eligible.length} ana render · ${formatBytes(data.renders.eligible_bytes)} çöpe taşınabilir.`}
         {data.renders.protected.length > 0
           ? ` ${data.renders.protected.length} ana render korunuyor (${renderProtectionSummary(data.renders.protected)}).`
+          : ""}
+      </p>
+      <p className={styles.note} role="status" aria-atomic="true">
+        {data.work.eligible.length === 0
+          ? "Çöpe taşınacak eski çalışma klasörü yok."
+          : `${data.work.eligible.length} çalışma klasörü · ${formatBytes(data.work.eligible_bytes)} çöpe taşınabilir.`}
+        {data.work.protected.length > 0
+          ? ` ${data.work.protected.length} çalışma klasörü korunuyor (${workProtectionSummary(data.work.protected)}).`
           : ""}
       </p>
       {eligibleCount > 0 && <details className={styles.selection}>
@@ -281,10 +358,27 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
             </li>)}
           </ul>
         </fieldset>}
+        {data.work.eligible.length > 0 && <fieldset className={styles.selectionGroup}>
+          <legend>Çalışma klasörleri</legend>
+          <ul className={styles.selectionList}>
+            {data.work.eligible.map((item) => {
+              const key = workKey(item.kind, item.name);
+              return <li key={key}>
+                <label className={styles.selectionRow} title={item.name}>
+                  <input type="checkbox" checked={selected.work.includes(key)}
+                    disabled={disabled || pending !== null} onChange={() => toggleWork(key)} />
+                  <span className={styles.selectionName}>{storageTrashLabel(item)}</span>
+                  <span className={styles.selectionAmount}>{formatBytes(item.bytes)}</span>
+                </label>
+              </li>;
+            })}
+          </ul>
+        </fieldset>}
         <div className={styles.actions}>
           <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
             disabled={disabled || pending !== null || selectionCount === 0 ||
-              (selectedTokens.length > 0 && data.busy) || (selectedRenders.length > 0 && data.render_busy)}
+              (selectedTokens.length > 0 && data.busy) || (selectedRenders.length > 0 && data.render_busy) ||
+              (selectedWork.length > 0 && data.work_busy)}
             onClick={moveSelected}>
             {pending === "selected" ? "Taşınıyor…" : `Seçilenleri çöpe taşı · ${formatBytes(selectionBytes)}`}
           </button>
@@ -292,6 +386,7 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
       </details>}
       {data.busy && <p className={styles.note} role="status">Süren bir hazırlama işi var; güvenli temizlik için iş bitince yeniden tarayın.</p>}
       {data.render_busy && <p className={styles.note} role="status">Süren bir render veya hazırlama işi var; ana render temizliği için iş bitince yeniden tarayın.</p>}
+      {data.work_busy && <p className={styles.note} role="status">Süren bir render, önizleme veya hazırlama işi var; çalışma klasörü temizliği için iş bitince yeniden tarayın.</p>}
       {data.trash.entries.length > 0 && <div className={styles.trash}>
         <div className={styles.trashHeading}>
           <h5>Çöp kutusu</h5>

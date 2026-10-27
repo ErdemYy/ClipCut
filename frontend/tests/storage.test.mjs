@@ -15,7 +15,7 @@ function load(file) {
 }
 const {
   formatBytes, formatMinAge, formatTrashExpiry, renderProtectionSummary, storageCategoryLabel,
-  storageProtectionSummary, storageTrashLabel, storageUsageSummary, trashBatches,
+  storageProtectionSummary, storageTrashLabel, storageUsageSummary, trashBatches, workProtectionSummary,
 } = load("../lib/storage.ts");
 
 test("formatBytes uses readable binary units without hiding small files", () => {
@@ -80,6 +80,25 @@ test("storageTrashLabel keeps render names and abbreviates staging tokens", () =
     "clipcut_20260101_120000_aaaaaaaa.mp4");
   assert.equal(storageTrashLabel({ kind: "staging", name: "a".repeat(32) }),
     "Hazırlama · aaaaaaaa…");
+  assert.equal(storageTrashLabel({ kind: "work_render", name: "20261021_210709" }),
+    "Çalışma · 20261021_210709");
+  assert.equal(storageTrashLabel({ kind: "work_publish", name: "d".repeat(32) }),
+    "Yayın çalışması · dddddddd…");
+  assert.equal(storageTrashLabel({ kind: "work_preview", name: "b".repeat(32) }),
+    "Önizleme çalışması · bbbbbbbb…");
+  assert.equal(storageTrashLabel({ kind: "work_clip_preview", name: "c".repeat(32) }),
+    "Klip önizlemesi · cccccccc…");
+  assert.equal(storageTrashLabel({ kind: "work_waveforms", name: "waveforms" }),
+    "Dalga formu önbelleği");
+});
+
+test("workProtectionSummary groups scratch protection reasons", () => {
+  const item = (reason) => ({
+    kind: "work_render", name: "20261021_210709", bytes: 1, files: 1, age_seconds: 7200, reason,
+  });
+  assert.equal(workProtectionSummary([]), "");
+  assert.equal(workProtectionSummary([item("recent"), item("recent"), item("nested")]),
+    "2 yeni oluşturuldu · 1 alt klasör içeriyor");
 });
 
 test("formatTrashExpiry turns remaining seconds into a readable countdown", () => {
