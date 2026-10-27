@@ -223,7 +223,7 @@ Proje kök dizininde tek tıkla her iki servisi de başlatan script'ler hazırla
 
 ## Proje bilgi grafiği (Graphify)
 
-Bilgisayardaki mevcut `graphifyy` kurulumu kullanılır; uygulamaya çalışma zamanı bağımlılığı eklenmez.
+Bilgisayardaki mevcut `graphify` kurulumu kullanılır; uygulamaya çalışma zamanı bağımlılığı eklenmez.
 
 ```powershell
 .\graphify.bat                          # Yerel kod grafiğini güncelle ve HTML üret
