@@ -435,7 +435,6 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
     outputs = []
     files_by_format = {}
     files_by_clip = {}
-    reused_count = 0
     for i, (clip_index, entry, aspect) in enumerate(tasks):
         stem = (f"clip_{clip_index + 1:02d}_{FORMAT_NAMES[aspect]}" if clip_index is not None
                 else FORMAT_NAMES[aspect])
@@ -444,20 +443,27 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
         cached = reusable_clip_output(previous, project_id=p.id, project_path=pdir, revision=revision,
                                        source_sha256=source_sha, options=options, clip=entry, aspect=aspect) if entry is not None else None
         meta = None
+        copied_video = False
+        copied_cover = False
         if cached is not None:
             try:
                 # Copy, never hardlink: new results cannot modify or depend on old files.
                 shutil.copyfile(cached["video"], output)
-                shutil.copyfile(cached["thumbnail"], thumb)
-                if (file_sha256(output) == cached["sha256"]
-                        and file_sha256(thumb) == cached["thumbnail_sha256"]):
-                    meta = cached["metadata"]
-                    reused_count += 1
-                    progress((i + 0.95) / len(tasks), f"{i + 1}/{len(tasks)} · {aspect} önceki dosyalar korundu")
+                copied_video = file_sha256(output) == cached["sha256"]
+                if copied_video:
+                    meta = dict(cached["metadata"])
+                    if cached["thumbnail"] is not None:
+                        shutil.copyfile(cached["thumbnail"], thumb)
+                        copied_cover = (file_sha256(thumb) == cached["thumbnail_sha256"]
+                                        and "cover_at" in meta)
+                    if copied_cover:
+                        progress((i + 0.95) / len(tasks), f"{i + 1}/{len(tasks)} · {aspect} önceki dosyalar korundu")
             except OSError:
-                pass  # Missing/unreadable pairs render again, never silently disappear.
-        reused = meta is not None
-        if not reused:
+                copied_video = copied_cover = False
+                meta = None
+        reused = copied_cover
+        cover_refreshed = copied_video and not copied_cover
+        if not copied_video:
             plan = (clip_plan(base, entry["start"], entry["end"], aspect, options["fill"])
                     if entry is not None else export_plan(base, aspect, options["fill"]))
             tl = project_timeline(p, plan)
@@ -481,11 +487,22 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
             if entry is not None:
                 meta.update(cover_at=at, cover_source_at=entry["start"] + at)
             meta["thumbnail_fallback"] = mapped is None
+        elif not copied_cover:
+            # The verified MP4 is unchanged; only its cover frame is new or missing.
+            plan = clip_plan(base, entry["start"], entry["end"], aspect, options["fill"])
+            tl = project_timeline(p, plan)
+            selected_source = entry["start"] + entry.get("cover_at", 0)
+            mapped = tl.map_time(selected_source)
+            at = min(max(0, mapped or 0), max(0, tl.output_duration - 0.1))
+            progress((i + 0.9) / len(tasks), f"{i + 1}/{len(tasks)} · {aspect} kapağı yenileniyor")
+            make_thumbnail(output, thumb, at=at)
+            meta.update(cover_at=at, cover_source_at=entry["start"] + at, thumbnail_fallback=mapped is None)
         files_by_format.setdefault(aspect, []).extend([output, thumb])
         if clip_index is not None:
             files_by_clip.setdefault(clip_index + 1, []).extend([output, thumb])
         clip_meta = {"clip_index": clip_index + 1} if clip_index is not None else {}
         outputs.append({"aspect_ratio": aspect, "label": stem, **meta, **clip_meta, "reused": reused,
+                        "video_reused": copied_video, "cover_refreshed": cover_refreshed,
                         "start": entry.get("start") if entry is not None else None,
                         "end": entry.get("end") if entry is not None else None,
                         "output": media_url(p.id, output.relative_to(pdir).as_posix()),
@@ -499,7 +516,9 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
             if file.suffix in {".mp4", ".jpg"}:
                 zf.write(file, file.name)
     result = {"outputs": outputs, "archive": media_url(p.id, archive.relative_to(pdir).as_posix()),
-              "reused_outputs": reused_count, "rendered_outputs": len(outputs) - reused_count,
+              "reused_outputs": sum(1 for out in outputs if out["reused"]),
+              "refreshed_covers": sum(1 for out in outputs if out["cover_refreshed"]),
+              "rendered_outputs": sum(1 for out in outputs if not out["video_reused"]),
               "rendered_at": datetime.now(timezone.utc).isoformat()}
     # Reuse the rendered files: per-format downloads never invoke FFmpeg again.
     # A single-format job already has exactly the right full archive.

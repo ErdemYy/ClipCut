@@ -99,11 +99,11 @@ function verified() {
     }))) };
 }
 
-test("per-clip freshness isolates trim and cover changes", () => {
+test("per-clip freshness isolates trim changes and identifies cover-only work", () => {
   const r = verified();
   assert.equal(clipExportItemFreshness(r, input, input.clips[0]), "fresh");
   assert.equal(clipExportItemFreshness(r, input, { ...input.clips[0], start: 11 }), "stale");
-  assert.equal(clipExportItemFreshness(r, input, { ...input.clips[0], cover: 13 }), "stale");
+  assert.equal(clipExportItemFreshness(r, input, { ...input.clips[0], cover: 13 }), "cover");
   assert.equal(clipExportItemFreshness(r, input, input.clips[1]), "fresh");
   assert.equal(clipExportItemFreshness(r, input, { ...input.clips[0], start: NaN }), "stale");
 });
@@ -126,11 +126,21 @@ test("item freshness ignores ordering and allows subsets, but detects new clips/
 test("legacy or missing hash/association metadata stays unknown", () => {
   for (const mutate of [r => { delete r.clip_request; }, r => { delete r.clip_request.source_sha256; },
     r => { r.outputs.forEach(o => delete o.clip_index); }, r => { delete r.outputs[0].sha256; },
-    r => { r.outputs[0].thumbnail_sha256 = "invalid"; }]) {
+    r => { r.outputs[0].thumbnail = ""; }]) {
     const r = verified(); mutate(r);
     assert.equal(clipExportItemFreshness(r, input, input.clips[0]), "unknown");
   }
   assert.equal(clipExportItemFreshness(verified(), { ...input, renderRevision: undefined }, input.clips[0]), "unknown");
+});
+
+test("a missing or stale thumbnail hash predicts only a cover refresh", () => {
+  const missing = verified(); delete missing.outputs[0].thumbnail_sha256;
+  assert.equal(clipExportItemFreshness(missing, input, input.clips[0]), "cover");
+  const invalid = verified(); invalid.outputs[0].thumbnail_sha256 = "invalid";
+  assert.equal(clipExportItemFreshness(invalid, input, input.clips[0]), "cover");
+  // The same thumbnail problem with unchanged cover timing is still only a JPG refresh.
+  const sameCover = verified(); sameCover.outputs[0].thumbnail_sha256 = null;
+  assert.equal(clipExportItemFreshness(sameCover, input, input.clips[0]), "cover");
 });
 
 test("ambiguous records are unknown while missing requested pairs are stale", () => {

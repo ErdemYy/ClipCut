@@ -4,7 +4,7 @@ import { useEffect, useId, useReducer, useRef, useState } from "react";
 import { api, downloadUrl, formatTime, mediaUrl, type ClipAnalysis, type ClipCandidate, type ClipPreviewResult, type ExportFormat, type FillMode, type Job, type JobMap, type Project, type PublishResult, type RenderOptions, type Waveform } from "@/lib/api";
 import { clampClipRange, clipRangeError, snapClipEdge, type ClipRangeAction, type ClipRange } from "@/lib/clip-trim";
 import { CLIP_FORMATS, clipDraftContext, clipDraftStorageKey, clipPreviewFormat, defaultClipDraft, readClipDraft, serializeClipDraft, toggleClipFormat } from "@/lib/clip-draft";
-import { CLIP_FRESHNESS_LABELS, clipExportFreshness, clipExportItemFreshness } from "@/lib/clip-export";
+import { CLIP_ITEM_FRESHNESS_LABELS, clipExportFreshness, clipExportItemFreshness } from "@/lib/clip-export";
 import { editablePublishedClipIds, publishedClipRangeRestores } from "@/lib/publishing-results";
 import { canRedoClipRanges, canUndoClipRanges, clipRangeHistoryReducer, emptyClipRangeHistory, type ClipRanges } from "@/lib/clip-range-history";
 import { clipPreviewIsStale, clipPreviewSelection, clipPreviewWindow, type ClipPreviewSelection } from "@/lib/clip-preview";
@@ -407,7 +407,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
               <input type="checkbox" checked={selected.includes(clip.id)} disabled={disabled} onChange={(e) => setSelected((current) => e.target.checked ? [...current, clip.id] : current.filter((i) => i !== clip.id))} />
               {formatTime(range.start)} – {formatTime(range.end)} · {(range.end - range.start).toFixed(1)} sn
             </label>
-            {clipItemFreshness[clip.id] && <small>Son çıktı: {CLIP_FRESHNESS_LABELS[clipItemFreshness[clip.id]]}. Dosyalar sunucuda ayrıca doğrulanır.</small>}
+            {clipItemFreshness[clip.id] && <small>Son çıktı: {CLIP_ITEM_FRESHNESS_LABELS[clipItemFreshness[clip.id]]}. Dosyalar sunucuda ayrıca doğrulanır.</small>}
             <div className={pub.trimRow}>
               <label>Başlangıç (sn)<input className="input" type="number" min="0" max={project.duration} step="0.1" value={range.start}
                 ref={(field) => { clipStartFields.current[clip.id] = field; }} aria-label={`${index + 1}. aday başlangıç (sn)`}
@@ -550,7 +550,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
             aria-describedby={reuseHelpId}
             disabled={disabled || selected.length === 0 || invalidSelected.length > 0 || invalidCovers.length > 0}
             onClick={() => render(true)}>Yalnızca değişenleri hazırla</button>
-          <p id={reuseHelpId} className={pub.note}>Önceki sonuçla girdileri ve kaynak hash&apos;i eşleşen MP4/JPG çiftleri doğrulanıp yeni pakete kopyalanır. Değişen veya yeni klip/formatlar, eksik/değiştirilmiş dosyalar ve hash bilgisi olmayan eski sonuçlar yeniden render edilir. ZIP dosyaları yeni seçimle hazırlanır; eski dosyalar değiştirilmez. Bu doğrulama otomatik render başlatmaz.</p>
+          <p id={reuseHelpId} className={pub.note}>Önceki sonuçla girdileri ve kaynak hash&apos;i eşleşen MP4/JPG çiftleri doğrulanıp yeni pakete kopyalanır. Yalnızca kapak zamanı değişirse doğrulanan MP4 korunur ve yeni JPG karesi çıkarılır; eksik/değiştirilmiş JPG de bu şekilde yenilenir. Aralık, format veya ayarlar değişirse ilgili MP4 yeniden render edilir. Hash bilgisi olmayan eski sonuçlar tümüyle yeniden hazırlanır. ZIP dosyaları yeni seçimle oluşturulur; eski dosyalar değiştirilmez. Bu doğrulama otomatik render başlatmaz.</p>
         </>}
       </>}
     </section>}

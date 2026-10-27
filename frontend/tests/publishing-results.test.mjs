@@ -555,6 +555,35 @@ test("incremental counts, per-clip freshness and reused-output labels are explic
   assert.equal(h.videos().length, 0);
 });
 
+test("cover refreshes are counted and labelled without claiming full reuse", () => {
+  const h = harness(); const job = groupedJob();
+  job.result.reused_outputs = 1; job.result.refreshed_covers = 1; job.result.rendered_outputs = 2;
+  job.result.outputs[0].cover_refreshed = true;
+  job.result.outputs[1].reused = true;
+  h.setJob(job); h.setClipFreshness({ 1: "cover", 2: "fresh" });
+  const text = h.render().map(n => [n.props?.children].flat(Infinity).join("")).join(" ");
+  assert.match(text, /1 çıktı korundu · 1 kapak yenilendi · 2 çıktı yeniden hazırlandı/);
+  assert.match(text, /Yalnızca kapak yenilenecek/);
+  assert.match(text, /MP4 önceki sonuçtan korundu; kapak JPG yeniden oluşturuldu/);
+  assert.equal(text.includes("Önceki sonuçtan doğrulanarak korundu"), false);
+  assert.equal(h.videos().length, 0);
+});
+
+test("inconsistent or non-integer counters are not shown", () => {
+  for (const patch of [
+    { reused_outputs: 1, refreshed_covers: 1, rendered_outputs: 1 },
+    { reused_outputs: 2, refreshed_covers: 0.5, rendered_outputs: 1.5 },
+    { reused_outputs: -1, refreshed_covers: 0, rendered_outputs: 5 },
+    { reused_outputs: 2, refreshed_covers: "1", rendered_outputs: 1 },
+  ]) {
+    const h = harness(); const job = groupedJob();
+    Object.assign(job.result, patch);
+    h.setJob(job);
+    const text = h.render().map(n => [n.props?.children].flat(Infinity).join("")).join(" ");
+    assert.equal(text.includes("çıktı korundu"), false);
+  }
+});
+
 test("legacy results without incremental metadata do not claim reused files", () => {
   const h = harness(); h.setJob(groupedJob());
   const text = h.render().map(n => [n.props?.children].flat(Infinity).join("")).join(" ");

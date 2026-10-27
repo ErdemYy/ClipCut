@@ -61,16 +61,47 @@ def test_unchanged_pairs_are_copied_and_all_archives_rebuilt(published, monkeypa
     assert p.output_file is None
 
 
-@pytest.mark.parametrize("change", ["range", "cover"])
-def test_only_changed_clip_formats_render(published, change):
+def test_changed_range_renders_only_that_clip(published):
     _, _, clips, _, calls, _, run, _ = published
     changed = copy.deepcopy(clips)
-    changed[0]["start" if change == "range" else "cover_at"] = 39 if change == "range" else 1
+    changed[0]["start"] = 39
     result = run(new_clips=changed)
     assert len(calls) == 2
-    assert (result["reused_outputs"], result["rendered_outputs"]) == (2, 2)
+    assert (result["reused_outputs"], result["refreshed_covers"], result["rendered_outputs"]) == (2, 0, 2)
     assert [out["reused"] for out in result["outputs"]] == [False, False, True, True]
-    assert result["clip_request"]["clips"][0]["cover_at" if change == "cover" else "start"] == (1 if change == "cover" else 39)
+    assert result["clip_request"]["clips"][0]["start"] == 39
+
+
+def test_cover_only_change_reuses_video_and_regenerates_only_jpg(published, monkeypatch):
+    _, _, clips, previous, calls, path, run, _ = published
+    before = copy.deepcopy(previous)
+    old_videos = {out["label"]: path(out["output"]).read_bytes() for out in previous["result"]["outputs"]}
+    old_thumbs = {out["label"]: path(out["thumbnail"]).read_bytes() for out in previous["result"]["outputs"]}
+    extractions = []
+
+    def fake_thumbnail(video, thumb, *, at):
+        extractions.append((thumb.name, at))
+        thumb.write_bytes(f"new-cover:{thumb.name}:{at}".encode())
+
+    monkeypatch.setattr(jobs, "make_thumbnail", fake_thumbnail)
+    monkeypatch.setattr(jobs, "render", lambda *_: pytest.fail("Cover-only changes must reuse verified MP4s"))
+    changed = copy.deepcopy(clips)
+    changed[0]["cover_at"] = 1
+    result = run(new_clips=changed)
+    assert calls == [] and len(extractions) == 2
+    assert {name for name, _ in extractions} == {"clip_01_reels_tiktok.jpg", "clip_01_instagram_square.jpg"}
+    assert (result["reused_outputs"], result["refreshed_covers"], result["rendered_outputs"]) == (2, 2, 0)
+    assert [out["video_reused"] for out in result["outputs"]] == [True] * 4
+    assert [out["cover_refreshed"] for out in result["outputs"]] == [True, True, False, False]
+    assert [out["reused"] for out in result["outputs"]] == [False, False, True, True]
+    for out in result["outputs"]:
+        assert path(out["output"]).read_bytes() == old_videos[out["label"]], "MP4 content must be identical"
+        if out["cover_refreshed"]:
+            assert path(out["thumbnail"]).read_bytes() != old_thumbs[out["label"]], "JPG must be a new frame"
+        else:
+            assert path(out["thumbnail"]).read_bytes() == old_thumbs[out["label"]], "Unchanged JPG must be copied"
+    assert result["clip_request"]["clips"][0]["cover_at"] == 1
+    assert previous == before
 
 
 @pytest.mark.parametrize("change,expected", [("reorder-clips", (4, 0)), ("reorder-formats", (4, 0)),
@@ -118,15 +149,18 @@ def test_global_or_unverifiable_inputs_force_render(published, change):
     assert result["reused_outputs"] == 0
 
 
-@pytest.mark.parametrize("key,action", [("output", "missing"), ("thumbnail", "missing"), ("output", "corrupt"), ("thumbnail", "corrupt")])
-def test_missing_or_modified_pair_renders_again(published, key, action):
+@pytest.mark.parametrize("key,action,expected", [
+    ("output", "missing", (3, 0, 1)), ("output", "corrupt", (3, 0, 1)),
+    ("thumbnail", "missing", (3, 1, 0)), ("thumbnail", "corrupt", (3, 1, 0)),
+])
+def test_missing_or_modified_files_fall_back_safely(published, key, action, expected):
     _, _, _, previous, calls, path, run, _ = published
     damaged = path(previous["result"]["outputs"][0][key])
     if action == "missing": damaged.unlink()
     else: damaged.write_bytes(b"changed-file")
     result = run()
-    assert len(calls) == 1
-    assert (result["reused_outputs"], result["rendered_outputs"]) == (3, 1)
+    assert (result["reused_outputs"], result["refreshed_covers"], result["rendered_outputs"]) == expected
+    assert len(calls) == expected[2]
 
 
 @pytest.mark.parametrize("url", ["https://example.test/video.mp4", "/media/projects/other/outputs/" + "a" * 32 + "/clip_01_reels_tiktok.mp4",
@@ -179,9 +213,11 @@ def test_resolved_path_redirection_is_rejected_without_symlink_privileges(publis
     assert not outside.exists()
 
 
-@pytest.mark.parametrize("change,rendered", [("duplicate-clips", 4), ("duplicate-pair", 1),
-                                           ("missing-index", 1), ("bad-width", 1), ("bad-cover", 1), ("split-pair", 1)])
-def test_ambiguous_or_invalid_metadata_never_claims_reuse(published, change, rendered):
+@pytest.mark.parametrize("change,rendered,refreshed", [
+    ("duplicate-clips", 4, 0), ("duplicate-pair", 1, 0), ("missing-index", 1, 0),
+    ("bad-width", 1, 0), ("bad-cover", 0, 1), ("split-pair", 0, 1),
+])
+def test_ambiguous_or_invalid_metadata_never_claims_full_reuse(published, change, rendered, refreshed):
     _, _, _, previous, calls, path, run, _ = published
     old = copy.deepcopy(previous); out = old["result"]["outputs"][0]
     if change == "duplicate-clips": old["result"]["clip_request"]["clips"].append(copy.deepcopy(old["result"]["clip_request"]["clips"][0]))
@@ -196,7 +232,11 @@ def test_ambiguous_or_invalid_metadata_never_claims_reuse(published, change, ren
         out["thumbnail"] = out["thumbnail"].replace(old_thumb.parent.name, other_dir.name)
     result = run(reuse=old)
     assert len(calls) == rendered
-    assert result["rendered_outputs"] == rendered and result["reused_outputs"] == 4 - rendered
+    assert result["rendered_outputs"] == rendered
+    assert result["refreshed_covers"] == refreshed
+    assert result["reused_outputs"] == 4 - rendered - refreshed
+    # Reused MP4s are verified independently from their cover metadata.
+    assert sum(1 for out in result["outputs"] if out["video_reused"]) == 4 - rendered
 
 
 @pytest.mark.parametrize("failure", ["read-error", "copy-corruption"])
@@ -225,7 +265,7 @@ def test_source_change_during_job_never_returns_mixed_result(published, monkeypa
         source.write_bytes(b"source changed during job")
         return result
     monkeypatch.setattr(jobs, "render", changed_source)
-    changed = copy.deepcopy(clips); changed[0]["cover_at"] = 1
+    changed = copy.deepcopy(clips); changed[0]["start"] = 39
     with pytest.raises(ValueError, match="Kaynak dosya"):
         run(new_clips=changed)
 
@@ -269,3 +309,30 @@ def test_real_incremental_clip_render_preserves_other_pairs(tmp_path, monkeypatc
     with zipfile.ZipFile(path(second["archive"])) as zf:
         assert len(zf.namelist()) == 8
     assert first == before
+
+    # A cover-only change keeps verified MP4s and only extracts new JPG frames.
+    second_before = copy.deepcopy(second)
+    covered = copy.deepcopy(changed)
+    covered[1]["cover_at"] = 0.2
+    calls.clear()
+    real_thumbnail = jobs.make_thumbnail
+    extracted = []
+
+    def track_thumbnail(video, thumb, *, at):
+        extracted.append((thumb.name, at))
+        return real_thumbnail(video, thumb, at=at)
+
+    monkeypatch.setattr(jobs, "make_thumbnail", track_thumbnail)
+    third = jobs.task_publish(lambda *_: None, p.model_dump(), opts, covered,
+                              {"project_id": p.id, "result": second})
+    assert calls == [] and len(extracted) == 2
+    assert (third["reused_outputs"], third["refreshed_covers"], third["rendered_outputs"]) == (2, 2, 0)
+    for old, new in zip(second["outputs"][2:], third["outputs"][2:]):
+        assert new["cover_refreshed"] and not new["reused"]
+        assert path(new["output"]).read_bytes() == path(old["output"]).read_bytes()
+        assert new["sha256"] == old["sha256"]
+        assert new["thumbnail_sha256"] != old["thumbnail_sha256"]
+        assert new["cover_at"] == pytest.approx(old["cover_at"] + 0.2, abs=0.05)
+        assert new["thumbnail_fallback"] is False
+        assert probe(path(new["output"])).duration == pytest.approx(0.4, abs=0.15)
+    assert second == second_before

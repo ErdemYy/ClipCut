@@ -4,7 +4,7 @@ import { useId, useRef, useState } from "react";
 import Image from "next/image";
 import { downloadUrl, mediaUrl, formatTime, type ExportFormat, type FillMode, type Job, type PublishResult, type RenderOptions } from "@/lib/api";
 import { groupPublishedClips } from "@/lib/publishing-results";
-import { CLIP_FRESHNESS_LABELS, type ClipExportFreshness } from "@/lib/clip-export";
+import { CLIP_ITEM_FRESHNESS_LABELS, type ClipExportItemFreshness } from "@/lib/clip-export";
 import styles from "./publishing.module.css";
 
 export function RenderSettings({ value, onChange, fill, onFill, disabled }: {
@@ -32,7 +32,7 @@ export function PublishingResults({ job, freshness, clipEditors, clipRangeRestor
   job?: Job; freshness?: "stale" | "unknown";
   clipEditors?: Record<number, () => void>;
   clipRangeRestorers?: Record<number, { current: { start: number; end: number }; restore: () => void }>;
-  clipFreshness?: Record<number, ClipExportFreshness>;
+  clipFreshness?: Record<number, ClipExportItemFreshness>;
 }) {
   const previewId = useId();
   const previewAttempt = useRef(0);
@@ -54,6 +54,13 @@ export function PublishingResults({ job, freshness, clipEditors, clipRangeRestor
   const shownGroups = clipGroups?.map((group) => ({ ...group,
     outputs: group.outputs.filter((out) => selectedFormat === "all" || out.aspect_ratio === selectedFormat),
   })).filter((group) => group.outputs.length > 0);
+  const reusedCount = result.reused_outputs;
+  const renderedCount = result.rendered_outputs;
+  const refreshedCount = result.refreshed_covers ?? 0;
+  const countsValid = Number.isInteger(reusedCount) && Number.isInteger(renderedCount)
+    && Number.isInteger(refreshedCount) && (reusedCount ?? -1) >= 0
+    && (renderedCount ?? -1) >= 0 && refreshedCount >= 0
+    && (reusedCount ?? 0) + (renderedCount ?? 0) + refreshedCount === result.outputs.length;
   const outputCard = (out: PublishResult["outputs"][number]) => {
     const key = JSON.stringify([job.id, result.archive, out.output]);
     const opened = preview?.key === key;
@@ -65,6 +72,7 @@ export function PublishingResults({ job, freshness, clipEditors, clipRangeRestor
       <strong>{label}</strong>
       <small>{out.aspect_ratio} · {out.width} × {out.height} · {formatTime(out.duration)}</small>
       {out.reused && <small>Önceki sonuçtan doğrulanarak korundu.</small>}
+      {out.cover_refreshed && <small>MP4 önceki sonuçtan korundu; kapak JPG yeniden oluşturuldu.</small>}
       {typeof out.cover_at === "number" && <small>Kapak: klip içinde {out.cover_at.toFixed(1)} sn
         {typeof out.cover_source_at === "number" ? ` · kaynakta ${out.cover_source_at.toFixed(1)} sn` : ""}. JPG render edilmiş videodan alınır; zamanlama kare hassasiyetindedir.</small>}
       {!opened && thumbnail && <Image className={styles.outputPoster} src={thumbnail}
@@ -93,10 +101,9 @@ export function PublishingResults({ job, freshness, clipEditors, clipRangeRestor
   };
   return <section className={styles.results} aria-label="Hazır dosyalar">
     <h4>Dosyalar hazır</h4>
-    {Number.isInteger(result.reused_outputs) && Number.isInteger(result.rendered_outputs)
-      && (result.reused_outputs ?? -1) >= 0 && (result.rendered_outputs ?? -1) >= 0
-      && (result.reused_outputs ?? 0) + (result.rendered_outputs ?? 0) === result.outputs.length
-      && <p className={styles.note} role="status" aria-atomic="true">{result.reused_outputs} çıktı korundu · {result.rendered_outputs} çıktı yeniden hazırlandı.</p>}
+    {countsValid && <p className={styles.note} role="status" aria-atomic="true">
+      {reusedCount} çıktı korundu{refreshedCount > 0 ? ` · ${refreshedCount} kapak yenilendi` : ""} · {renderedCount} çıktı yeniden hazırlandı.
+    </p>}
     {freshness && <p className={styles.stale} role="status">
       {freshness === "stale"
         ? "Aralık, kapak, seçim, format veya render ayarları son hazırlanan dosyalardan farklı. Dosyaları güncellemek için klipleri yeniden hazırlayın."
@@ -136,7 +143,7 @@ export function PublishingResults({ job, freshness, clipEditors, clipRangeRestor
       return <section key={group.clip_index} className={styles.clipGroup} aria-labelledby={`${groupId}-title`}>
         <h5 id={`${groupId}-title`}>Klip {group.clip_index}</h5>
         {clipFreshness?.[group.clip_index] && <p className={styles.note} role="status">
-          Son çıktı: {CLIP_FRESHNESS_LABELS[clipFreshness[group.clip_index]]}. Dosyalar yeniden kullanım öncesinde sunucuda doğrulanır.
+          Son çıktı: {CLIP_ITEM_FRESHNESS_LABELS[clipFreshness[group.clip_index]]}. Dosyalar yeniden kullanım öncesinde sunucuda doğrulanır.
         </p>}
         <p className={styles.note}>Kaynakta {formatTime(group.start)} – {formatTime(group.end)}. Klip ZIP dosyası, görünüm filtresinden bağımsız olarak bu klibin tüm formatlarını içerir.</p>
         <a className={`btn btn-sm ${styles.trimShiftButton}`} href={downloadUrl(group.archive)} download>
