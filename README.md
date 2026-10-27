@@ -11,13 +11,22 @@
 ## 🖼 Ekran görüntüleri
 
 <p align="center">
-  <img src="assets/screenshots/landing.png" alt="Ana sayfa" width="49%">
-  <img src="assets/screenshots/dashboard.png" alt="Proje paneli" width="49%">
-  <img src="assets/screenshots/create.png" alt="Yeni video oluştur" width="49%">
-  <img src="assets/screenshots/ai-edit.png" alt="Edit planı" width="49%">
-  <img src="assets/screenshots/export.png" alt="Dışa aktarma" width="49%">
-  <img src="assets/screenshots/shortclips.png" alt="Kısa klipler" width="49%">
+  <img src="assets/screenshots/gallery.png" alt="ClipCut ekran görüntüleri: ana sayfa, projeler, yeni video, promptyla edit, dışa aktarma ve kısa klipler" width="100%">
 </p>
+
+<details>
+<summary>Tek tek büyütmek için (tam boy görüntüler)</summary>
+
+| Panel | Görüntü |
+|---|---|
+| Ana sayfa | ![Ana sayfa](assets/screenshots/landing.png) |
+| Projeler | ![Projeler](assets/screenshots/dashboard.png) |
+| Yeni video üret | ![Yeni video](assets/screenshots/create.png) |
+| Promptyla Edit + zaman çizelgesi | ![Zaman çizelgesi](assets/screenshots/editor-timeline.png) |
+| Dışa aktarma | ![Dışa aktarma](assets/screenshots/export.png) |
+| Kısa klipler | ![Kısa klipler](assets/screenshots/shortclips.png) |
+
+</details>
 
 ---
 
