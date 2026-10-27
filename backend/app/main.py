@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session, select
 
-from . import assets, jobs
+from . import assets, jobs, output_cleanup
 from .ai import broll, catalog as ai_catalog, services as ai, tts
 from .config import get_settings
 from .edit.schema import EditPlan, OverlayOp, SubtitlesOp, dsl_reference
@@ -109,6 +109,24 @@ def touch(p: Project) -> None:
 
 def job_dict(j: Job) -> dict[str, Any]:
     return j.model_dump(mode="json")
+
+
+PUBLISH_JOB_KINDS = ("export_batch", "clip_render", "transcript_clip")
+
+
+def publishing_busy(project_id: str, session: Session) -> bool:
+    """Whether a job could still be writing into a fresh output folder."""
+    row = session.exec(
+        select(Job.id).where(Job.project_id == project_id, Job.status.in_(("queued", "running")),
+                             Job.kind.in_(PUBLISH_JOB_KINDS)).limit(1)
+    ).first()
+    return row is not None
+
+
+def output_token_references(p: Project, session: Session) -> set[str]:
+    """Every output token referenced by stored jobs or project paths, not just recent ones."""
+    results = session.exec(select(Job.result).where(Job.project_id == p.id)).all()
+    return output_cleanup.referenced_tokens(p.id, [p.output_file, p.thumbnail_file, *results])
 
 
 # ------------------------------------------------------------------ genel ----
@@ -524,6 +542,35 @@ def cancel_job(job_id: str, session: Session = Depends(get_session)) -> dict:
 def project_jobs(project_id: str, session: Session = Depends(get_session)) -> list[dict]:
     rows = session.exec(select(Job).where(Job.project_id == project_id).order_by(Job.created_at.desc()).limit(20)).all()  # type: ignore[attr-defined]
     return [job_dict(j) for j in rows]
+
+
+@app.get("/api/projects/{project_id}/outputs")
+def output_storage(project_id: str, session: Session = Depends(get_session)) -> dict:
+    """Read-only inventory of publish output folders that can safely be removed."""
+    p = get_project(project_id, session)
+    referenced = output_token_references(p, session)
+    eligible, protected = output_cleanup.scan_outputs(jobs.project_dir(p.id), referenced)
+    return {
+        "eligible": eligible, "protected": protected,
+        "eligible_bytes": sum(item["bytes"] for item in eligible),
+        "protected_bytes": sum(item["bytes"] for item in protected),
+        "min_age_seconds": output_cleanup.MIN_AGE_SECONDS,
+        "busy": publishing_busy(p.id, session),
+    }
+
+
+@app.post("/api/projects/{project_id}/outputs/cleanup")
+def cleanup_output_storage(project_id: str, body: output_cleanup.OutputCleanupBody,
+                           session: Session = Depends(get_session)) -> dict:
+    """Delete only the folders the client just saw and that remain unprotected."""
+    p = get_project(project_id, session)
+    if publishing_busy(p.id, session):
+        raise HTTPException(409, "Süren bir hazırlama işi var; bitince yeniden deneyin.")
+    referenced = output_token_references(p, session)
+    result = output_cleanup.cleanup_outputs(jobs.project_dir(p.id), referenced, body.tokens)
+    if not result["deleted"]:
+        raise HTTPException(409, "İstenen çıktılar artık temizlenebilir değil; listeyi yenileyin.")
+    return result
 
 
 # ------------------------------------------------------------------ altyazı ----

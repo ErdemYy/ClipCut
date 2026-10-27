@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { api, downloadUrl, formatTime, mediaUrl, type ExportFormat, type FillMode, type Job, type JobMap, type Project, type RenderOptions } from "@/lib/api";
 import { JobProgress } from "./SubtitlePanel";
 import { PublishingResults, RenderSettings } from "./PublishingControls";
+import OutputStoragePanel from "./OutputStoragePanel";
 import PreviewPanel from "./PreviewPanel";
 import styles from "./editor-parts.module.css";
 import pub from "./publishing.module.css";
@@ -82,6 +83,7 @@ export default function ExportPanel({ project, jobs, setProject, track, notify, 
     {formats.length === 0 && <p className={pub.note}>En az bir platform seçin.</p>}
     <button id="export-render" className="btn" onClick={() => start(true)} disabled={disabled}>Yalnızca mevcut edit planını render et</button>
     <PublishingResults job={batch} />
+    <OutputStoragePanel projectId={project.id} disabled={disabled} notify={notify} />
     {jobs.render?.status === "failed" && <p className={pub.error} role="alert">{jobs.render.error}</p>}
     {project.output_url && <a className="btn" href={downloadUrl(project.output_url)} download id="export-download">Son tekli render · MP4 indir</a>}
     {project.has_transcript && <div className={pub.actions}>

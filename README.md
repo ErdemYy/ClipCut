@@ -94,6 +94,12 @@ Bir klibin aralığı değişirse yalnızca onun istenen formatlarındaki MP4/JP
 
 Sonuçtaki **1 çıktı korundu · 1 kapak yenilendi · 2 çıktı yeniden hazırlandı** gibi sayaçlar format çıktılarını sayar; korunan ve yalnızca kapağı yenilenen kartlar ayrıca işaretlenir. Eski sonuçlarda kaynak/çıktı hash bilgisi yoksa ilk işlem bütün gerekli MP4'leri yeniden üretir. İşlem otomatik başlamaz ve ücretli AI/TTS çağrısı yapmaz. Amaç render süresini azaltmaktır: hash kontrolü, kopyalama, tek kare çıkarma ve ZIP hazırlama yine zaman/disk alanı kullanır; otomatik dosya temizleme yapılmaz. Bu özellik analiz tabanlı kısa klipler içindir; ana video toplu dışa aktarımı ve transkript klipleri mevcut tam-render davranışını korur.
 
+### Eski çıktı klasörlerini güvenli temizleme
+
+**Kısa Klipler** ve **Dışa Aktar** panellerindeki **Depolama** bölümünde **Depolamayı tara** düğmesi, projeye ait hazırlama çıktılarını inceler. Sunucu yalnızca `outputs/<32-karakter iş kimliği>` biçimindeki klasörlerden hiçbir kayıtlı iş sonucunda adresi geçmeyen, en az 1 saat önce oluşturulmuş ve içinde yalnızca normal dosyalar bulunan klasörleri temizlenebilir olarak işaretler. İş sonuçlarında kullanılan klasörler, yeni oluşturulmuş klasörler ve güvenlik denetiminden geçmeyen (sembolik bağlantı, alt klasör, özel dosya veya okunamayan) klasörler korunur.
+
+**Eski çıktıları temizle** onay ister ve yalnızca taramada gösterilen klasörleri siler. Sunucu silmeden önce bütün iş sonuçlarını yeniden tarar; bu arada bir sonuç klasöre bağlanmışsa veya süren bir kısa klip/toplu dışa aktarma işi varsa silme yapılmaz. Kaynak video, proje kapağı, ana render MP4'leri, `outputs/previews` ve `outputs/clip_previews` içeriği, proje planı ve düzenleme geçmişi değişmez. Silme geri alınamaz; silinen klasör sayısı ve boşaltılan alan bildirilir. Tarama ve temizlik otomatik başlamaz, ücretli AI/TTS çağrısı yapmaz. `work/` ara dosyaları, ana render çıktıları ve önizleme dosyaları bu temizliğin kapsamı dışındadır. Tarama çağrısı `/jobs` listesinin son 20 kaydıyla sınırlı değildir; veritabanındaki bütün iş sonuçları korunur.
+
 ## Senaryodan çok sahneli video
 
 1. **Yeni Video → Senaryodan Üret** bölümüne konuyu veya hazır senaryoyu yazın; dil, format, ortak stil, 2–12 sahne ve sahne süresini seçin.

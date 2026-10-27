@@ -12,6 +12,7 @@ import { clipCoverError, clipCoverMax } from "@/lib/clip-cover";
 import ClipRangeStrip from "./ClipRangeStrip";
 import { JobProgress } from "./SubtitlePanel";
 import { PublishingResults, RenderSettings } from "./PublishingControls";
+import OutputStoragePanel from "./OutputStoragePanel";
 import styles from "./editor-parts.module.css";
 import pub from "./publishing.module.css";
 
@@ -559,5 +560,6 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
       clipEditors={clipEditors}
       clipRangeRestorers={clipRangeRestorers}
       freshness={clipRenderFreshness === "stale" || clipRenderFreshness === "unknown" ? clipRenderFreshness : undefined} />
+    <OutputStoragePanel projectId={project.id} disabled={disabled} notify={notify} />
   </div>;
 }

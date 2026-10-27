@@ -109,6 +109,26 @@ export type PublishResult = {
     sha256?: string | null; thumbnail_sha256?: string | null }[];
   clip_request?: ClipRenderSnapshot;
 };
+export type OutputStorageDir = { token: string; bytes: number; files: number; age_seconds: number };
+export type OutputStorageProtectedDir = OutputStorageDir & {
+  reason: "referenced" | "recent" | "symlink" | "nested" | "special" | "unreadable";
+};
+export type OutputStorageInfo = {
+  eligible: OutputStorageDir[];
+  protected: OutputStorageProtectedDir[];
+  eligible_bytes: number;
+  protected_bytes: number;
+  min_age_seconds: number;
+  busy: boolean;
+};
+export type OutputCleanupResult = {
+  deleted: OutputStorageDir[];
+  freed_bytes: number;
+  failed: string[];
+  skipped: string[];
+  eligible: OutputStorageDir[];
+  protected: OutputStorageProtectedDir[];
+};
 export type ClipCandidate = {
   id: number; start: number; end: number; duration: number; score: number;
   speech_ratio: number; words_per_minute: number | null; excerpt: string; reason: string;
@@ -284,6 +304,9 @@ export const api = {
     request<Project>(`/api/projects/${id}/storyboard/restore`, json(body)),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
   jobs: (projectId: string) => request<Job[]>(`/api/projects/${projectId}/jobs`),
+  outputStorage: (id: string) => request<OutputStorageInfo>(`/api/projects/${id}/outputs`),
+  cleanupOutputs: (id: string, tokens: string[]) =>
+    request<OutputCleanupResult>(`/api/projects/${id}/outputs/cleanup`, json({ tokens })),
   transcribe: (id: string, target_language?: string) => request<Job>(`/api/projects/${id}/transcribe`, json({ target_language })),
   translate: (id: string, target_language: string) => request<Job>(`/api/projects/${id}/translate`, json({ target_language })),
   saveSubtitles: (id: string, segments: SubtitleEditSegment[], revision?: string) =>

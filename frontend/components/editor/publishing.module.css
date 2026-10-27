@@ -15,6 +15,8 @@
 .cover input[type="range"] { width: 100%; min-height: 32px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .results { display: grid; gap: 14px; border-top: 1px solid var(--border); padding-top: 16px; }
+.storage { display: grid; gap: 10px; border-top: 1px solid var(--border); padding-top: 16px; }
+.storage h4 { font-size: 1rem; }
 .output { display: grid; gap: 8px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
 .clipGroup { display: grid; gap: 12px; min-width: 0; border-top: 1px solid var(--border); padding-top: 16px; }
 .clipGroup h5 { font-size: 1rem; }
