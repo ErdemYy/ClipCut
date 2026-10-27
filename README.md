@@ -1,6 +1,27 @@
-# ClipCut 🎬✨
+# ClipCut 🎬
 
-ClipCut, yapay zekâ destekli modern bir video üretim ve akıllı edit stüdyosudur.
+<p align="center">
+  <img src="assets/screenshots/editor.png" alt="ClipCut editör" width="100%">
+</p>
+
+**ClipCut**, yapay zekâ destekli video üretim ve akıllı edit stüdyosudur: Veo ile prompt'tan video, Gemini ile kelime zamanlamalı altyazı, doğal dil promptu ile otomatik kurgu, çoklu platform dışa aktarma ve uzun videolardan kısa klip çıkarımı — hepsi tek yerel uygulamada.
+
+---
+
+## 🖼 Ekran görüntüleri
+
+<p align="center">
+  <img src="assets/screenshots/landing.png" alt="Ana sayfa" width="49%">
+  <img src="assets/screenshots/dashboard.png" alt="Proje paneli" width="49%">
+  <img src="assets/screenshots/create.png" alt="Yeni video oluştur" width="49%">
+  <img src="assets/screenshots/ai-edit.png" alt="Edit planı" width="49%">
+  <img src="assets/screenshots/export.png" alt="Dışa aktarma" width="49%">
+  <img src="assets/screenshots/shortclips.png" alt="Kısa klipler" width="49%">
+</p>
+
+---
+
+## ✨ Öne çıkanlar
 
 - **Prompt ile Video Üret:** Google Veo entegrasyonu ile metinden sinematik video üretimi (9:16 veya 16:9).
 - **Otomatik & Çok Dilli Altyazı:** Gemini API ile kelime zaman damgalı transkripsiyon ve 17+ dile çeviri.
@@ -19,6 +40,11 @@ ClipCut, yapay zekâ destekli modern bir video üretim ve akıllı edit stüdyos
 - **Uzun Videodan Kısa Klipler:** Editörde **Kısa Klipler** sekmesinden 30–60 saniye aralığını ve aday sayısını seçin. Yerel FFmpeg sessizlik analizi konuşma yoğunluğunu sıralar. Gerçek kaynak transkripti varsa aday pencereler cümle sınırlarına hizalanır; ilk saniyelerdeki soru/merak/karşıtlık kancası, konuşma temposu ve tekrar eden konu terimleri de yerel olarak puanlanır. Kartlarda akıllı skor, cümle sınırı, açılış kancası ve konu yoğunluğu göstergeleri görünür. Mock transkriptler, seslendirme transkriptleri ve kaynak zamanı doğrulanamayan eski TTS sözcükleri puanlamada kullanılmaz. Adayları önizleyin ve seçtiklerinizi 9:16, 1:1, 4:5 veya 16:9 formatında bağımsız MP4 dosyaları/ZIP olarak çıkarın. Her adayın başlangıç/bitişini dalga formundaki tutamaçları sürükleyerek, odaktayken ok tuşlarıyla (0,1 sn; Shift ile 1 sn), Home/End ile veya 0,1 sn adımlı sayı alanlarıyla ayarlayın. Dalga, seçimin çevresindeki 15–30 sn'lik bağlam penceresini gösterir ve sürükleme sırasında sabit kalır; dokunmatikte tutamaç hedefleri 44 px'e büyür. Sürükleme sırasında Escape veya pointer iptali değişikliği geri alır. Tutamaçlar 30–60 sn ve kaynak sınırları içinde kalır; geçersiz sayı alanı satır içi hata gösterir ve dalga tutamaçlarını devre dışı bırakır. Kaynak transkript varsa 2 sn yakınındaki cümle sınırlarına yapıştırabilir ve seçtiğiniz formatta canlı önizlemede bulanık arka plan, siyah kenar veya merkez kırpma görünümünü izleyebilirsiniz. Dalga kaynak sesin ham mono tepe genliğidir; çizim görünür pencereye göre ölçeklenir, ses düzeyi ölçümü değildir. Canlı önizleme çıktının kadraj/dolgu görünümünü gösterir, kesin sonuç FFmpeg render çıktısıdır. Ayrıca her adayın istediğiniz bölümünü, seçili dolgu ve formatta, altyazı/renk/reframe dahil gerçek FFmpeg ile 5/10 sn'lik MP4 olarak önizleyebilirsiniz; klip sonunda kalan süre kullanılır. Bu dosya tam klip değildir, kaynağı veya tam render çıktısını değiştirmez ve ücretli AI çağrısı yapmaz. Kaynak ses ile altyazı/renk stili korunur; ana editteki hız, kesimler, seslendirme ve zamanlı katmanlar kliplere taşınmaz. Bu özellik ücretli AI çağrısı yapmaz; kanca/konu puanları sezgiseldir, anlamsal önem veya viral başarı garantisi vermez. Müzik/gürültü konuşma gibi algılanabilir. Tamamen sessiz/sessiz ağırlıklı videoda aday bulunmayabilir.
 - **Üretim öncesi model ve maliyet kontrolü:** Video ve metin/planlama modelini seçin; bekleyen sahne sayısı, video saniyesi, planlama çağrısı ve Edge TTS çağrıları için **tahmini** sağlayıcı maliyetini görün. İsteğe bağlı USD bütçe üst sınırı, sağlayıcı çağrısından önce sunucuda doğrulanır; tahmini aşan istek hiç başlatılmaz. Model listesi yapılandırılmış varsayılan ve `TEXT_MODEL_OPTIONS`/`VEO_MODEL_OPTIONS` ile sınırlıdır; fiyatı bilinmeyen modelde toplam tahmin üretilmez ve bütçe doğrulanamaz. Tahmin endpoint'i AI çağrısı yapmaz, iş oluşturmaz. Fiyatlar 22 Ekim 2026 liste fiyatı anlık görüntüsüdür; vergi/kur/bölge/çözünürlük ve başarısız istekler dahil değildir, kesin fatura değildir.
 - **Sıfır Maliyetli Mock Modu:** `GEMINI_API_KEY` girilmediğinde sistem otomatik olarak mock AI modunda çalışır ve ücret ödemeden tüm akışı test etmenizi sağlar.
+
+### Mod: gerçek API vs ücretsiz demo modu
+
+- **Gerçek mod (üretim):** `backend/.env` dosyasına `GEMINI_API_KEY=...` girildiğinde açık olur. Video üretimi, transkripsiyon ve çeviri ücretli sağlayıcı API'sini kullanır; ücretli her çağrı için arayüzde ayrı onay ister ve istek başına bütçe üst sınırı doğrulanır.
+- **Demo modu (otomatik):** Anahtar girilmediğinde sistem mock AI modunda çalışır; tüm akış (planlama, render, dışa aktarma) ücretsiz ve internet olmadan denenebilir. Mock çıktılar arayüzde açıkça "Demo" olarak etiketlenir — demo modu gizli bir sınırlama değil, belgelenmiş bir çalışma modudur.
 
 ### Kısa klip aralığını taşıma
 
@@ -106,9 +132,11 @@ Sonuçtaki **1 çıktı korundu · 1 kapak yenilendi · 2 çıktı yeniden hazı
 
 **Çalışma klasörlerini temizle** `work/` altındaki üretilmiş ara klasörleri kapsar: `work/<zaman-damgası>`, `work/<yayın-kimliği>` (iç içe klip klasörleri dahil), `work/previews/<kimlik>`, `work/clip_previews/<kimlik>` ve `work/waveforms` önbelleği. Yalnızca en az 1 saat önce oluşturulmuş, sembolik bağlantı/özel dosya içermeyen ve süren render, önizleme veya hazırlama işi bulunmayan klasörler çöpe taşınır. Dalga formu önbelleği silinirse bir sonraki açılışta yeniden üretilir. Geri alma özgün `work/...` yoluna yapılır; kaynak video, güncel render/önizlemeler ve proje verisi değişmez.
 
+**Eski önizlemeleri temizle** yalnızca `outputs/previews/<32-karakter kimlik>.mp4` ve `outputs/clip_previews/<32-karakter kimlik>.mp4` dosyalarını kapsar. Normal ve klip önizlemesi için **en güncel tamamlanmış önizleme sonucu** korunur; daha eski önizleme iş sonuçları yalnızca üretim kaydı sayılır ve tek başına koruma nedeni olmaz. En az 1 saat yaş, symlink/özel dosya denetimi ve süren önizleme işi kontrolü uygulanır. Geri alma özgün `outputs/previews` veya `outputs/clip_previews` yoluna yapılır.
+
 Temizlik hemen silmez: taşınan öğeler proje içindeki `.trash` klasöründe **7 gün** tutulur. Çöp kutusu öğeleri son temizlik gruplarına göre listeler; her grupta toplam boyut, her öğede kalan süre ve **Bu grubu geri al** düğmesi bulunur. Öğeler tek tek veya **Tümünü geri al** ile eski konumuna döndürülebilir; özgün yol doluysa üzerine yazılmaz. **Çöp kutusunu boşalt** kalıcı siler ve geri alınamaz. Süresi dolan öğeler sunucu açılışında ve bir sonraki depolama taramasında otomatik temizlenir; ayrı bir zamanlayıcı yoktur. `.trash` içeriği medya URL'siyle sunulmaz.
 
-Her temizlik onay ister ve yalnızca taramada gösterilen öğeleri taşır. Sunucu işlemden önce proje durumunu ve bütün iş sonuçlarını yeniden tarar; bu arada bir öğe korumaya alınmışsa taşınmaz. Süren bir render, önizleme veya hazırlama işi varsa ana render ve work/ temizliği yapılmaz. Kaynak video, seslendirme, proje kapağı, güncel ana render, `outputs/previews` ve `outputs/clip_previews` içeriği, proje planı ve düzenleme geçmişi değişmez. Önizleme MP4'leri yalnızca raporlanır, bu temizlikte çöpe taşınmaz. Tarama ve temizlik otomatik başlamaz, ücretli AI/TTS çağrısı yapmaz. Tarama `/jobs` listesinin son 20 kaydıyla sınırlı değildir; hazırlama klasörleri için veritabanındaki bütün iş sonuçları, ana render'lar için render işi dışındaki bütün proje ve iş sonuçları taranır.
+Her temizlik onay ister ve yalnızca taramada gösterilen öğeleri taşır. Sunucu işlemden önce proje durumunu ve bütün iş sonuçlarını yeniden tarar; bu arada bir öğe korumaya alınmışsa taşınmaz. Süren bir render, önizleme veya hazırlama işi varsa ana render, work/ ve önizleme temizliği yapılmaz. Kaynak video, seslendirme, proje kapağı, güncel ana render, güncel önizleme, proje planı ve düzenleme geçmişi değişmez. Tarama ve temizlik otomatik başlamaz, ücretli AI/TTS çağrısı yapmaz. Tarama `/jobs` listesinin son 20 kaydıyla sınırlı değildir; hazırlama klasörleri için veritabanındaki bütün iş sonuçları, ana render'lar için render işi dışındaki bütün proje ve iş sonuçları taranır.
 
 ## Senaryodan çok sahneli video
 
@@ -153,7 +181,7 @@ cd C:\Users\Okul\.gemini\antigravity-ide\scratch\clipcut\backend
 .\.venv\Scripts\Activate.ps1
 
 # (İsteğe bağlı) Gerçek Gemini & Veo için API anahtarı ayarlayın
-# .env dosyasında:
+# backend\.env dosyasında:
 # GEMINI_API_KEY=your_gemini_api_key
 
 # Sunucuyu başlatın
@@ -219,3 +247,25 @@ Editör içindeki prompt kutusuna Türkçe veya İngilizce serbestçe yazabilirs
 - *"1.25 kat hızlandır"*
 - *"İlk 3 saniyeyi kes"* veya *"5 ile 8. saniye arasını çıkar"*
 - *"Konuşma sesini normalize et"*
+
+---
+
+## 🧩 Teknoloji ve proje yapısı
+
+- **Backend:** FastAPI + Pydantic + SQLAlchemy (SQLite), yerel FFmpeg motoru (`imageio-ffmpeg` ile taşınabilir ikili), Google Gemini / Veo istemcileri, Edge TTS.
+- **Frontend:** Next.js (App Router) + TypeScript, CSS modülleri; görsel tasarım dokunmatik ve erişilebilirlik hedeflerine uygun (44px dokunmatik hedefler).
+- **Depolama:** Her proje kendi klasöründe izole; üretilen çıktılar kategorize edilir, 7 günlük çöp kutusu ile kontrollü temizlik yapılır.
+- **Testler:** backend `pytest` (244 test) ve frontend `npm test` (129 test); ücretli AI/TTS çağrısı yapmadan mock + gerçek FFmpeg ile doğrulanır.
+
+```
+clipcut/
+├── backend/        # FastAPI uygulaması, AI sağlayıcıları, FFmpeg motoru, testler
+├── frontend/       # Next.js arayüzü
+├── assets/         # Yazı tipleri, müzik/SFX/B-roll kütüphanesi, ekran görüntüleri
+├── storage/        # Çalışma verisi: projeler, çıktılar, SQLite db (git dışı)
+└── start-all.ps1   # Tek tıkla backend + frontend başlatıcı
+```
+
+## 📄 Lisans
+
+Kişisel/depolar içi kullanım içindir; kendi API anahtarınızın kullanım koşulları ve sağlayıcı fiyatlaması sizin sorumluluğunuzdadır.

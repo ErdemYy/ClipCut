@@ -1,4 +1,4 @@
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8008").replace(/\/$/, "");
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
 export type Word = { text: string; start: number; end: number };
 export type Segment = { id: number; start: number; end: number; text: string; words: Word[] };
@@ -138,8 +138,21 @@ export type OutputStorageWorkInventory = {
   eligible_bytes: number;
   protected_bytes: number;
 };
+export type PreviewKind = "preview" | "clip_preview";
+export type OutputStoragePreview = {
+  kind: PreviewKind; name: string; bytes: number; files: number; age_seconds: number;
+};
+export type OutputStorageProtectedPreview = OutputStoragePreview & {
+  reason: "referenced" | "recent" | "symlink" | "special" | "unreadable";
+};
+export type OutputStoragePreviews = {
+  eligible: OutputStoragePreview[];
+  protected: OutputStorageProtectedPreview[];
+  eligible_bytes: number;
+  protected_bytes: number;
+};
 export type OutputTrashEntry = {
-  id: string; kind: "staging" | "render" | WorkKind; name: string; bytes: number; files: number;
+  id: string; kind: "staging" | "render" | WorkKind | PreviewKind; name: string; bytes: number; files: number;
   deleted_at: string; batch_id: string | null; age_seconds: number; expires_in_seconds: number;
 };
 export type OutputStorageTrash = {
@@ -152,6 +165,7 @@ export type OutputStorageInfo = {
   protected_bytes: number;
   renders: OutputStorageRenders;
   work: OutputStorageWorkInventory;
+  previews: OutputStoragePreviews;
   categories: StorageCategory[];
   total_bytes: number;
   reclaimable_bytes: number;
@@ -160,6 +174,7 @@ export type OutputStorageInfo = {
   busy: boolean;
   render_busy: boolean;
   work_busy: boolean;
+  preview_busy: boolean;
 };
 export type OutputCleanupResult = {
   trashed: OutputTrashEntry[];
@@ -185,6 +200,15 @@ export type WorkCleanupResult = {
   skipped: string[];
   eligible: OutputStorageWork[];
   protected: OutputStorageProtectedWork[];
+};
+export type PreviewCleanupItem = { kind: PreviewKind; name: string };
+export type PreviewCleanupResult = {
+  trashed: OutputTrashEntry[];
+  moved_bytes: number;
+  failed: string[];
+  skipped: string[];
+  eligible: OutputStoragePreview[];
+  protected: OutputStorageProtectedPreview[];
 };
 export type TrashRestoreResult = {
   restored: OutputTrashEntry[];
@@ -379,6 +403,8 @@ export const api = {
     request<RenderCleanupResult>(`/api/projects/${id}/outputs/renders/cleanup`, json({ files })),
   cleanupWork: (id: string, items: WorkCleanupItem[]) =>
     request<WorkCleanupResult>(`/api/projects/${id}/outputs/work/cleanup`, json({ items })),
+  cleanupPreviews: (id: string, items: PreviewCleanupItem[]) =>
+    request<PreviewCleanupResult>(`/api/projects/${id}/outputs/previews/cleanup`, json({ items })),
   restoreTrash: (id: string, ids: string[]) =>
     request<TrashRestoreResult>(`/api/projects/${id}/outputs/trash/restore`, json({ ids })),
   emptyTrash: (id: string, ids: string[] = []) =>
