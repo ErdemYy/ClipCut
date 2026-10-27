@@ -17,6 +17,21 @@
 .results { display: grid; gap: 14px; border-top: 1px solid var(--border); padding-top: 16px; }
 .storage { display: grid; gap: 10px; border-top: 1px solid var(--border); padding-top: 16px; }
 .storage h4 { font-size: 1rem; }
+.storageCategories { display: grid; gap: 4px; list-style: none; margin: 0; padding: 0; max-width: 100%; }
+.storageCategory { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0;
+  border-bottom: 1px dashed var(--border); padding: 4px 0; color: var(--text-dim); font-size: 0.82rem; }
+.storageCategory > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.storageAmount { flex-shrink: 0; color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+.trash { display: grid; gap: 8px; min-width: 0; border-top: 1px dashed var(--border); padding-top: 10px; }
+.trashHeading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.trashHeading h5 { font-size: 0.92rem; }
+.trashHeading span { color: var(--text-dim); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.trashEntries { display: grid; gap: 4px; list-style: none; margin: 0; padding: 0; min-width: 0; }
+.trashEntry { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center;
+  min-width: 0; border-bottom: 1px solid var(--border); padding: 2px 0; }
+.trashName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-dim); font-size: 0.8rem; }
+.trashMeta { flex-shrink: 0; color: var(--text-dim); font-size: 0.78rem; font-variant-numeric: tabular-nums; }
 .output { display: grid; gap: 8px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
 .clipGroup { display: grid; gap: 12px; min-width: 0; border-top: 1px solid var(--border); padding-top: 16px; }
 .clipGroup h5 { font-size: 1rem; }

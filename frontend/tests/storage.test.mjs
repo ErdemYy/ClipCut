@@ -13,7 +13,10 @@ function load(file) {
   vm.runInNewContext(js, { exports: exported, require(name) { throw new Error(`Unexpected import ${name}`); } });
   return exported;
 }
-const { formatBytes, formatMinAge, storageProtectionSummary } = load("../lib/storage.ts");
+const {
+  formatBytes, formatMinAge, renderProtectionSummary, storageCategoryLabel,
+  storageProtectionSummary, storageTrashLabel, storageUsageSummary,
+} = load("../lib/storage.ts");
 
 test("formatBytes uses readable binary units without hiding small files", () => {
   assert.equal(formatBytes(0), "0 B");
@@ -43,4 +46,38 @@ test("storageProtectionSummary groups reasons and labels unknown ones", () => {
   assert.equal(storageProtectionSummary([dir("referenced"), dir("referenced"), dir("recent")]),
     "2 iş sonuçlarında kullanılıyor · 1 yeni oluşturuldu");
   assert.equal(storageProtectionSummary([dir("mystery")]), "1 mystery");
+});
+
+test("storageCategoryLabel covers the server categories and leaves unknowns visible", () => {
+  assert.equal(storageCategoryLabel("source"), "Kaynak medya");
+  assert.equal(storageCategoryLabel("renders"), "Ana render MP4'leri");
+  assert.equal(storageCategoryLabel("staging"), "Hazırlama çıktıları");
+  assert.equal(storageCategoryLabel("previews"), "Önizlemeler");
+  assert.equal(storageCategoryLabel("work"), "work/ ara dosyaları");
+  assert.equal(storageCategoryLabel("trash"), "Çöp kutusu");
+  assert.equal(storageCategoryLabel("other"), "Diğer proje dosyaları");
+  assert.equal(storageCategoryLabel("mystery"), "mystery");
+});
+
+test("renderProtectionSummary explains why old main renders stay", () => {
+  const render = (reason) => ({ file: "clipcut_20260101_120000_aaaaaaaa.mp4", bytes: 1, age_seconds: 7200, reason });
+  assert.equal(renderProtectionSummary([]), "");
+  assert.equal(renderProtectionSummary([render("referenced"), render("recent"), render("recent")]),
+    "1 proje veya iş sonucunda kullanılıyor · 2 yeni oluşturuldu");
+  assert.equal(renderProtectionSummary([render("mystery")]), "1 mystery");
+});
+
+test("storageUsageSummary separates moveable and already-trashed bytes", () => {
+  assert.equal(storageUsageSummary(0, 0, 0), "Toplam 0 B · 0 B çöpe taşınabilir · 0 B çöpte.");
+  assert.equal(storageUsageSummary(1536, 1024, 512),
+    "Toplam 1.5 KB · 1 KB çöpe taşınabilir · 512 B çöpte.");
+  assert.equal(storageUsageSummary(Number.NaN, -5, Number.NaN),
+    "Toplam 0 B · 0 B çöpe taşınabilir · 0 B çöpte.");
+});
+
+test("storageTrashLabel keeps render names and abbreviates staging tokens", () => {
+  assert.equal(storageTrashLabel({ kind: "render", name: "clipcut_20260101_120000_aaaaaaaa.mp4" }),
+    "clipcut_20260101_120000_aaaaaaaa.mp4");
+  assert.equal(storageTrashLabel({ kind: "staging", name: "a".repeat(32) }),
+    "Hazırlama · aaaaaaaa…");
 });

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -49,10 +49,22 @@ _layer_edit_lock = threading.Lock()
 async def lifespan(_: FastAPI):
     init_db()
     threading.Thread(target=assets.ensure_assets, daemon=True).start()
+    threading.Thread(target=output_cleanup.purge_all_expired_trash,
+                     args=(settings.storage_dir / "projects",), daemon=True).start()
     yield
 
 
 app = FastAPI(title="ClipCut API", version="0.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def hide_trash_from_media(request: Request, call_next):
+    """The recycle bin lives under a project but must never be a media URL."""
+    if any(part.lower() == output_cleanup.TRASH_DIR for part in request.url.path.split("/")):
+        return PlainTextResponse("Bulunamadı", status_code=404)
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware, allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
@@ -127,6 +139,28 @@ def output_token_references(p: Project, session: Session) -> set[str]:
     """Every output token referenced by stored jobs or project paths, not just recent ones."""
     results = session.exec(select(Job.result).where(Job.project_id == p.id)).all()
     return output_cleanup.referenced_tokens(p.id, [p.output_file, p.thumbnail_file, *results])
+
+
+def render_cleanup_busy(project_id: str, session: Session) -> bool:
+    """Whether any job could still be writing a main render or a publish folder."""
+    row = session.exec(
+        select(Job.id).where(Job.project_id == project_id, Job.status.in_(("queued", "running")),
+                             Job.kind.in_((*PUBLISH_JOB_KINDS, "render"))).limit(1)
+    ).first()
+    return row is not None
+
+
+def output_render_references(p: Project, session: Session) -> set[str]:
+    """Main renders referenced by project state or a consumer job result.
+
+    A render job's result is provenance for the file it created, not a consumer
+    reference, so render results are excluded. The current ``output_file`` and
+    storyboard version snapshots still protect their files through project state.
+    """
+    jobs_rows = session.exec(select(Job).where(Job.project_id == p.id)).all()
+    values: list[Any] = [p.model_dump(mode="json")]
+    values.extend(job.result for job in jobs_rows if job.kind != "render" and job.result)
+    return output_cleanup.render_references(p.id, values)
 
 
 # ------------------------------------------------------------------ genel ----
@@ -546,30 +580,86 @@ def project_jobs(project_id: str, session: Session = Depends(get_session)) -> li
 
 @app.get("/api/projects/{project_id}/outputs")
 def output_storage(project_id: str, session: Session = Depends(get_session)) -> dict:
-    """Read-only inventory of publish output folders that can safely be removed."""
+    """Return storage summary/inventories and opportunistically purge expired trash."""
     p = get_project(project_id, session)
+    root = jobs.project_dir(p.id)
+    output_cleanup.purge_expired_trash(root)
     referenced = output_token_references(p, session)
-    eligible, protected = output_cleanup.scan_outputs(jobs.project_dir(p.id), referenced)
+    eligible, protected = output_cleanup.scan_outputs(root, referenced)
+    render_eligible, render_protected = output_cleanup.scan_renders(
+        root, output_render_references(p, session))
+    categories, total_bytes = output_cleanup.scan_storage(
+        root, (p.source_file, p.thumbnail_file, p.voiceover_file))
+    trash = output_cleanup.scan_trash(root)
+    eligible_bytes = sum(item["bytes"] for item in eligible)
+    render_eligible_bytes = sum(item["bytes"] for item in render_eligible)
     return {
         "eligible": eligible, "protected": protected,
-        "eligible_bytes": sum(item["bytes"] for item in eligible),
+        "eligible_bytes": eligible_bytes,
         "protected_bytes": sum(item["bytes"] for item in protected),
+        "renders": {
+            "eligible": render_eligible,
+            "protected": render_protected,
+            "eligible_bytes": render_eligible_bytes,
+            "protected_bytes": sum(item["bytes"] for item in render_protected),
+        },
+        "categories": categories,
+        "total_bytes": total_bytes,
+        "reclaimable_bytes": eligible_bytes + render_eligible_bytes,
+        "trash": trash,
         "min_age_seconds": output_cleanup.MIN_AGE_SECONDS,
         "busy": publishing_busy(p.id, session),
+        "render_busy": render_cleanup_busy(p.id, session),
     }
 
 
 @app.post("/api/projects/{project_id}/outputs/cleanup")
 def cleanup_output_storage(project_id: str, body: output_cleanup.OutputCleanupBody,
                            session: Session = Depends(get_session)) -> dict:
-    """Delete only the folders the client just saw and that remain unprotected."""
+    """Move only the folders the client just saw and that remain unprotected to trash."""
     p = get_project(project_id, session)
     if publishing_busy(p.id, session):
         raise HTTPException(409, "Süren bir hazırlama işi var; bitince yeniden deneyin.")
     referenced = output_token_references(p, session)
-    result = output_cleanup.cleanup_outputs(jobs.project_dir(p.id), referenced, body.tokens)
-    if not result["deleted"]:
+    result = output_cleanup.trash_outputs(jobs.project_dir(p.id), referenced, body.tokens)
+    if not result["trashed"]:
         raise HTTPException(409, "İstenen çıktılar artık temizlenebilir değil; listeyi yenileyin.")
+    return result
+
+
+@app.post("/api/projects/{project_id}/outputs/renders/cleanup")
+def cleanup_output_renders(project_id: str, body: output_cleanup.RenderCleanupBody,
+                           session: Session = Depends(get_session)) -> dict:
+    """Move only old main renders that are still unreferenced at request time to trash."""
+    p = get_project(project_id, session)
+    if render_cleanup_busy(p.id, session):
+        raise HTTPException(409, "Süren bir render veya hazırlama işi var; bitince yeniden deneyin.")
+    referenced = output_render_references(p, session)
+    result = output_cleanup.trash_renders(jobs.project_dir(p.id), referenced, body.files)
+    if not result["trashed"]:
+        raise HTTPException(409, "İstenen ana render'lar artık temizlenebilir değil; listeyi yenileyin.")
+    return result
+
+
+@app.post("/api/projects/{project_id}/outputs/trash/restore")
+def restore_output_trash(project_id: str, body: output_cleanup.TrashRestoreBody,
+                         session: Session = Depends(get_session)) -> dict:
+    """Restore trashed items whose original paths are still free."""
+    p = get_project(project_id, session)
+    result = output_cleanup.restore_trash(jobs.project_dir(p.id), body.ids)
+    if not result["restored"]:
+        raise HTTPException(409, "İstenen öğeler geri alınamadı; çöp kutusunu yenileyin.")
+    return result
+
+
+@app.post("/api/projects/{project_id}/outputs/trash/empty")
+def empty_output_trash(project_id: str, body: output_cleanup.TrashEmptyBody,
+                       session: Session = Depends(get_session)) -> dict:
+    """Permanently delete selected trash entries, or every entry when ids is empty."""
+    p = get_project(project_id, session)
+    result = output_cleanup.empty_trash(jobs.project_dir(p.id), body.ids)
+    if not result["purged"]:
+        raise HTTPException(409, "Çöp kutusunda silinecek öğe kalmadı; yeniden tarayın.")
     return result
 
 

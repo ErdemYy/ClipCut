@@ -1,4 +1,6 @@
-import type { OutputStorageProtectedDir } from "./api";
+import type {
+  OutputStorageProtectedDir, OutputStorageProtectedRender, StorageCategoryId,
+} from "./api";
 
 export const STORAGE_PROTECTED_LABELS: Record<OutputStorageProtectedDir["reason"], string> = {
   referenced: "iş sonuçlarında kullanılıyor",
@@ -8,6 +10,28 @@ export const STORAGE_PROTECTED_LABELS: Record<OutputStorageProtectedDir["reason"
   special: "özel dosya içeriyor",
   unreadable: "okunamıyor",
 };
+
+export const STORAGE_RENDER_PROTECTED_LABELS: Record<OutputStorageProtectedRender["reason"], string> = {
+  referenced: "proje veya iş sonucunda kullanılıyor",
+  recent: "yeni oluşturuldu",
+  symlink: "bağlantı içeriyor",
+  special: "özel dosya içeriyor",
+  unreadable: "okunamıyor",
+};
+
+export const STORAGE_CATEGORY_LABELS: Record<StorageCategoryId, string> = {
+  source: "Kaynak medya",
+  renders: "Ana render MP4'leri",
+  staging: "Hazırlama çıktıları",
+  previews: "Önizlemeler",
+  work: "work/ ara dosyaları",
+  trash: "Çöp kutusu",
+  other: "Diğer proje dosyaları",
+};
+
+export function storageCategoryLabel(id: string): string {
+  return STORAGE_CATEGORY_LABELS[id as StorageCategoryId] ?? id;
+}
 
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -34,4 +58,20 @@ export function storageProtectionSummary(protectedDirs: OutputStorageProtectedDi
   for (const item of protectedDirs) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
   return [...counts].map(([reason, count]) =>
     `${count} ${STORAGE_PROTECTED_LABELS[reason as OutputStorageProtectedDir["reason"]] ?? reason}`).join(" · ");
+}
+
+export function renderProtectionSummary(protectedRenders: OutputStorageProtectedRender[]): string {
+  const counts = new Map<string, number>();
+  for (const item of protectedRenders) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+  return [...counts].map(([reason, count]) =>
+    `${count} ${STORAGE_RENDER_PROTECTED_LABELS[reason as OutputStorageProtectedRender["reason"]] ?? reason}`).join(" · ");
+}
+
+export function storageUsageSummary(totalBytes: number, moveableBytes: number, trashBytes: number): string {
+  return `Toplam ${formatBytes(totalBytes)} · ${formatBytes(moveableBytes)} çöpe taşınabilir · ` +
+    `${formatBytes(trashBytes)} çöpte.`;
+}
+
+export function storageTrashLabel(entry: { kind: "staging" | "render"; name: string }): string {
+  return entry.kind === "render" ? entry.name : `Hazırlama · ${entry.name.slice(0, 8)}…`;
 }

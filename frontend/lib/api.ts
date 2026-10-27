@@ -113,21 +113,65 @@ export type OutputStorageDir = { token: string; bytes: number; files: number; ag
 export type OutputStorageProtectedDir = OutputStorageDir & {
   reason: "referenced" | "recent" | "symlink" | "nested" | "special" | "unreadable";
 };
+export type StorageCategoryId = "source" | "renders" | "staging" | "previews" | "work" | "trash" | "other";
+export type StorageCategory = { id: StorageCategoryId; bytes: number; files: number };
+export type OutputStorageRender = { file: string; bytes: number; age_seconds: number };
+export type OutputStorageProtectedRender = OutputStorageRender & {
+  reason: "referenced" | "recent" | "symlink" | "special" | "unreadable";
+};
+export type OutputStorageRenders = {
+  eligible: OutputStorageRender[];
+  protected: OutputStorageProtectedRender[];
+  eligible_bytes: number;
+  protected_bytes: number;
+};
+export type OutputTrashEntry = {
+  id: string; kind: "staging" | "render"; name: string; bytes: number; files: number;
+  deleted_at: string; age_seconds: number; expires_in_seconds: number;
+};
+export type OutputStorageTrash = {
+  entries: OutputTrashEntry[]; bytes: number; files: number; retention_seconds: number;
+};
 export type OutputStorageInfo = {
   eligible: OutputStorageDir[];
   protected: OutputStorageProtectedDir[];
   eligible_bytes: number;
   protected_bytes: number;
+  renders: OutputStorageRenders;
+  categories: StorageCategory[];
+  total_bytes: number;
+  reclaimable_bytes: number;
+  trash: OutputStorageTrash;
   min_age_seconds: number;
   busy: boolean;
+  render_busy: boolean;
 };
 export type OutputCleanupResult = {
-  deleted: OutputStorageDir[];
-  freed_bytes: number;
+  trashed: OutputTrashEntry[];
+  moved_bytes: number;
   failed: string[];
   skipped: string[];
   eligible: OutputStorageDir[];
   protected: OutputStorageProtectedDir[];
+};
+export type RenderCleanupResult = {
+  trashed: OutputTrashEntry[];
+  moved_bytes: number;
+  failed: string[];
+  skipped: string[];
+  eligible: OutputStorageRender[];
+  protected: OutputStorageProtectedRender[];
+};
+export type TrashRestoreResult = {
+  restored: OutputTrashEntry[];
+  skipped: string[];
+  failed: string[];
+};
+export type TrashEmptyResult = {
+  purged: OutputTrashEntry[];
+  freed_bytes: number;
+  failed: string[];
+  skipped: string[];
 };
 export type ClipCandidate = {
   id: number; start: number; end: number; duration: number; score: number;
@@ -307,6 +351,12 @@ export const api = {
   outputStorage: (id: string) => request<OutputStorageInfo>(`/api/projects/${id}/outputs`),
   cleanupOutputs: (id: string, tokens: string[]) =>
     request<OutputCleanupResult>(`/api/projects/${id}/outputs/cleanup`, json({ tokens })),
+  cleanupRenders: (id: string, files: string[]) =>
+    request<RenderCleanupResult>(`/api/projects/${id}/outputs/renders/cleanup`, json({ files })),
+  restoreTrash: (id: string, ids: string[]) =>
+    request<TrashRestoreResult>(`/api/projects/${id}/outputs/trash/restore`, json({ ids })),
+  emptyTrash: (id: string, ids: string[] = []) =>
+    request<TrashEmptyResult>(`/api/projects/${id}/outputs/trash/empty`, json({ ids })),
   transcribe: (id: string, target_language?: string) => request<Job>(`/api/projects/${id}/transcribe`, json({ target_language })),
   translate: (id: string, target_language: string) => request<Job>(`/api/projects/${id}/translate`, json({ target_language })),
   saveSubtitles: (id: string, segments: SubtitleEditSegment[], revision?: string) =>
