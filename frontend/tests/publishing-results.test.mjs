@@ -7,10 +7,24 @@ import ts from "typescript";
 const code = ts.transpileModule(fs.readFileSync(new URL("../components/editor/PublishingControls.tsx", import.meta.url), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2017, jsx: ts.JsxEmit.ReactJSX },
 }).outputText;
+const trim = {};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL("../lib/clip-trim.ts", import.meta.url), "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2017 },
+}).outputText, { exports: trim });
+const history = {};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL("../lib/clip-range-history.ts", import.meta.url), "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2017 },
+}).outputText, { exports: history, require(name) {
+  if (name === "./clip-trim") return trim;
+  throw new Error(`Unexpected import ${name}`);
+} });
 const grouping = {};
 vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL("../lib/publishing-results.ts", import.meta.url), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2017 },
-}).outputText, { exports: grouping });
+}).outputText, { exports: grouping, require(name) {
+  if (name === "./clip-trim") return trim;
+  throw new Error(`Unexpected import ${name}`);
+} });
 
 function groupedJob() {
   const clips = [1, 2].map((clip_index) => ({ clip_index, start: clip_index * 30,
@@ -52,14 +66,16 @@ function harness() {
   let job = { id: "job-a", status: "done", result: { archive: "all.zip", outputs: [output("square"), output("portrait")] } };
   let freshness;
   let clipEditors;
+  let clipRangeRestorers;
   const nodes = (n) => !n || typeof n !== "object" ? []
     : [n, ...[n.props?.children].flat(Infinity).flatMap(nodes)];
-  const render = () => { cursor = 0; return nodes(exports.PublishingResults({ job, freshness, clipEditors })); };
+  const render = () => { cursor = 0; return nodes(exports.PublishingResults({ job, freshness, clipEditors, clipRangeRestorers })); };
   const buttons = () => render().filter(n => n.type === "button" && typeof n.props["aria-expanded"] === "boolean");
   return { render, buttons, videos: () => render().filter(n => n.type === "video"),
     filter: () => render().find(n => n.type === "select"),
     formats: () => render().filter(n => n.type === "button" && typeof n.props["aria-pressed"] === "boolean"),
     setClipEditors: (value) => { clipEditors = value; },
+    setClipRangeRestorers: (value) => { clipRangeRestorers = value; },
     setJob: (next) => { job = next; }, get job() { return job; }, setFreshness: (value) => { freshness = value; } };
 }
 
@@ -343,7 +359,7 @@ test("legacy or incomplete clip metadata keeps flat downloads and freshness warn
 
 function editableResult() {
   const result = groupedJob().result;
-  result.clip_request = { analysis_id: "current-analysis", clips: [
+  result.clip_request = { analysis_id: "current-analysis", render_revision: "revision-a", clips: [
     { id: 22, start: 30, end: 60, cover_at: 0 }, { id: 0, start: 60, end: 90, cover_at: 0 },
   ] };
   return result;
@@ -408,4 +424,113 @@ test("edit controls appear only when an explicit clip editor is available", () =
   assert.equal(edits()[0].props["aria-label"], "Klip 2 düzenleme alanına git");
   h.setClipEditors({});
   assert.equal(edits().length, 0);
+});
+
+const restoreCandidates = () => [{ id: 22, start: 29, end: 60 }, { id: 0, start: 60, end: 90 }];
+const restores = (result = editableResult(), candidates = restoreCandidates(), duration = 90,
+  revision = "revision-a", analysis = "current-analysis") =>
+  grouping.publishedClipRangeRestores(result, analysis, candidates, duration, revision);
+
+test("rendered timing restore targets contain only changed clips and do not mutate inputs", () => {
+  const result = editableResult(); const candidates = restoreCandidates();
+  const before = JSON.stringify({ result, candidates });
+  const targets = restores(result, candidates);
+  assert.deepEqual(Object.keys(targets), ["1"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(targets[1])), {
+    id: 22, current: { start: 29, end: 60 }, rendered: { start: 30, end: 60 },
+  });
+  assert.equal(JSON.stringify({ result, candidates }), before);
+});
+
+test("restore requires the same analysis and a known matching project revision", () => {
+  for (const revision of [undefined, "", "revision-b"]) {
+    assert.deepEqual(Object.keys(grouping.publishedClipRangeRestores(editableResult(), "current-analysis", restoreCandidates(), 90, revision)), []);
+  }
+  assert.deepEqual(Object.keys(restores(editableResult(), restoreCandidates(), 90, "revision-a", "other-analysis")), []);
+  const result = editableResult(); delete result.clip_request.render_revision;
+  assert.deepEqual(Object.keys(restores(result)), []);
+});
+
+test("out-of-source and non-30-to-60-second rendered timing cannot be restored", () => {
+  for (const range of [{ start: 10, end: 20 }, { start: -1, end: 30 }, { start: 0, end: 70 }, { start: 80, end: 110 }]) {
+    const result = editableResult();
+    Object.assign(result.clip_archives[0], range);
+    Object.assign(result.clip_request.clips[0], range);
+    assert.deepEqual(Object.keys(restores(result)), []);
+  }
+  assert.deepEqual(Object.keys(restores(editableResult(), restoreCandidates(), 89)), []);
+});
+
+test("an unfinished target can be repaired but another invalid range must not be overwritten", () => {
+  const candidates = restoreCandidates(); candidates[0].start = NaN;
+  assert.equal(restores(editableResult(), candidates)[1].rendered.start, 30);
+  const changed = restoreCandidates(); changed[1].end = 50;
+  const targets = restores(editableResult(), changed);
+  assert.equal(targets[1], undefined);
+  assert.equal(targets[2].id, 0);
+  const unchanged = [{ id: 22, start: 30, end: 60 }, { id: 0, start: 60, end: 90 }];
+  assert.deepEqual(Object.keys(restores(editableResult(), unchanged)), []);
+});
+
+test("applying restored timing is one undoable range step and leaves other settings alone", () => {
+  const target = restores()[1];
+  const draft = { selected: [0, 22], covers: { 22: 30.5, 0: 0 }, options: { quality: "fast" } };
+  const settings = JSON.stringify(draft);
+  let state = history.clipRangeHistoryReducer(history.emptyClipRangeHistory, {
+    type: "reset", context: "current", ranges: { 22: { start: 29, end: 60 }, 0: { start: 60, end: 90 } },
+  });
+  state = history.clipRangeHistoryReducer(state, { type: "commit", context: "current", duration: 90, ranges: current => current });
+  state = history.clipRangeHistoryReducer(state, { type: "commit", context: "current", duration: 90,
+    ranges: current => ({ ...current, [target.id]: { ...target.rendered } }) });
+  assert.equal(state.past.length, 1);
+  assert.equal(state.present[22].start, 30);
+  assert.equal(state.present[0].start, 60);
+  assert.equal(JSON.stringify(draft), settings);
+  state = history.clipRangeHistoryReducer(state, { type: "undo", context: "current" });
+  assert.equal(state.present[22].start, 29);
+  assert.equal(state.future.length, 1);
+});
+
+test("valid pending edits are committed before restoration so undo can recover them", () => {
+  const target = restores()[1];
+  let state = history.clipRangeHistoryReducer(history.emptyClipRangeHistory, {
+    type: "reset", context: "current", ranges: { 22: { start: 30, end: 60 }, 0: { start: 60, end: 90 } },
+  });
+  state = history.clipRangeHistoryReducer(state, { type: "preview", context: "current", duration: 90,
+    ranges: current => ({ ...current, 22: { start: 29, end: 60 } }) });
+  state = history.clipRangeHistoryReducer(state, { type: "commit", context: "current", duration: 90, ranges: current => current });
+  state = history.clipRangeHistoryReducer(state, { type: "commit", context: "current", duration: 90,
+    ranges: current => ({ ...current, [target.id]: { ...target.rendered } }) });
+  assert.equal(state.past.length, 2);
+  assert.equal(state.present[22].start, 30);
+  state = history.clipRangeHistoryReducer(state, { type: "undo", context: "current" });
+  assert.equal(state.present[22].start, 29);
+  state = history.clipRangeHistoryReducer(state, { type: "redo", context: "current" });
+  assert.equal(state.present[22].start, 30);
+});
+
+test("restoration explains exact timing, closes playback and invokes only its callback", () => {
+  const h = harness(); h.setJob(groupedJob());
+  const before = JSON.stringify(h.job); let calls = 0;
+  h.setClipRangeRestorers({ 1: { current: { start: 29, end: 60 }, restore: () => { calls++; } } });
+  h.buttons()[0].props.onClick();
+  const text = h.render().filter(n => n.type === "p").map(n => [n.props.children].flat(Infinity).join("")).join(" ");
+  assert.match(text, /Son render aralığı: 30\.000 – 60\.000 sn/);
+  assert.match(text, /Taslak aralığı: 29\.000 – 60\.000 sn/);
+  const actions = h.render().filter(n => n.type === "button" && n.props.children === "Son render aralığına dön");
+  assert.equal(actions.length, 1);
+  actions[0].props.onClick();
+  assert.equal(calls, 1);
+  assert.equal(h.videos().length, 0);
+  assert.equal(JSON.stringify(h.job), before);
+  h.setClipRangeRestorers({});
+  assert.equal(h.render().filter(n => n.type === "button" && n.props.children === "Son render aralığına dön").length, 0);
+});
+
+test("unfinished input is described without showing NaN timing", () => {
+  const h = harness(); h.setJob(groupedJob());
+  h.setClipRangeRestorers({ 1: { current: { start: NaN, end: 60 }, restore: () => {} } });
+  const text = h.render().filter(n => n.type === "p").map(n => [n.props.children].flat(Infinity).join("")).join(" ");
+  assert.match(text, /geçersiz veya tamamlanmamış giriş/);
+  assert.equal(text.includes("NaN"), false);
 });

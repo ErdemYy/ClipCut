@@ -1,4 +1,5 @@
 import type { ClipCandidate, PublishResult } from "./api";
+import { clipRangeError, type ClipRange } from "./clip-trim";
 
 export type ClipOutputGroup = NonNullable<PublishResult["clip_archives"]>[number] & {
   outputs: PublishResult["outputs"];
@@ -41,4 +42,26 @@ export function editablePublishedClipIds(result: PublishResult, analysisId: stri
     targets[group.clip_index] = rendered.id;
   }
   return targets;
+}
+
+export type PublishedClipRangeRestore = { id: number; current: ClipRange; rendered: ClipRange };
+
+/** Restore timing only when the analysis, revision and source bounds still match. */
+export function publishedClipRangeRestores(result: PublishResult, analysisId: string | undefined,
+  candidates: readonly (Pick<ClipCandidate, "id"> & ClipRange)[], duration: number,
+  revision: string | undefined): Record<number, PublishedClipRangeRestore> {
+  if (!revision || result.clip_request?.render_revision !== revision) return {};
+  const ids = editablePublishedClipIds(result, analysisId, candidates);
+  const restores: Record<number, PublishedClipRangeRestore> = {};
+  for (const [index, id] of Object.entries(ids)) {
+    const clip = result.clip_request.clips[Number(index) - 1];
+    const candidate = candidates.find((item) => item.id === id);
+    if (!candidate) continue;
+    const rendered = { start: clip.start, end: clip.end };
+    if (clipRangeError(rendered, duration)
+      || (candidate.start === rendered.start && candidate.end === rendered.end)
+      || candidates.some((other) => other.id !== id && clipRangeError(other, duration))) continue;
+    restores[Number(index)] = { id, rendered, current: { start: candidate.start, end: candidate.end } };
+  }
+  return restores;
 }

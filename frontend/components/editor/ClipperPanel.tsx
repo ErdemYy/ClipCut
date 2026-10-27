@@ -5,7 +5,7 @@ import { api, downloadUrl, formatTime, mediaUrl, type ClipAnalysis, type ClipCan
 import { clampClipRange, clipRangeError, snapClipEdge, type ClipRangeAction, type ClipRange } from "@/lib/clip-trim";
 import { CLIP_FORMATS, clipDraftContext, clipDraftStorageKey, clipPreviewFormat, defaultClipDraft, readClipDraft, serializeClipDraft, toggleClipFormat } from "@/lib/clip-draft";
 import { clipExportFreshness } from "@/lib/clip-export";
-import { editablePublishedClipIds } from "@/lib/publishing-results";
+import { editablePublishedClipIds, publishedClipRangeRestores } from "@/lib/publishing-results";
 import { canRedoClipRanges, canUndoClipRanges, clipRangeHistoryReducer, emptyClipRangeHistory, type ClipRanges } from "@/lib/clip-range-history";
 import { clipPreviewIsStale, clipPreviewSelection, clipPreviewWindow, type ClipPreviewSelection } from "@/lib/clip-preview";
 import { clipCoverError, clipCoverMax } from "@/lib/clip-cover";
@@ -131,6 +131,21 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     if (!field || field.disabled) return;
     field.focus();
     notify(`Klip ${index} düzenleme alanı açıldı; mevcut aralık korunuyor.`);
+  }]));
+  const renderedRangeRestores = clipRenderResult && result && !disabled && !rangeDragging
+    ? publishedClipRangeRestores(clipRenderResult, analysis?.id,
+      result.clips.map((clip) => ({ id: clip.id, ...rangeFor(clip) })), project.duration, project.render_revision) : {};
+  const clipRangeRestorers = Object.fromEntries(Object.entries(renderedRangeRestores).map(([index, value]) => [index, {
+    current: value.current,
+    restore: () => {
+      // Complete a valid pending numeric edit before replacing its timing.
+      // Already committed/no-op or invalid inputs add no history entry.
+      commitRanges((current) => current);
+      commitRanges((current) => ({ ...current, [value.id]: { ...value.rendered } }));
+      setPreview(null);
+      clipStartFields.current[value.id]?.focus();
+      notify(`Klip ${index} son render aralığına döndü. Geçerli zaman değişiklikleri Aralık geri al ile korunur; kapak seçimi değişmedi.`);
+    },
   }]));
 
   // These effects synchronize React drafts with synchronous browser storage.
@@ -524,6 +539,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     </section>}
     <PublishingResults job={clipRenderJob}
       clipEditors={clipEditors}
+      clipRangeRestorers={clipRangeRestorers}
       freshness={clipRenderFreshness === "stale" || clipRenderFreshness === "unknown" ? clipRenderFreshness : undefined} />
   </div>;
 }

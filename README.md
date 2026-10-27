@@ -80,6 +80,10 @@ Eski sonuçlarda açık klip metadata'sı yoksa dosya adından tahmin yapılmaz;
 
 Analizle üretilmiş bir klip grubu hâlâ mevcut analizin adayına güvenle eşleşiyorsa **Klibi düzenle** düğmesi görünür. Düğme açık sonuç oynatıcısını kapatır ve ilgili adayın başlangıç zamanı alanına götürür. Eşleştirme son render'ın klip kimliklerini kullanır; sonradan seçim sırasını değiştirmeniz yanlış klibe gitmesine neden olmaz. Mevcut zaman değişiklikleri korunur, render sırasında kullanılan eski aralık geri yüklenmez ve yeni iş başlatılmaz. Analiz değişmişse, aday artık yoksa veya eşleştirme metadata'sı eksikse düğme sunulmaz. Transkript klibi ve toplu dışa aktarma sonuçlarına bu kısa-klip düzenleme bağlantısı eklenmez.
 
+Taslak zamanları son çıktıdan farklıysa, güvenle eşleşen grupta **Son render aralığına dön** işlemi son render ve mevcut taslak zamanlarını karşılaştırır. Yalnızca aynı analiz ve proje render revizyonunda, kaynak sınırlarına uyan 30–60 saniyelik eski aralık geri getirilebilir. İşlem sadece o klibin başlangıç/bitişini değiştirir, oynatıcıyı kapatır ve zaman alanına odaklanır. Seçimler, kapaklar, formatlar, dolgu ve kalite değişmez; yeni render başlamaz. **Aralık geri al / ileri al** ile zamanlar tekrar değiştirilebilir. Geçerli bekleyen sayı girişi önce tamamlanır; geri yükleme ayrı bir aralık adımıdır. Geçersiz girişler geçmişe yazılmaz. Başka bir klibin aralığı geçersizse önce o girişi düzeltin.
+
+Geri getirilen aralık kapak zamanını dışarıda bırakırsa kapak otomatik taşınmaz: hata gösterilir ve render engellenir. Kapak düzeltilene veya aralık geri alınana kadar mevcut taslak doğrulama kuralları son geçerli kayıtlı taslağı korur. Eski/eşleşmeyen analiz veya proje revizyonunda otomatik aralık tahmini yapılmaz; elle düzenleme ve indirme bağlantıları kullanılabilir.
+
 ## Senaryodan çok sahneli video
 
 1. **Yeni Video → Senaryodan Üret** bölümüne konuyu veya hazır senaryoyu yazın; dil, format, ortak stil, 2–12 sahne ve sahne süresini seçin.

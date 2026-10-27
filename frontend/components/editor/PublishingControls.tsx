@@ -27,9 +27,10 @@ export function RenderSettings({ value, onChange, fill, onFill, disabled }: {
   </fieldset>;
 }
 
-export function PublishingResults({ job, freshness, clipEditors }: {
+export function PublishingResults({ job, freshness, clipEditors, clipRangeRestorers }: {
   job?: Job; freshness?: "stale" | "unknown";
   clipEditors?: Record<number, () => void>;
+  clipRangeRestorers?: Record<number, { current: { start: number; end: number }; restore: () => void }>;
 }) {
   const previewId = useId();
   const previewAttempt = useRef(0);
@@ -124,6 +125,7 @@ export function PublishingResults({ job, freshness, clipEditors }: {
       const active = group.outputs.find((out) => out.aspect_ratio === preferred) ?? group.outputs[0];
       const groupId = `${previewId}-clip-${group.clip_index}`;
       const editClip = clipEditors?.[group.clip_index];
+      const rangeRestore = clipRangeRestorers?.[group.clip_index];
       return <section key={group.clip_index} className={styles.clipGroup} aria-labelledby={`${groupId}-title`}>
         <h5 id={`${groupId}-title`}>Klip {group.clip_index}</h5>
         <p className={styles.note}>Kaynakta {formatTime(group.start)} – {formatTime(group.end)}. Klip ZIP dosyası, görünüm filtresinden bağımsız olarak bu klibin tüm formatlarını içerir.</p>
@@ -133,6 +135,16 @@ export function PublishingResults({ job, freshness, clipEditors }: {
         {editClip && <button type="button"
           className={`btn btn-sm ${styles.trimShiftButton}`} aria-label={`Klip ${group.clip_index} düzenleme alanına git`}
           onClick={() => { setPreview(null); editClip(); }}>Klibi düzenle</button>}
+        {rangeRestore && <>
+          <p className={styles.note}>Son render aralığı: {group.start.toFixed(3)} – {group.end.toFixed(3)} sn.
+            {Number.isFinite(rangeRestore.current.start) && Number.isFinite(rangeRestore.current.end)
+              ? ` Taslak aralığı: ${rangeRestore.current.start.toFixed(3)} – ${rangeRestore.current.end.toFixed(3)} sn.`
+              : " Taslak aralığında geçersiz veya tamamlanmamış giriş var."}
+            {" "}Yalnızca bu klibin zamanları geri yüklenir; seçim, kapak ve çıktı ayarları değişmez. Geçerli zaman değişiklikleri Aralık geri al ile korunur; geçersiz girişler geçmişe yazılmaz.</p>
+          <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
+            aria-label={`Klip ${group.clip_index} son render aralığına dön`}
+            onClick={() => { setPreview(null); rangeRestore.restore(); }}>Son render aralığına dön</button>
+        </>}
         {group.outputs.length > 1 && <div className={styles.actions} role="group" aria-label={`Klip ${group.clip_index} formatı`}>
           {group.outputs.map((out) => <button type="button" key={out.output}
             className={`btn btn-sm ${styles.trimShiftButton} ${styles.formatButton}`}
