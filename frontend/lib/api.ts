@@ -127,7 +127,7 @@ export type OutputStorageRenders = {
 };
 export type OutputTrashEntry = {
   id: string; kind: "staging" | "render"; name: string; bytes: number; files: number;
-  deleted_at: string; age_seconds: number; expires_in_seconds: number;
+  deleted_at: string; batch_id: string | null; age_seconds: number; expires_in_seconds: number;
 };
 export type OutputStorageTrash = {
   entries: OutputTrashEntry[]; bytes: number; files: number; retention_seconds: number;

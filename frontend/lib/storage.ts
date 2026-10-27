@@ -1,6 +1,13 @@
 import type {
-  OutputStorageProtectedDir, OutputStorageProtectedRender, StorageCategoryId,
+  OutputStorageProtectedDir, OutputStorageProtectedRender, OutputTrashEntry, StorageCategoryId,
 } from "./api";
+
+export type TrashBatch = {
+  id: string;
+  entries: OutputTrashEntry[];
+  bytes: number;
+  newestAge: number;
+};
 
 export const STORAGE_PROTECTED_LABELS: Record<OutputStorageProtectedDir["reason"], string> = {
   referenced: "iş sonuçlarında kullanılıyor",
@@ -74,4 +81,27 @@ export function storageUsageSummary(totalBytes: number, moveableBytes: number, t
 
 export function storageTrashLabel(entry: { kind: "staging" | "render"; name: string }): string {
   return entry.kind === "render" ? entry.name : `Hazırlama · ${entry.name.slice(0, 8)}…`;
+}
+
+export function formatTrashExpiry(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "Süresi doldu";
+  if (seconds >= 86400) return `${Math.ceil(seconds / 86400)} gün kaldı`;
+  if (seconds >= 3600) return `${Math.ceil(seconds / 3600)} saat kaldı`;
+  return `${Math.max(1, Math.ceil(seconds / 60))} dakika kaldı`;
+}
+
+export function trashBatches(entries: OutputTrashEntry[]): TrashBatch[] {
+  const groups = new Map<string, TrashBatch>();
+  for (const entry of entries) {
+    const id = entry.batch_id ?? `entry:${entry.id}`;
+    const group = groups.get(id);
+    if (group) {
+      group.entries.push(entry);
+      group.bytes += entry.bytes;
+      group.newestAge = Math.min(group.newestAge, entry.age_seconds);
+    } else {
+      groups.set(id, { id, entries: [entry], bytes: entry.bytes, newestAge: entry.age_seconds });
+    }
+  }
+  return [...groups.values()].sort((left, right) => left.newestAge - right.newestAge);
 }

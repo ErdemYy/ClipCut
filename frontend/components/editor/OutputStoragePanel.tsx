@@ -3,25 +3,61 @@
 import { useState } from "react";
 import { api, type OutputStorageInfo } from "@/lib/api";
 import {
-  formatBytes, formatMinAge, renderProtectionSummary, storageCategoryLabel,
-  storageProtectionSummary, storageTrashLabel, storageUsageSummary,
+  formatBytes, formatMinAge, formatTrashExpiry, renderProtectionSummary, storageCategoryLabel,
+  storageProtectionSummary, storageTrashLabel, storageUsageSummary, trashBatches,
 } from "@/lib/storage";
 import styles from "./publishing.module.css";
 
 type CleanupKind = "staging" | "renders";
+type Selection = { tokens: string[]; files: string[] };
 
 export default function OutputStoragePanel({ projectId, disabled, notify }: {
   projectId: string; disabled?: boolean; notify: (text: string, error?: boolean) => void;
 }) {
   const [scanned, setScanned] = useState<{ projectId: string; data: OutputStorageInfo } | null>(null);
-  const [pending, setPending] = useState<"scan" | CleanupKind | "restore" | "empty" | null>(null);
+  const [pending, setPending] = useState<"scan" | CleanupKind | "selected" | "restore" | "empty" | null>(null);
+  const [selected, setSelected] = useState<Selection>({ tokens: [], files: [] });
   const data = scanned?.projectId === projectId ? scanned.data : null;
   const minAge = formatMinAge(data?.min_age_seconds ?? 3600);
   const trashDays = formatMinAge(data?.trash.retention_seconds ?? 7 * 86400);
+  const selectedTokens = data ? data.eligible.filter((item) => selected.tokens.includes(item.token)) : [];
+  const selectedRenders = data ? data.renders.eligible.filter((item) => selected.files.includes(item.file)) : [];
+  const selectionCount = selectedTokens.length + selectedRenders.length;
+  const selectionBytes = selectedTokens.reduce((sum, item) => sum + item.bytes, 0) +
+    selectedRenders.reduce((sum, item) => sum + item.bytes, 0);
+  const eligibleCount = data ? data.eligible.length + data.renders.eligible.length : 0;
+  const allSelected = eligibleCount > 0 && selectionCount === eligibleCount;
 
   const refresh = async () => {
     const next = await api.outputStorage(projectId);
     setScanned({ projectId, data: next });
+    setSelected({ tokens: [], files: [] });
+  };
+
+  const toggleToken = (token: string) => {
+    setSelected((current) => ({
+      ...current,
+      tokens: current.tokens.includes(token)
+        ? current.tokens.filter((value) => value !== token)
+        : [...current.tokens, token],
+    }));
+  };
+
+  const toggleFile = (file: string) => {
+    setSelected((current) => ({
+      ...current,
+      files: current.files.includes(file)
+        ? current.files.filter((value) => value !== file)
+        : [...current.files, file],
+    }));
+  };
+
+  const selectAll = () => {
+    if (!data) return;
+    setSelected(allSelected ? { tokens: [], files: [] } : {
+      tokens: data.eligible.map((item) => item.token),
+      files: data.renders.eligible.map((item) => item.file),
+    });
   };
 
   const scan = async () => {
@@ -68,6 +104,56 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
       notify([
         `${trashed} ${kind === "staging" ? "klasör" : "ana render"} çöp kutusuna taşındı · ` +
           `${formatBytes(moved)} ${trashDays} içinde geri alınabilir.`,
+        atRisk > 0 ? `${atRisk} öğe güvenlik denetimi nedeniyle atlandı.` : "",
+        firstError ? `Bazı öğeler taşınamadı: ${firstError}` : "",
+      ].filter(Boolean).join(" "), atRisk > 0 || !!firstError);
+      try { await refresh(); } catch { setScanned(null); }
+    } finally { setPending(null); }
+  };
+
+  const moveSelected = async () => {
+    if (!data || selectionCount === 0) return;
+    if ((selectedTokens.length > 0 && data.busy) || (selectedRenders.length > 0 && data.render_busy)) {
+      notify("Süren bir işlem var; seçili öğeleri taşımak için iş bitince yeniden tarayın.", true);
+      return;
+    }
+    const tokens = selectedTokens.map((item) => item.token);
+    const files = selectedRenders.map((item) => item.file);
+    const parts = [
+      tokens.length > 0 ? `${tokens.length} hazırlama klasörü` : "",
+      files.length > 0 ? `${files.length} ana render` : "",
+    ].filter(Boolean).join(" + ");
+    if (!window.confirm(`Seçilen ${parts} (${formatBytes(selectionBytes)}) çöp kutusuna taşınsın mı?\n\n` +
+      `Kaynak video, proje kapağı, güncel ana render, önizlemeler ve proje verisi korunur. ` +
+      `Seçilenler ${trashDays} boyunca geri alınabilir.`)) return;
+    setPending("selected");
+    try {
+      let trashed = 0;
+      let moved = 0;
+      let atRisk = 0;
+      let firstError = "";
+      for (let start = 0; start < tokens.length; start += 50) {
+        try {
+          const result = await api.cleanupOutputs(projectId, tokens.slice(start, start + 50));
+          trashed += result.trashed.length;
+          moved += result.moved_bytes;
+          atRisk += result.failed.length + result.skipped.length;
+        } catch (e) {
+          if (!firstError) firstError = (e as Error).message;
+        }
+      }
+      for (let start = 0; start < files.length; start += 50) {
+        try {
+          const result = await api.cleanupRenders(projectId, files.slice(start, start + 50));
+          trashed += result.trashed.length;
+          moved += result.moved_bytes;
+          atRisk += result.failed.length + result.skipped.length;
+        } catch (e) {
+          if (!firstError) firstError = (e as Error).message;
+        }
+      }
+      notify([
+        `${trashed} seçili öğe çöp kutusuna taşındı · ${formatBytes(moved)} ${trashDays} içinde geri alınabilir.`,
         atRisk > 0 ? `${atRisk} öğe güvenlik denetimi nedeniyle atlandı.` : "",
         firstError ? `Bazı öğeler taşınamadı: ${firstError}` : "",
       ].filter(Boolean).join(" "), atRisk > 0 || !!firstError);
@@ -160,6 +246,50 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
           ? ` ${data.renders.protected.length} ana render korunuyor (${renderProtectionSummary(data.renders.protected)}).`
           : ""}
       </p>
+      {eligibleCount > 0 && <details className={styles.selection}>
+        <summary>Tek tek seçerek temizle · {eligibleCount} uygun öğe</summary>
+        <div className={styles.selectionBar}>
+          <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
+            disabled={disabled || pending !== null} onClick={selectAll}>
+            {allSelected ? "Seçimi temizle" : "Tümünü seç"}
+          </button>
+          <span className={styles.selectionMeta}>{selectionCount} seçili · {formatBytes(selectionBytes)}</span>
+        </div>
+        {data.eligible.length > 0 && <fieldset className={styles.selectionGroup}>
+          <legend>Hazırlama klasörleri</legend>
+          <ul className={styles.selectionList}>
+            {data.eligible.map((item) => <li key={item.token}>
+              <label className={styles.selectionRow} title={item.token}>
+                <input type="checkbox" checked={selected.tokens.includes(item.token)}
+                  disabled={disabled || pending !== null} onChange={() => toggleToken(item.token)} />
+                <span className={styles.selectionName}>{storageTrashLabel({ kind: "staging", name: item.token })}</span>
+                <span className={styles.selectionAmount}>{formatBytes(item.bytes)}</span>
+              </label>
+            </li>)}
+          </ul>
+        </fieldset>}
+        {data.renders.eligible.length > 0 && <fieldset className={styles.selectionGroup}>
+          <legend>Ana render MP4&apos;leri</legend>
+          <ul className={styles.selectionList}>
+            {data.renders.eligible.map((item) => <li key={item.file}>
+              <label className={styles.selectionRow} title={item.file}>
+                <input type="checkbox" checked={selected.files.includes(item.file)}
+                  disabled={disabled || pending !== null} onChange={() => toggleFile(item.file)} />
+                <span className={styles.selectionName}>{storageTrashLabel({ kind: "render", name: item.file })}</span>
+                <span className={styles.selectionAmount}>{formatBytes(item.bytes)}</span>
+              </label>
+            </li>)}
+          </ul>
+        </fieldset>}
+        <div className={styles.actions}>
+          <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
+            disabled={disabled || pending !== null || selectionCount === 0 ||
+              (selectedTokens.length > 0 && data.busy) || (selectedRenders.length > 0 && data.render_busy)}
+            onClick={moveSelected}>
+            {pending === "selected" ? "Taşınıyor…" : `Seçilenleri çöpe taşı · ${formatBytes(selectionBytes)}`}
+          </button>
+        </div>
+      </details>}
       {data.busy && <p className={styles.note} role="status">Süren bir hazırlama işi var; güvenli temizlik için iş bitince yeniden tarayın.</p>}
       {data.render_busy && <p className={styles.note} role="status">Süren bir render veya hazırlama işi var; ana render temizliği için iş bitince yeniden tarayın.</p>}
       {data.trash.entries.length > 0 && <div className={styles.trash}>
@@ -168,14 +298,26 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
           <span>{data.trash.entries.length} öğe · {formatBytes(data.trash.bytes)}</span>
         </div>
         <p className={styles.note}>{trashDays} içinde geri alınabilir; süre dolunca kalıcı silinir.</p>
-        <ul className={styles.trashEntries} aria-label="Çöp kutusundaki öğeler">
-          {data.trash.entries.map((entry) => <li key={entry.id} className={styles.trashEntry}>
-            <span className={styles.trashName} title={entry.name}>{storageTrashLabel(entry)}</span>
-            <span className={styles.trashMeta}>{formatBytes(entry.bytes)}</span>
+        {trashBatches(data.trash.entries).map((batch, index) => <div className={styles.trashBatch} key={batch.id}>
+          <div className={styles.trashBatchHeading}>
+            <span>{index === 0 ? "Son temizlik" : "Önceki temizlik"} · {batch.entries.length} öğe · {formatBytes(batch.bytes)}</span>
             <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
-              disabled={disabled || pending !== null} onClick={() => restore([entry.id])}>Geri al</button>
-          </li>)}
-        </ul>
+              disabled={disabled || pending !== null} onClick={() => restore(batch.entries.map((entry) => entry.id))}>
+              Bu grubu geri al
+            </button>
+          </div>
+          <ul className={styles.trashEntries} aria-label={`${index === 0 ? "Son" : "Önceki"} temizlik öğeleri`}>
+            {batch.entries.map((entry) => <li key={entry.id} className={styles.trashEntry}>
+              <span className={styles.trashName}>
+                <span title={entry.name}>{storageTrashLabel(entry)}</span>
+                <small>{formatTrashExpiry(entry.expires_in_seconds)}</small>
+              </span>
+              <span className={styles.trashMeta}>{formatBytes(entry.bytes)}</span>
+              <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
+                disabled={disabled || pending !== null} onClick={() => restore([entry.id])}>Geri al</button>
+            </li>)}
+          </ul>
+        </div>)}
         <div className={styles.actions}>
           <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
             disabled={disabled || pending !== null} onClick={() => restore(data.trash.entries.map((entry) => entry.id))}>

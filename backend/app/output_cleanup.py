@@ -379,6 +379,9 @@ def _valid_manifest(entry_id: str, manifest: Any) -> dict[str, Any] | None:
             return None
     if not isinstance(manifest.get("deleted_at"), str):
         return None
+    batch_id = manifest.get("batch_id")
+    if batch_id is not None and (not isinstance(batch_id, str) or not TOKEN_RE.fullmatch(batch_id)):
+        return None
     return manifest
 
 
@@ -463,6 +466,7 @@ def _trash_entry(project_path: Path, entry_dir: Path, *, now: float,
     return {
         "id": entry_id, "kind": manifest["kind"], "name": name,
         "bytes": size, "files": files, "deleted_at": manifest["deleted_at"],
+        "batch_id": manifest.get("batch_id"),
         "age_seconds": int(age),
         "expires_in_seconds": max(0, int(retention - age)),
     }
@@ -534,7 +538,7 @@ def _move_to_trash(project_path: Path, source: Path, *, kind: str, name: str, si
         raise
     return {
         "id": entry_id, "kind": kind, "name": name, "bytes": size, "files": files,
-        "deleted_at": manifest["deleted_at"], "age_seconds": 0,
+        "deleted_at": manifest["deleted_at"], "batch_id": batch_id, "age_seconds": 0,
         "expires_in_seconds": TRASH_RETENTION_SECONDS,
     }
 

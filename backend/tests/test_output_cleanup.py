@@ -236,11 +236,13 @@ def test_trash_outputs_moves_folder_and_restore_returns_it(tmp_path):
     assert result["moved_bytes"] == 200
     entry = result["trashed"][0]
     assert entry["kind"] == "staging" and entry["files"] == 2
+    assert isinstance(entry["batch_id"], str) and len(entry["batch_id"]) == 32
     assert not folder.exists()
     manifest = (tmp_path / ".trash" / entry["id"] / "manifest.json")
     assert json.loads(manifest.read_text(encoding="utf-8"))["status"] == "ready"
     trash = scan_trash(tmp_path)
     assert trash["bytes"] == 200 and trash["entries"][0]["id"] == entry["id"]
+    assert trash["entries"][0]["batch_id"] == entry["batch_id"]
     assert trash["retention_seconds"] == TRASH_RETENTION_SECONDS
 
     restored = restore_trash(tmp_path, [entry["id"]])
@@ -320,6 +322,19 @@ def test_empty_trash_can_target_one_entry_or_all(tmp_path):
     assert [item["id"] for item in all_entries["purged"]] == [second_entry["id"]]
     assert all_entries["freed_bytes"] == 22
     assert scan_trash(tmp_path)["entries"] == []
+
+
+def test_separate_cleanup_calls_keep_distinct_trash_batches(tmp_path):
+    first = _render_name("aaaaaaaa")
+    second = _render_name("bbbbbbbb")
+    _render(tmp_path, first, size=11)
+    _render(tmp_path, second, size=22)
+    first_entry = trash_renders(tmp_path, set(), [first])["trashed"][0]
+    second_entry = trash_renders(tmp_path, set(), [second])["trashed"][0]
+    assert first_entry["batch_id"] != second_entry["batch_id"]
+    entries = {entry["name"]: entry for entry in scan_trash(tmp_path)["entries"]}
+    assert entries[first]["batch_id"] == first_entry["batch_id"]
+    assert entries[second]["batch_id"] == second_entry["batch_id"]
 
 
 def test_pending_trash_entry_is_recovered_and_empty_pending_is_discarded(tmp_path):
@@ -452,6 +467,7 @@ def test_output_api_moves_old_unreferenced_renders_to_trash(storage_api):
     after = client.get("/api/projects/store/outputs").json()
     assert after["renders"]["eligible"] == []
     assert after["trash"]["bytes"] == 35 and len(after["trash"]["entries"]) == 2
+    assert len({item["batch_id"] for item in after["trash"]["entries"]}) == 1
     assert {item["id"]: item for item in after["categories"]}["trash"]["bytes"] == 35
     assert after["reclaimable_bytes"] == 0
     from sqlmodel import Session
@@ -614,6 +630,30 @@ def test_output_api_validation_and_missing_project(storage_api):
     assert client.post("/api/projects/missing/outputs/renders/cleanup", json={"files": [name]}).status_code == 404
     assert client.post("/api/projects/missing/outputs/trash/restore", json={"ids": [token]}).status_code == 404
     assert client.post("/api/projects/missing/outputs/trash/empty", json={}).status_code == 404
+
+
+def test_output_api_moves_only_selected_eligible_items(storage_api):
+    client, engine, root = storage_api
+    first, second = "a" * 32, "b" * 32
+    first_dir = _output(root, first)
+    second_dir = _output(root, second)
+    first_render = _render_name("aaaaaaaa")
+    second_render = _render_name("bbbbbbbb")
+    first_render_path = _render(root, first_render)
+    second_render_path = _render(root, second_render)
+
+    response = client.post("/api/projects/store/outputs/cleanup", json={"tokens": [first]})
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()["trashed"]] == [first]
+    response = client.post("/api/projects/store/outputs/renders/cleanup", json={"files": [first_render]})
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()["trashed"]] == [first_render]
+
+    assert not first_dir.exists() and second_dir.is_dir()
+    assert not first_render_path.exists() and second_render_path.exists()
+    data = client.get("/api/projects/store/outputs").json()
+    assert [item["token"] for item in data["eligible"]] == [second]
+    assert [item["file"] for item in data["renders"]["eligible"]] == [second_render]
 
 
 def test_output_api_partial_success_reports_skipped_items(storage_api):

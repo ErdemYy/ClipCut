@@ -14,8 +14,8 @@ function load(file) {
   return exported;
 }
 const {
-  formatBytes, formatMinAge, renderProtectionSummary, storageCategoryLabel,
-  storageProtectionSummary, storageTrashLabel, storageUsageSummary,
+  formatBytes, formatMinAge, formatTrashExpiry, renderProtectionSummary, storageCategoryLabel,
+  storageProtectionSummary, storageTrashLabel, storageUsageSummary, trashBatches,
 } = load("../lib/storage.ts");
 
 test("formatBytes uses readable binary units without hiding small files", () => {
@@ -80,4 +80,31 @@ test("storageTrashLabel keeps render names and abbreviates staging tokens", () =
     "clipcut_20260101_120000_aaaaaaaa.mp4");
   assert.equal(storageTrashLabel({ kind: "staging", name: "a".repeat(32) }),
     "Hazırlama · aaaaaaaa…");
+});
+
+test("formatTrashExpiry turns remaining seconds into a readable countdown", () => {
+  assert.equal(formatTrashExpiry(0), "Süresi doldu");
+  assert.equal(formatTrashExpiry(-1), "Süresi doldu");
+  assert.equal(formatTrashExpiry(Number.NaN), "Süresi doldu");
+  assert.equal(formatTrashExpiry(60), "1 dakika kaldı");
+  assert.equal(formatTrashExpiry(3600), "1 saat kaldı");
+  assert.equal(formatTrashExpiry(7200), "2 saat kaldı");
+  assert.equal(formatTrashExpiry(86400), "1 gün kaldı");
+  assert.equal(formatTrashExpiry(604800), "7 gün kaldı");
+});
+
+test("trashBatches groups a cleanup by batch, sums bytes and puts newest first", () => {
+  const item = (id, batch, age, bytes) => ({
+    id, kind: "render", name: id, bytes, files: 1, deleted_at: "2026-10-27T00:00:00+00:00",
+    batch_id: batch, age_seconds: age, expires_in_seconds: 604800 - age,
+  });
+  const batches = trashBatches([
+    item("old-a", "a".repeat(32), 100, 10),
+    item("newer-b", "b".repeat(32), 10, 20),
+    item("old-b", "a".repeat(32), 200, 30),
+    item("single", null, 5, 40),
+  ]);
+  assert.equal(batches.map((batch) => batch.id).join(","), "entry:single," + "b".repeat(32) + "," + "a".repeat(32));
+  assert.equal(batches[2].bytes, 40);
+  assert.equal(batches[2].entries.map((entry) => entry.id).join(","), "old-a,old-b");
 });

@@ -27,11 +27,30 @@
 .trashHeading h5 { font-size: 0.92rem; }
 .trashHeading span { color: var(--text-dim); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 .trashEntries { display: grid; gap: 4px; list-style: none; margin: 0; padding: 0; min-width: 0; }
+.trashBatch { display: grid; gap: 4px; min-width: 0; }
+.trashBatchHeading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 6px 8px; min-width: 0; }
+.trashBatchHeading > span { color: var(--text-dim); font-size: 0.78rem; font-variant-numeric: tabular-nums; }
 .trashEntry { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center;
   min-width: 0; border-bottom: 1px solid var(--border); padding: 2px 0; }
-.trashName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--text-dim); font-size: 0.8rem; }
+.trashName { display: grid; gap: 2px; min-width: 0; color: var(--text-dim); font-size: 0.8rem; }
+.trashName > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trashName small { color: var(--text-faint, var(--text-dim)); font-size: 0.7rem; }
 .trashMeta { flex-shrink: 0; color: var(--text-dim); font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+.selection { display: grid; gap: 8px; min-width: 0; border-top: 1px dashed var(--border); padding-top: 10px; }
+.selection summary { display: flex; align-items: center; min-height: 44px; cursor: pointer;
+  font-weight: 650; font-size: 0.9rem; }
+.selectionBar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.selectionMeta { color: var(--text-dim); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.selectionGroup { border: 0; margin: 0; padding: 0; display: grid; gap: 0; min-width: 0; }
+.selectionGroup legend { color: var(--text-dim); font-size: 0.78rem; font-weight: 600; padding: 4px 0; }
+.selectionList { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; min-width: 0; }
+.selectionRow { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: center;
+  min-height: 44px; border-bottom: 1px solid var(--border); color: var(--text-dim); font-size: 0.8rem;
+  cursor: pointer; }
+.selectionRow input { width: 18px; height: 18px; accent-color: var(--purple); flex-shrink: 0; }
+.selectionName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selectionAmount { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .output { display: grid; gap: 8px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
 .clipGroup { display: grid; gap: 12px; min-width: 0; border-top: 1px solid var(--border); padding-top: 16px; }
 .clipGroup h5 { font-size: 1rem; }
@@ -90,4 +109,5 @@
   .trimRow button { grid-column: 1 / -1; }
 }
 .error { color: var(--danger, #ffb4b4); font-size: 0.85rem; line-height: 1.5; }
+.selection summary:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
 .settings :focus-visible, .formats :focus-visible, .cover :focus-visible, .candidate :focus-visible, .clipGroup :focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
