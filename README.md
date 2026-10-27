@@ -78,6 +78,8 @@ Yeni hazırlanan kısa klip ve transkript klibi sonuçları **Klip 1**, **Klip 2
 
 Eski sonuçlarda açık klip metadata'sı yoksa dosya adından tahmin yapılmaz; çıktılar mevcut düz listede ve indirme bağlantılarıyla gösterilir. Toplu ana video dışa aktarımları da düz liste olarak kalır. Grup içi format tercihleri yalnızca açık panel oturumundadır; yeni sonuç veya sayfa açılışında ilk uygun format gösterilir. Kaynak video, proje planı ve edit geçmişi değişmez.
 
+Analizle üretilmiş bir klip grubu hâlâ mevcut analizin adayına güvenle eşleşiyorsa **Klibi düzenle** düğmesi görünür. Düğme açık sonuç oynatıcısını kapatır ve ilgili adayın başlangıç zamanı alanına götürür. Eşleştirme son render'ın klip kimliklerini kullanır; sonradan seçim sırasını değiştirmeniz yanlış klibe gitmesine neden olmaz. Mevcut zaman değişiklikleri korunur, render sırasında kullanılan eski aralık geri yüklenmez ve yeni iş başlatılmaz. Analiz değişmişse, aday artık yoksa veya eşleştirme metadata'sı eksikse düğme sunulmaz. Transkript klibi ve toplu dışa aktarma sonuçlarına bu kısa-klip düzenleme bağlantısı eklenmez.
+
 ## Senaryodan çok sahneli video
 
 1. **Yeni Video → Senaryodan Üret** bölümüne konuyu veya hazır senaryoyu yazın; dil, format, ortak stil, 2–12 sahne ve sahne süresini seçin.

@@ -1,4 +1,4 @@
-import type { PublishResult } from "./api";
+import type { ClipCandidate, PublishResult } from "./api";
 
 export type ClipOutputGroup = NonNullable<PublishResult["clip_archives"]>[number] & {
   outputs: PublishResult["outputs"];
@@ -21,4 +21,24 @@ export function groupPublishedClips(result: PublishResult): ClipOutputGroup[] | 
     group.outputs.push(out);
   }
   return [...groups.values()].every((group) => group.outputs.length > 0) ? [...groups.values()] : null;
+}
+
+/** Match export ordinals to current candidate IDs, not current selection order. */
+export function editablePublishedClipIds(result: PublishResult, analysisId: string | undefined,
+  candidates: readonly Pick<ClipCandidate, "id">[]): Record<number, number> {
+  const groups = groupPublishedClips(result);
+  const request = result.clip_request;
+  if (!groups || !analysisId || request?.analysis_id !== analysisId
+    || !Array.isArray(request.clips) || request.clips.length !== groups.length) return {};
+  const currentIds = new Set(candidates.map((candidate) => candidate.id));
+  const seen = new Set<number>();
+  const targets: Record<number, number> = {};
+  for (const group of groups) {
+    const rendered = request.clips[group.clip_index - 1];
+    if (!rendered || !Number.isInteger(rendered.id) || rendered.id < 0 || seen.has(rendered.id)
+      || !currentIds.has(rendered.id) || rendered.start !== group.start || rendered.end !== group.end) return {};
+    seen.add(rendered.id);
+    targets[group.clip_index] = rendered.id;
+  }
+  return targets;
 }

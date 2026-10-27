@@ -5,6 +5,7 @@ import { api, downloadUrl, formatTime, mediaUrl, type ClipAnalysis, type ClipCan
 import { clampClipRange, clipRangeError, snapClipEdge, type ClipRangeAction, type ClipRange } from "@/lib/clip-trim";
 import { CLIP_FORMATS, clipDraftContext, clipDraftStorageKey, clipPreviewFormat, defaultClipDraft, readClipDraft, serializeClipDraft, toggleClipFormat } from "@/lib/clip-draft";
 import { clipExportFreshness } from "@/lib/clip-export";
+import { editablePublishedClipIds } from "@/lib/publishing-results";
 import { canRedoClipRanges, canUndoClipRanges, clipRangeHistoryReducer, emptyClipRangeHistory, type ClipRanges } from "@/lib/clip-range-history";
 import { clipPreviewIsStale, clipPreviewSelection, clipPreviewWindow, type ClipPreviewSelection } from "@/lib/clip-preview";
 import { clipCoverError, clipCoverMax } from "@/lib/clip-cover";
@@ -48,6 +49,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const [waveform, setWaveform] = useState<{ key: string; data?: Waveform; error?: string } | null>(null);
   const [waveformRetry, setWaveformRetry] = useState(0);
   const waveformHelpId = useId();
+  const clipStartFields = useRef<Record<number, HTMLInputElement | null>>({});
   const [options, setOptions] = useState<RenderOptions>({ resolution: "1080p", quality: "standard" });
   const [fill, setFill] = useState<FillMode>("blur");
   const [aspects, setAspects] = useState<ExportFormat[]>(["9:16"]);
@@ -122,6 +124,14 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const clipPreviewStale = !!shownClipPreview && clipPreviewIsStale(shownClipPreview,
     previewResultClip ? rangeFor(previewResultClip) : undefined,
     previewWindowFor(shownClipPreview.clip_id), options, fill, aspect, project.render_revision);
+  const editableClipIds = clipRenderResult && result && !disabled && !rangeDragging
+    ? editablePublishedClipIds(clipRenderResult, analysis?.id, result.clips) : {};
+  const clipEditors = Object.fromEntries(Object.entries(editableClipIds).map(([index, id]) => [index, () => {
+    const field = clipStartFields.current[id];
+    if (!field || field.disabled) return;
+    field.focus();
+    notify(`Klip ${index} düzenleme alanı açıldı; mevcut aralık korunuyor.`);
+  }]));
 
   // These effects synchronize React drafts with synchronous browser storage.
   // Context-gated hydration happens once; status updates are not dependencies
@@ -375,6 +385,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
             </label>
             <div className={pub.trimRow}>
               <label>Başlangıç (sn)<input className="input" type="number" min="0" max={project.duration} step="0.1" value={range.start}
+                ref={(field) => { clipStartFields.current[clip.id] = field; }} aria-label={`${index + 1}. aday başlangıç (sn)`}
                 disabled={disabled} onChange={(e) => updateRange(clip, "start", Number(e.target.value))}
                 onBlur={() => finalizeRange(clip, "start")}
                 onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} /></label>
@@ -512,6 +523,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
       </>}
     </section>}
     <PublishingResults job={clipRenderJob}
+      clipEditors={clipEditors}
       freshness={clipRenderFreshness === "stale" || clipRenderFreshness === "unknown" ? clipRenderFreshness : undefined} />
   </div>;
 }

@@ -51,13 +51,15 @@ function harness() {
     duration: 30, output: `${name}.mp4`, thumbnail: `${name}.jpg`, thumbnail_fallback: false });
   let job = { id: "job-a", status: "done", result: { archive: "all.zip", outputs: [output("square"), output("portrait")] } };
   let freshness;
+  let clipEditors;
   const nodes = (n) => !n || typeof n !== "object" ? []
     : [n, ...[n.props?.children].flat(Infinity).flatMap(nodes)];
-  const render = () => { cursor = 0; return nodes(exports.PublishingResults({ job, freshness })); };
+  const render = () => { cursor = 0; return nodes(exports.PublishingResults({ job, freshness, clipEditors })); };
   const buttons = () => render().filter(n => n.type === "button" && typeof n.props["aria-expanded"] === "boolean");
   return { render, buttons, videos: () => render().filter(n => n.type === "video"),
     filter: () => render().find(n => n.type === "select"),
     formats: () => render().filter(n => n.type === "button" && typeof n.props["aria-pressed"] === "boolean"),
+    setClipEditors: (value) => { clipEditors = value; },
     setJob: (next) => { job = next; }, get job() { return job; }, setFreshness: (value) => { freshness = value; } };
 }
 
@@ -337,4 +339,73 @@ test("legacy or incomplete clip metadata keeps flat downloads and freshness warn
   assert.equal(h.render().filter(n => n.type === "strong").length, 4);
   assert.equal(h.render().filter(n => n.type === "a" && n.props.download).length, 9);
   assert.ok(h.render().some(n => typeof n.props?.children === "string" && n.props.children.includes("son hazırlanan dosyalardan farklı")));
+});
+
+function editableResult() {
+  const result = groupedJob().result;
+  result.clip_request = { analysis_id: "current-analysis", clips: [
+    { id: 22, start: 30, end: 60, cover_at: 0 }, { id: 0, start: 60, end: 90, cover_at: 0 },
+  ] };
+  return result;
+}
+
+test("edit targets use rendered selection order, including candidate zero", () => {
+  const targets = grouping.editablePublishedClipIds(editableResult(), "current-analysis", [{ id: 0 }, { id: 22 }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(targets)), { 1: 22, 2: 0 });
+});
+
+test("foreign analyses, missing candidates and legacy results have no edit targets", () => {
+  const result = editableResult();
+  for (const analysisId of [undefined, "different-analysis"]) {
+    assert.deepEqual(Object.keys(grouping.editablePublishedClipIds(result, analysisId, [{ id: 22 }, { id: 0 }])), []);
+  }
+  assert.deepEqual(Object.keys(grouping.editablePublishedClipIds(result, "current-analysis", [{ id: 22 }])), []);
+  delete result.clip_request;
+  assert.deepEqual(Object.keys(grouping.editablePublishedClipIds(result, "current-analysis", [{ id: 22 }, { id: 0 }])), []);
+});
+
+test("inconsistent snapshots cannot navigate to the wrong clip", () => {
+  for (const change of [
+    r => { r.clip_request.clips[0].start = 31; },
+    r => { r.clip_request.clips[0].end = 61; },
+    r => { r.clip_request.clips[1].id = 22; },
+    r => { r.clip_request.clips[0].id = -1; },
+    r => { r.clip_request.clips.pop(); },
+    r => { delete r.clip_archives; },
+  ]) {
+    const result = editableResult(); change(result);
+    assert.deepEqual(Object.keys(grouping.editablePublishedClipIds(result, "current-analysis", [{ id: 22 }, { id: 0 }])), []);
+  }
+});
+
+test("edit target lookup never resets current trims or mutates input data", () => {
+  const result = editableResult();
+  const candidates = [{ id: 22, start: 29, end: 60 }, { id: 0, start: 59, end: 90 }];
+  const before = JSON.stringify({ result, candidates });
+  assert.equal(grouping.editablePublishedClipIds(result, "current-analysis", candidates)[1], 22);
+  assert.equal(JSON.stringify({ result, candidates }), before);
+});
+
+test("edit action closes playback and invokes only the matching clip callback", () => {
+  const h = harness(); h.setJob(groupedJob());
+  const called = []; h.setClipEditors({ 1: () => called.push(22), 2: () => called.push(0) });
+  const before = JSON.stringify(h.job);
+  h.buttons()[0].props.onClick();
+  const edits = h.render().filter(n => n.type === "button" && n.props.children === "Klibi düzenle");
+  assert.equal(edits.length, 2);
+  edits[0].props.onClick();
+  assert.deepEqual(called, [22]);
+  assert.equal(h.videos().length, 0);
+  assert.equal(JSON.stringify(h.job), before);
+});
+
+test("edit controls appear only when an explicit clip editor is available", () => {
+  const h = harness(); h.setJob(groupedJob());
+  const edits = () => h.render().filter(n => n.type === "button" && n.props.children === "Klibi düzenle");
+  assert.equal(edits().length, 0);
+  h.setClipEditors({ 2: () => {} });
+  assert.equal(edits().length, 1);
+  assert.equal(edits()[0].props["aria-label"], "Klip 2 düzenleme alanına git");
+  h.setClipEditors({});
+  assert.equal(edits().length, 0);
 });

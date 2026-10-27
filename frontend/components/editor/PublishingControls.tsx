@@ -27,8 +27,9 @@ export function RenderSettings({ value, onChange, fill, onFill, disabled }: {
   </fieldset>;
 }
 
-export function PublishingResults({ job, freshness }: {
+export function PublishingResults({ job, freshness, clipEditors }: {
   job?: Job; freshness?: "stale" | "unknown";
+  clipEditors?: Record<number, () => void>;
 }) {
   const previewId = useId();
   const previewAttempt = useRef(0);
@@ -122,12 +123,16 @@ export function PublishingResults({ job, freshness }: {
       const preferred = clipFormats?.key === resultKey ? clipFormats.values[group.clip_index] : undefined;
       const active = group.outputs.find((out) => out.aspect_ratio === preferred) ?? group.outputs[0];
       const groupId = `${previewId}-clip-${group.clip_index}`;
+      const editClip = clipEditors?.[group.clip_index];
       return <section key={group.clip_index} className={styles.clipGroup} aria-labelledby={`${groupId}-title`}>
         <h5 id={`${groupId}-title`}>Klip {group.clip_index}</h5>
         <p className={styles.note}>Kaynakta {formatTime(group.start)} – {formatTime(group.end)}. Klip ZIP dosyası, görünüm filtresinden bağımsız olarak bu klibin tüm formatlarını içerir.</p>
         <a className={`btn btn-sm ${styles.trimShiftButton}`} href={downloadUrl(group.archive)} download>
           Klip {group.clip_index} · tüm formatları ZIP indir
         </a>
+        {editClip && <button type="button"
+          className={`btn btn-sm ${styles.trimShiftButton}`} aria-label={`Klip ${group.clip_index} düzenleme alanına git`}
+          onClick={() => { setPreview(null); editClip(); }}>Klibi düzenle</button>}
         {group.outputs.length > 1 && <div className={styles.actions} role="group" aria-label={`Klip ${group.clip_index} formatı`}>
           {group.outputs.map((out) => <button type="button" key={out.output}
             className={`btn btn-sm ${styles.trimShiftButton} ${styles.formatButton}`}
