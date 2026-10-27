@@ -4,7 +4,7 @@ import { useEffect, useId, useReducer, useRef, useState } from "react";
 import { api, downloadUrl, formatTime, mediaUrl, type ClipAnalysis, type ClipCandidate, type ClipPreviewResult, type ExportFormat, type FillMode, type Job, type JobMap, type Project, type PublishResult, type RenderOptions, type Waveform } from "@/lib/api";
 import { clampClipRange, clipRangeError, snapClipEdge, type ClipRangeAction, type ClipRange } from "@/lib/clip-trim";
 import { CLIP_FORMATS, clipDraftContext, clipDraftStorageKey, clipPreviewFormat, defaultClipDraft, readClipDraft, serializeClipDraft, toggleClipFormat } from "@/lib/clip-draft";
-import { clipExportFreshness } from "@/lib/clip-export";
+import { CLIP_FRESHNESS_LABELS, clipExportFreshness, clipExportItemFreshness } from "@/lib/clip-export";
 import { editablePublishedClipIds, publishedClipRangeRestores } from "@/lib/publishing-results";
 import { canRedoClipRanges, canUndoClipRanges, clipRangeHistoryReducer, emptyClipRangeHistory, type ClipRanges } from "@/lib/clip-range-history";
 import { clipPreviewIsStale, clipPreviewSelection, clipPreviewWindow, type ClipPreviewSelection } from "@/lib/clip-preview";
@@ -49,6 +49,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
   const [waveform, setWaveform] = useState<{ key: string; data?: Waveform; error?: string } | null>(null);
   const [waveformRetry, setWaveformRetry] = useState(0);
   const waveformHelpId = useId();
+  const reuseHelpId = useId();
   const clipStartFields = useRef<Record<number, HTMLInputElement | null>>({});
   const [options, setOptions] = useState<RenderOptions>({ resolution: "1080p", quality: "standard" });
   const [fill, setFill] = useState<FillMode>("blur");
@@ -113,12 +114,18 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     : [];
   const invalidSelected = selectedClips.filter((clip) => clipRangeError(rangeFor(clip), project.duration));
   const invalidCovers = selectedClips.filter((clip) => clipCoverError(covers[clip.id] ?? 0, rangeFor(clip)));
-  const clipRenderFreshness = clipRenderResult
-    ? (!result || !analysis ? "unknown" : clipExportFreshness(clipRenderResult, {
+  const clipExportInput = result && analysis ? {
       analysisId: analysis.id,
       clips: selectedClips.map((clip) => ({ id: clip.id, ...rangeFor(clip), cover: covers[clip.id] ?? 0 })),
       aspects, fill, options, renderRevision: project.render_revision,
-    })) : null;
+    } : null;
+  const clipRenderFreshness = clipRenderResult
+    ? (clipExportInput ? clipExportFreshness(clipRenderResult, clipExportInput) : "unknown") : null;
+  const clipItemFreshness = clipRenderResult && clipExportInput && result
+    ? Object.fromEntries(result.clips.map((clip) => [clip.id, clipExportItemFreshness(clipRenderResult, clipExportInput,
+      { id: clip.id, ...rangeFor(clip), cover: covers[clip.id] ?? 0 })])) : {};
+  const clipGroupFreshness = Object.fromEntries((clipRenderResult?.clip_request?.clips ?? []).map((clip, index) =>
+    [index + 1, clipItemFreshness[clip.id] ?? "unknown"]));
   const previewResultClip = shownClipPreview && result
     ? result.clips.find((clip) => clip.id === shownClipPreview.clip_id) : undefined;
   const clipPreviewStale = !!shownClipPreview && clipPreviewIsStale(shownClipPreview,
@@ -312,8 +319,9 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     catch (e) { notify((e as Error).message, true); }
     finally { setPending(false); }
   };
-  const render = async () => {
+  const render = async (reuse = false) => {
     if (!analysis || !result) return;
+    if (reuse && !clipRenderResult) return;
     if (invalidSelected.length > 0 || invalidCovers.length > 0) {
       notify("Seçili kliplerde geçersiz aralık veya kapak zamanı var; alanları düzeltin.", true);
       return;
@@ -322,6 +330,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
     try {
       await track(await api.renderClips(project.id, {
         ...options, analysis_id: analysis.id, clip_ids: selected, aspect_ratio: aspects[0], aspect_ratios: aspects, fill,
+        ...(reuse && clipRenderJob ? { reuse_job_id: clipRenderJob.id } : {}),
         clip_ranges: selectedClips.map((clip) => ({ id: clip.id, ...rangeFor(clip) })),
         clip_covers: selectedClips.map((clip) => ({ id: clip.id, at: covers[clip.id] ?? 0 })),
       }), () => notify("Bağımsız klipler hazır."));
@@ -398,6 +407,7 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
               <input type="checkbox" checked={selected.includes(clip.id)} disabled={disabled} onChange={(e) => setSelected((current) => e.target.checked ? [...current, clip.id] : current.filter((i) => i !== clip.id))} />
               {formatTime(range.start)} – {formatTime(range.end)} · {(range.end - range.start).toFixed(1)} sn
             </label>
+            {clipItemFreshness[clip.id] && <small>Son çıktı: {CLIP_FRESHNESS_LABELS[clipItemFreshness[clip.id]]}. Dosyalar sunucuda ayrıca doğrulanır.</small>}
             <div className={pub.trimRow}>
               <label>Başlangıç (sn)<input className="input" type="number" min="0" max={project.duration} step="0.1" value={range.start}
                 ref={(field) => { clipStartFields.current[clip.id] = field; }} aria-label={`${index + 1}. aday başlangıç (sn)`}
@@ -532,12 +542,20 @@ export default function ClipperPanel({ project, jobs, track, notify }: {
         <p className={pub.note}>Birden fazla format seçilebilir; her seçili klip için her formatta ayrı MP4 ve JPG üretilir, ZIP tüm dosyaları içerir. Son format kaldırılamaz. Kadrajı üstteki Önizleme formatı alanından değiştirebilirsiniz; önizlenen formatı çıktı listesinden kaldırırsanız ilk kalan format kullanılır. Format sayısı arttıkça render süresi de artar. Kaynak medya ve ana projenin çıktı formatı değişmez.</p>
         <RenderSettings value={options} onChange={setOptions} fill={fill} onFill={setFill} disabled={disabled} />
         <p className={pub.note}>Elle ayarlanan klipler 30–60 saniye aralığında kalmalı ve kaynak video sınırlarını aşmamalıdır. Seçilen her formatta bağımsız MP4 dosyaları hazırlanır. Kaynak ses ve varsa altyazı/renk stili korunur; editteki hız, kesimler, seslendirme ve zamanlı katmanlar bu kliplere uygulanmaz.</p>
-        <button id="clips-render" className="btn btn-primary" disabled={disabled || selected.length === 0 || invalidSelected.length > 0 || invalidCovers.length > 0} onClick={render}>
+        <button id="clips-render" className="btn btn-primary" disabled={disabled || selected.length === 0 || invalidSelected.length > 0 || invalidCovers.length > 0} onClick={() => render()}>
           {selected.length} klibi {aspects.length > 1 ? `${aspects.length} formatta ` : ""}hazırla
         </button>
+        {clipRenderResult && <>
+          <button id="clips-render-changed" className={`btn ${pub.trimShiftButton}`}
+            aria-describedby={reuseHelpId}
+            disabled={disabled || selected.length === 0 || invalidSelected.length > 0 || invalidCovers.length > 0}
+            onClick={() => render(true)}>Yalnızca değişenleri hazırla</button>
+          <p id={reuseHelpId} className={pub.note}>Önceki sonuçla girdileri ve kaynak hash&apos;i eşleşen MP4/JPG çiftleri doğrulanıp yeni pakete kopyalanır. Değişen veya yeni klip/formatlar, eksik/değiştirilmiş dosyalar ve hash bilgisi olmayan eski sonuçlar yeniden render edilir. ZIP dosyaları yeni seçimle hazırlanır; eski dosyalar değiştirilmez. Bu doğrulama otomatik render başlatmaz.</p>
+        </>}
       </>}
     </section>}
     <PublishingResults job={clipRenderJob}
+      clipFreshness={clipGroupFreshness}
       clipEditors={clipEditors}
       clipRangeRestorers={clipRangeRestorers}
       freshness={clipRenderFreshness === "stale" || clipRenderFreshness === "unknown" ? clipRenderFreshness : undefined} />

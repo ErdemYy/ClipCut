@@ -95,14 +95,17 @@ export type ClipRenderSnapshot = {
   aspect_ratio?: ExportFormat; aspect_ratios?: ExportFormat[]; fill: FillMode;
   resolution: RenderOptions["resolution"]; quality: RenderOptions["quality"];
   render_revision: string;
+  source_sha256?: string | null;
 };
 export type PublishResult = {
   archive: string;
   format_archives?: Partial<Record<ExportFormat, string>>;
   clip_archives?: { clip_index: number; start: number; end: number; archive: string }[];
+  reused_outputs?: number; rendered_outputs?: number;
   outputs: { label: string; aspect_ratio: ExportFormat; output: string; thumbnail: string;
     width: number; height: number; duration: number; thumbnail_fallback: boolean;
-    cover_at?: number; cover_source_at?: number; clip_index?: number }[];
+    cover_at?: number; cover_source_at?: number; clip_index?: number;
+    reused?: boolean; sha256?: string | null; thumbnail_sha256?: string | null }[];
   clip_request?: ClipRenderSnapshot;
 };
 export type ClipCandidate = {
@@ -306,6 +309,7 @@ export const api = {
   analyzeClips: (id: string, options: { min_duration: number; max_duration: number; max_clips: number }) =>
     request<Job>(`/api/projects/${id}/clips/analyze`, json(options)),
   renderClips: (id: string, options: RenderOptions & {
+    reuse_job_id?: string;
     analysis_id: string; clip_ids: number[]; aspect_ratio: ExportFormat;
     aspect_ratios?: ExportFormat[]; fill: FillMode;
     clip_ranges?: ClipRangeOverride[];

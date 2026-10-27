@@ -94,6 +94,7 @@ def clip_cover_time(at: float, duration: float) -> float:
 
 class ClipExportBody(RenderOptions):
     analysis_id: str = Field(..., pattern=r"^[a-f0-9]{12}$")
+    reuse_job_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{12}$")
     clip_ids: list[int] = Field(..., min_length=1, max_length=10)
     # Optional manual trims. When present every selected clip must have exactly one range.
     clip_ranges: list[ClipRange] | None = Field(default=None, min_length=1, max_length=10)

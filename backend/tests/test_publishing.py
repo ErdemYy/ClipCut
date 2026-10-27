@@ -293,6 +293,33 @@ def test_clip_api_rejects_foreign_and_invented_candidates(isolated_api):
                        json={**preview_manual, "clip_range": {"id": 0, "start": 100, "end": 135}}).status_code == 422
 
 
+@pytest.mark.parametrize("case", ["missing", "foreign", "running", "wrong-kind", "no-result", "valid"])
+def test_incremental_export_only_accepts_owned_completed_clip_jobs(isolated_api, case):
+    from sqlmodel import Session
+    from app.models import Job
+    client, engine, captures = isolated_api
+    with Session(engine) as s:
+        s.add(Job(id="abcdef123456", project_id="video", kind="clip_analyze", status="done", result={
+            "source_file": "source.mp4", "clips": [{"id": 0, "start": 30, "end": 65}],
+        }))
+        if case != "missing":
+            s.add(Job(id="111111111111", project_id="silent" if case == "foreign" else "video",
+                      kind="export_batch" if case == "wrong-kind" else "clip_render",
+                      status="running" if case == "running" else "done",
+                      result=None if case == "no-result" else {"outputs": [], "archive": "legacy.zip"}))
+        s.commit()
+    body = {"analysis_id": "abcdef123456", "clip_ids": [0], "reuse_job_id": "111111111111"}
+    response = client.post("/api/projects/video/clips/render", json=body)
+    assert response.status_code == (200 if case == "valid" else 422)
+    if case == "valid":
+        assert captures[-1][1][3] == {"project_id": "video", "result": {"outputs": [], "archive": "legacy.zip"}}
+    else:
+        assert captures == []
+    count = len(captures)
+    assert client.post("/api/projects/video/clips/render", json={**body, "reuse_job_id": "../invalid"}).status_code == 422
+    assert len(captures) == count
+
+
 def test_thumbnail_api_uses_unique_frame_and_checks_source_time(isolated_api, monkeypatch):
     from app import main
 
@@ -560,7 +587,7 @@ def test_real_multi_format_clip_render_outputs_and_archive(tmp_path, monkeypatch
         "clips": [{"id": 0, "start": 0.1, "end": 0.9, "cover_at": 0.4}],
         "aspect_ratio": "9:16", "aspect_ratios": ["9:16", "1:1"],
         "fill": "fit", "resolution": "720p", "quality": "fast",
-        "render_revision": jobs.render_revision(p),
+        "render_revision": jobs.render_revision(p), "source_sha256": before_hash,
     }
     assert snapshot == p.model_dump()
     assert hashlib.sha256(source.read_bytes()).hexdigest() == before_hash
@@ -573,6 +600,7 @@ def test_format_archives_reuse_outputs_without_extra_renders(tmp_path, monkeypat
     from app.models import Project
 
     monkeypatch.setattr(jobs, "project_dir", lambda _: tmp_path)
+    (tmp_path / "source.mp4").write_bytes(b"source-for-mocked-render")
     monkeypatch.setattr(jobs, "_save_project", lambda *_: pytest.fail("Publishing must not save the project"))
     renders = []
     def fake_render(req, progress):
@@ -693,7 +721,7 @@ def test_real_per_clip_cover_is_from_rendered_frame_and_in_zip(tmp_path, monkeyp
         "clips": [{"id": 0, "start": 5, "end": 35, "cover_at": cover_at}],
         "aspect_ratio": "9:16", "aspect_ratios": ["9:16"],
         "fill": "fit", "resolution": "720p", "quality": "fast",
-        "render_revision": jobs.render_revision(p),
+        "render_revision": jobs.render_revision(p), "source_sha256": before_hash,
     }
     thumb = tmp_path / out["thumbnail"].split("/projects/cover/")[1]
     raw = tmp_path / "cover.rgb"

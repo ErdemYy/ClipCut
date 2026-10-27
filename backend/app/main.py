@@ -1127,4 +1127,13 @@ def render_clips(project_id: str, body: ClipExportBody, session: Session = Depen
             clip_cover_time(clip["cover_at"], clip["end"] - clip["start"])
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return job_dict(jobs.submit(p.id, "clip_render", jobs.task_publish, p.model_dump(), body.model_dump(), selected))
+    previous = None
+    if body.reuse_job_id is not None:
+        old_job = session.get(Job, body.reuse_job_id)
+        if (not old_job or old_job.project_id != p.id or old_job.kind != "clip_render"
+                or old_job.status != "done" or not isinstance(old_job.result, dict)):
+            raise HTTPException(422, "Bu projeye ait tamamlanmış bir kısa klip sonucu seçin.")
+        previous = {"project_id": p.id, "result": copy.deepcopy(old_job.result)}
+    if previous is None:
+        return job_dict(jobs.submit(p.id, "clip_render", jobs.task_publish, p.model_dump(), body.model_dump(), selected))
+    return job_dict(jobs.submit(p.id, "clip_render", jobs.task_publish, p.model_dump(), body.model_dump(), selected, previous))

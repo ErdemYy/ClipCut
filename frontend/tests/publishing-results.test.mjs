@@ -25,6 +25,10 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL("../lib/publishing
   if (name === "./clip-trim") return trim;
   throw new Error(`Unexpected import ${name}`);
 } });
+const clipExport = {};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL("../lib/clip-export.ts", import.meta.url), "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2017 },
+}).outputText, { exports: clipExport });
 
 function groupedJob() {
   const clips = [1, 2].map((clip_index) => ({ clip_index, start: clip_index * 30,
@@ -57,6 +61,7 @@ function harness() {
     if (name === "react/jsx-runtime") return { jsx, jsxs: jsx };
     if (name === "next/image") return { default: "img" };
     if (name === "@/lib/publishing-results") return grouping;
+    if (name === "@/lib/clip-export") return clipExport;
     if (name === "@/lib/api") return { mediaUrl: (s) => `media:${s}`, downloadUrl: (s) => `download:${s}`, formatTime: String };
     if (name.endsWith(".css")) return { default: new Proxy({}, { get: (_, key) => key }) };
     throw new Error(`Unexpected import ${name}`);
@@ -67,15 +72,17 @@ function harness() {
   let freshness;
   let clipEditors;
   let clipRangeRestorers;
+  let clipFreshness;
   const nodes = (n) => !n || typeof n !== "object" ? []
     : [n, ...[n.props?.children].flat(Infinity).flatMap(nodes)];
-  const render = () => { cursor = 0; return nodes(exports.PublishingResults({ job, freshness, clipEditors, clipRangeRestorers })); };
+  const render = () => { cursor = 0; return nodes(exports.PublishingResults({ job, freshness, clipEditors, clipRangeRestorers, clipFreshness })); };
   const buttons = () => render().filter(n => n.type === "button" && typeof n.props["aria-expanded"] === "boolean");
   return { render, buttons, videos: () => render().filter(n => n.type === "video"),
     filter: () => render().find(n => n.type === "select"),
     formats: () => render().filter(n => n.type === "button" && typeof n.props["aria-pressed"] === "boolean"),
     setClipEditors: (value) => { clipEditors = value; },
     setClipRangeRestorers: (value) => { clipRangeRestorers = value; },
+    setClipFreshness: (value) => { clipFreshness = value; },
     setJob: (next) => { job = next; }, get job() { return job; }, setFreshness: (value) => { freshness = value; } };
 }
 
@@ -533,4 +540,25 @@ test("unfinished input is described without showing NaN timing", () => {
   const text = h.render().filter(n => n.type === "p").map(n => [n.props.children].flat(Infinity).join("")).join(" ");
   assert.match(text, /geçersiz veya tamamlanmamış giriş/);
   assert.equal(text.includes("NaN"), false);
+});
+
+test("incremental counts, per-clip freshness and reused-output labels are explicit", () => {
+  const h = harness(); const job = groupedJob();
+  job.result.reused_outputs = 2; job.result.rendered_outputs = 2;
+  job.result.outputs[0].reused = true;
+  h.setJob(job); h.setClipFreshness({ 1: "fresh", 2: "stale" });
+  const text = h.render().map(n => [n.props?.children].flat(Infinity).join("")).join(" ");
+  assert.match(text, /2 çıktı korundu · 2 çıktı yeniden hazırlandı/);
+  assert.match(text, /Girdiler aynı/);
+  assert.match(text, /Yeniden hazırlanmalı/);
+  assert.match(text, /Önceki sonuçtan doğrulanarak korundu/);
+  assert.equal(h.videos().length, 0);
+});
+
+test("legacy results without incremental metadata do not claim reused files", () => {
+  const h = harness(); h.setJob(groupedJob());
+  const text = h.render().map(n => [n.props?.children].flat(Infinity).join("")).join(" ");
+  assert.equal(text.includes("çıktı korundu"), false);
+  assert.equal(text.includes("Önceki sonuçtan doğrulanarak korundu"), false);
+  assert.equal(h.render().filter(n => n.type === "a" && n.props.download).length, 7);
 });

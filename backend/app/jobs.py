@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import shutil
 import threading
 import traceback
 import uuid
@@ -18,6 +19,7 @@ from sqlmodel import Session, select
 from . import assets
 from .ai import services as ai
 from .config import get_settings
+from .clip_reuse import file_sha256, reusable_clip_output
 from .edit.renderer import RenderRequest, render
 from .edit.schema import EditPlan
 from .edit.timeline import Timeline, build_timeline
@@ -402,7 +404,7 @@ def task_analyze_clips(progress, snapshot: dict, options: dict) -> dict:
             "empty_reason": None if clips else "Yeterli konuşma içeren 30–60 saniyelik bir aralık bulunamadı."}
 
 
-def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | None = None) -> dict:
+def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | None = None, previous: dict | None = None) -> dict:
     """Sequential batch with immutable editor snapshot and unique, job-local files."""
     from .publishing import FORMAT_NAMES, clip_cover_time, clip_plan, export_plan
 
@@ -413,6 +415,13 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
         for entry in clips:
             clip_cover_time(float(entry.get("cover_at", 0)), float(entry["end"]) - float(entry["start"]))
     pdir = project_dir(p.id)
+    revision = render_revision(p)
+    source_path = pdir / p.source_file if p.source_file else None
+    if clips is not None and options.get("analysis_id"):
+        progress(0, "Kaynak dosya doğrulanıyor")
+    source_sha = file_sha256(source_path) if clips is not None and options.get("analysis_id") and source_path else None
+    if clips is not None and options.get("analysis_id") and source_sha is None:
+        raise ValueError("Kaynak dosya doğrulanamadı; kaynağı kontrol edip yeniden deneyin.")
     token = uuid.uuid4().hex
     out_dir = pdir / "outputs" / token
     out_dir.mkdir(parents=True)
@@ -426,49 +435,71 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
     outputs = []
     files_by_format = {}
     files_by_clip = {}
+    reused_count = 0
     for i, (clip_index, entry, aspect) in enumerate(tasks):
-        plan = (clip_plan(base, entry["start"], entry["end"], aspect, options["fill"])
-                if entry is not None else export_plan(base, aspect, options["fill"]))
-        tl = project_timeline(p, plan)
         stem = (f"clip_{clip_index + 1:02d}_{FORMAT_NAMES[aspect]}" if clip_index is not None
                 else FORMAT_NAMES[aspect])
         output = out_dir / f"{stem}.mp4"
-        vo = pdir / p.voiceover_file if clips is None and p.voiceover_file else None
-        req = RenderRequest(
-            source=pdir / p.source_file, info=media_info(p), plan=plan, timeline=tl,
-            transcript=p.subtitles if clips is None or not p.voiceover_file else None,
-            work_dir=pdir / "work" / token / stem, output=output,
-            fonts_dir=assets.fonts_dir(), resolve_track=lambda t: assets.resolve_track(t, pdir),
-            resolve_overlay=lambda t: assets.resolve_overlay(t, pdir), voiceover=vo,
-            resolution=options["resolution"], quality=options["quality"],
-        )
-        progress(i / len(tasks), f"{i + 1}/{len(tasks)} · {aspect} render ediliyor")
-        meta = render(req, lambda value: progress((i + value * 0.95) / len(tasks), f"{i + 1}/{len(tasks)} · {aspect}"))
-        # Selected frame is in SOURCE time. Map it to each edited output;
-        # if it was cut away, explicitly fall back to that output's first frame.
-        selected_source = (entry["start"] + entry.get("cover_at", 0) if entry is not None
-                           else options.get("thumbnail_at", 0))
-        mapped = tl.map_time(selected_source)
-        at = min(max(0, mapped or 0), max(0, tl.output_duration - 0.1))
         thumb = out_dir / f"{stem}.jpg"
-        make_thumbnail(output, thumb, at=at)
+        cached = reusable_clip_output(previous, project_id=p.id, project_path=pdir, revision=revision,
+                                       source_sha256=source_sha, options=options, clip=entry, aspect=aspect) if entry is not None else None
+        meta = None
+        if cached is not None:
+            try:
+                # Copy, never hardlink: new results cannot modify or depend on old files.
+                shutil.copyfile(cached["video"], output)
+                shutil.copyfile(cached["thumbnail"], thumb)
+                if (file_sha256(output) == cached["sha256"]
+                        and file_sha256(thumb) == cached["thumbnail_sha256"]):
+                    meta = cached["metadata"]
+                    reused_count += 1
+                    progress((i + 0.95) / len(tasks), f"{i + 1}/{len(tasks)} · {aspect} önceki dosyalar korundu")
+            except OSError:
+                pass  # Missing/unreadable pairs render again, never silently disappear.
+        reused = meta is not None
+        if not reused:
+            plan = (clip_plan(base, entry["start"], entry["end"], aspect, options["fill"])
+                    if entry is not None else export_plan(base, aspect, options["fill"]))
+            tl = project_timeline(p, plan)
+            vo = pdir / p.voiceover_file if clips is None and p.voiceover_file else None
+            req = RenderRequest(
+                source=pdir / p.source_file, info=media_info(p), plan=plan, timeline=tl,
+                transcript=p.subtitles if clips is None or not p.voiceover_file else None,
+                work_dir=pdir / "work" / token / stem, output=output,
+                fonts_dir=assets.fonts_dir(), resolve_track=lambda t: assets.resolve_track(t, pdir),
+                resolve_overlay=lambda t: assets.resolve_overlay(t, pdir), voiceover=vo,
+                resolution=options["resolution"], quality=options["quality"],
+            )
+            progress(i / len(tasks), f"{i + 1}/{len(tasks)} · {aspect} render ediliyor")
+            meta = render(req, lambda value: progress((i + value * 0.95) / len(tasks), f"{i + 1}/{len(tasks)} · {aspect}"))
+            # Covers are SOURCE timestamps mapped through the rendered timeline.
+            selected_source = (entry["start"] + entry.get("cover_at", 0) if entry is not None
+                               else options.get("thumbnail_at", 0))
+            mapped = tl.map_time(selected_source)
+            at = min(max(0, mapped or 0), max(0, tl.output_duration - 0.1))
+            make_thumbnail(output, thumb, at=at)
+            if entry is not None:
+                meta.update(cover_at=at, cover_source_at=entry["start"] + at)
+            meta["thumbnail_fallback"] = mapped is None
         files_by_format.setdefault(aspect, []).extend([output, thumb])
         if clip_index is not None:
             files_by_clip.setdefault(clip_index + 1, []).extend([output, thumb])
-        cover_meta = {"cover_at": at, "cover_source_at": entry["start"] + at} if entry is not None else {}
         clip_meta = {"clip_index": clip_index + 1} if clip_index is not None else {}
-        outputs.append({"aspect_ratio": aspect, "label": stem, **meta, **cover_meta, **clip_meta,
+        outputs.append({"aspect_ratio": aspect, "label": stem, **meta, **clip_meta, "reused": reused,
                         "start": entry.get("start") if entry is not None else None,
                         "end": entry.get("end") if entry is not None else None,
                         "output": media_url(p.id, output.relative_to(pdir).as_posix()),
                         "thumbnail": media_url(p.id, thumb.relative_to(pdir).as_posix()),
-                        "thumbnail_fallback": mapped is None})
+                        "sha256": file_sha256(output), "thumbnail_sha256": file_sha256(thumb)})
+    if source_sha and file_sha256(source_path) != source_sha:
+        raise ValueError("Kaynak dosya işlem sırasında değişti; klipleri yeniden hazırlayın.")
     archive = out_dir / "clipcut_exports.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
         for file in sorted(out_dir.iterdir()):
             if file.suffix in {".mp4", ".jpg"}:
                 zf.write(file, file.name)
     result = {"outputs": outputs, "archive": media_url(p.id, archive.relative_to(pdir).as_posix()),
+              "reused_outputs": reused_count, "rendered_outputs": len(outputs) - reused_count,
               "rendered_at": datetime.now(timezone.utc).isoformat()}
     # Reuse the rendered files: per-format downloads never invoke FFmpeg again.
     # A single-format job already has exactly the right full archive.
@@ -502,6 +533,6 @@ def task_publish(progress, snapshot: dict, options: dict, clips: list[dict] | No
             "aspect_ratio": aspect_ratios[0], "aspect_ratios": aspect_ratios,
             "fill": options["fill"],
             "resolution": options["resolution"], "quality": options["quality"],
-            "render_revision": render_revision(p),
+            "render_revision": revision, "source_sha256": source_sha,
         }
     return result

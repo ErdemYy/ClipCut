@@ -84,6 +84,16 @@ Taslak zamanları son çıktıdan farklıysa, güvenle eşleşen grupta **Son re
 
 Geri getirilen aralık kapak zamanını dışarıda bırakırsa kapak otomatik taşınmaz: hata gösterilir ve render engellenir. Kapak düzeltilene veya aralık geri alınana kadar mevcut taslak doğrulama kuralları son geçerli kayıtlı taslağı korur. Eski/eşleşmeyen analiz veya proje revizyonunda otomatik aralık tahmini yapılmaz; elle düzenleme ve indirme bağlantıları kullanılabilir.
 
+### Yalnızca değişen klip çıktılarını hazırlama
+
+Bir kısa klip sonucu hazır olduğunda **Yalnızca değişenleri hazırla** düğmesi önceki sonucu kullanarak yeni seçimin tamamını paketler. Adaylarda ve sonuç gruplarında **Girdiler aynı / Yeniden hazırlanmalı / Doğrulanamıyor** durumu gösterilir. Bu, istek girdilerinin karşılaştırmasıdır; dosyaların gerçekten mevcut ve değişmemiş olduğu sunucuda ayrıca doğrulanır. Normal **Klipleri hazırla** düğmesi bütün seçili çıktıları yeniden render etmeye devam eder.
+
+Sunucu yalnızca aynı projeye ait tamamlanmış bir kısa klip işini temel alır. Analiz, proje render revizyonu, kaynak dosyanın SHA-256 hash'i, klip kimliği/aralığı/kapak zamanı, format, dolgu, çözünürlük ve kalite eşleşmelidir. Önceki MP4 ve JPG'nin kayıtlı hash'leri de doğrulanır. Eşleşen çiftler yeni işin klasörüne **kopyalanır**; eski dosyalar değiştirilmez veya hardlink ile bağlanmaz. Eksik, değiştirilmiş ya da doğrulanamayan çıktı çiftleri yeniden render edilir. Kaynak dosya okunup doğrulanamıyorsa render başlamadan hata verir. Kaynak işlem sırasında değişirse karışık bir sonuç yayınlanmaz; iş hata verir.
+
+Bir klibin aralığı veya kapağı değişirse yalnızca onun istenen formatları render edilir; kapak değişikliği de bu aşamada MP4/JPG çiftini yeniden üretir. Yeni formatlar ve klipler hazırlanır, kaldırılanlar yeni pakete alınmaz. Sadece klip/format sırasını değiştirmek aynı girdideki dosyaları yeniden render ettirmez; yeni dosya adları ve istek özeti yeni sırayı izler. Dolgu, kalite, çözünürlük, analiz veya proje revizyonu değişirse güvenli biçimde yeniden render yapılır. Tam, format bazlı ve klip bazlı ZIP'ler yeni seçimin bütün dosyalarından yeniden oluşturulur.
+
+Sonuçtaki **2 çıktı korundu · 2 çıktı yeniden hazırlandı** gibi sayaçlar, her biri bir MP4/JPG çifti olan format çıktılarını sayar; korunan kartlar ayrıca işaretlenir. Eski sonuçlarda kaynak/çıktı hash bilgisi yoksa ilk işlem bütün gerekli çiftleri yeniden üretir. İşlem otomatik başlamaz ve ücretli AI/TTS çağrısı yapmaz. Amaç render süresini azaltmaktır: hash kontrolü, kopyalama ve ZIP hazırlama yine zaman/disk alanı kullanır; otomatik dosya temizleme yapılmaz. Bu özellik analiz tabanlı kısa klipler içindir; ana video toplu dışa aktarımı ve transkript klipleri mevcut tam-render davranışını korur.
+
 ## Senaryodan çok sahneli video
 
 1. **Yeni Video → Senaryodan Üret** bölümüne konuyu veya hazır senaryoyu yazın; dil, format, ortak stil, 2–12 sahne ve sahne süresini seçin.
