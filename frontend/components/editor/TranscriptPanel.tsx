@@ -75,7 +75,7 @@ export default function TranscriptPanel({ project, setProject, jobs, track, noti
       <p role="alert" className={pub.error}>{loaded.error}</p> : null}
     <button className="btn btn-sm" disabled={pending || active || !ready} onClick={() => { setRefresh((v) => v + 1); setSelection(null); }}>Transkripti yenile</button>
     {data?.blocked_reason && <p role="alert" className={pub.error}>{data.blocked_reason}</p>}
-    {data?.mock && <p className={pub.note}>Demo transkripti: bu metin gerçek konuşmayı temsil etmeyebilir.</p>}
+    {data?.mock && <p className={pub.note}>Test transkripti: bu metin gerçek konuşmadan çıkarılmamıştır.</p>}
     {data && !data.segments.length && <p className={pub.note}>Kaynak transkripti yok veya kullanılabilir zamanlı satır bulunamadı. Altyazı panelinden transkript oluşturabilirsiniz; gerçek modda API kullanımı ücretli olabilir.</p>}
     {!!data?.segments.length && <>
       <label className="label" htmlFor="transcript-search">Transkriptte ara · {data.language?.toUpperCase() || "UND"}</label>

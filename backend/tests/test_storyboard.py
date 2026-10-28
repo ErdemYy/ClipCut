@@ -210,7 +210,7 @@ def test_real_voiceover_fails_instead_of_synthetic_fallback(studio, tmp_path, mo
     async def unavailable(*args, **kwargs):
         raise RuntimeError("service unavailable")
     monkeypatch.setattr(tts, "_edge_tts_generate", unavailable)
-    with pytest.raises(RuntimeError, match="demo tonu"):
+    with pytest.raises(RuntimeError, match="sentetik test tonu"):
         tts.generate_voiceover("Real narration", out_path=tmp_path / "voice.mp3", mock_mode=False, allow_fallback=False)
     assert not (tmp_path / "voice.mp3").exists()
 
@@ -571,9 +571,12 @@ def test_cancellable_submit_passes_the_event_and_cleans_up(studio):
     from sqlmodel import Session
 
     from app import jobs
-    from app.models import Job
+    from app.models import Job, Project
 
     client, _, engine, _ = studio
+    with Session(engine) as s:
+        s.add(Project(id="cancel-wiring", name="Cancellation test"))
+        s.commit()
 
     def task(progress, cancel):
         assert isinstance(cancel, threading.Event)
@@ -760,9 +763,12 @@ def test_duplicate_active_job_is_rejected_by_submit(studio):
     from sqlmodel import Session as SqlSession
 
     from app import jobs
-    from app.models import Job
+    from app.models import Job, Project
 
     client, _, engine, _ = studio
+    with SqlSession(engine) as s:
+        s.add(Project(id="dup-test", name="Duplicate test"))
+        s.commit()
     release = threading.Event()
 
     def slow_task(progress):

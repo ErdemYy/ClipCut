@@ -39,7 +39,7 @@ export type Project = {
   plan?: Plan;
   can_undo?: boolean;
   chat?: ChatMessage[];
-  output_meta?: { duration: number; width: number; height: number; rendered_at: string; timeline?: TimelineInfo } | null;
+  output_meta?: { duration: number; width: number; height: number; rendered_at: string; render_revision?: string; timeline?: TimelineInfo } | null;
   storyboard?: Storyboard | null;
 };
 
@@ -342,6 +342,13 @@ export const downloadUrl = (path: string | null | undefined) => {
   return match ? `${API_URL}/api/projects/${match[1]}/download/${match[2]}` : mediaUrl(path);
 };
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -349,14 +356,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     cache: "no-store",
   });
   if (!res.ok) {
-    let detail = res.statusText;
+    const text = await res.text();
+    let detail = text || res.statusText;
     try {
-      const data = await res.json();
-      detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+      const data = JSON.parse(text);
+      detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail) || detail;
     } catch {
       /* yok */
     }
-    throw new Error(detail || `İstek başarısız (${res.status})`);
+    throw new ApiError(detail || `İstek başarısız (${res.status})`, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -372,8 +380,8 @@ export const api = {
   templates: () => request<Template[]>("/api/templates"),
   applyTemplate: (projectId: string, templateId: string) =>
     request<{ summary: string; project: Project }>(`/api/projects/${projectId}/apply-template/${templateId}`, { method: "POST" }),
-  projects: () => request<Project[]>("/api/projects"),
-  project: (id: string) => request<Project>(`/api/projects/${id}`),
+  projects: (signal?: AbortSignal) => request<Project[]>("/api/projects", { signal }),
+  project: (id: string, signal?: AbortSignal) => request<Project>(`/api/projects/${id}`, { signal }),
   rename: (id: string, name: string) => request<Project>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   remove: (id: string) => request<{ ok: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
   upload: (file: File, name: string) => {
@@ -394,7 +402,7 @@ export const api = {
   cancelJob: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   restoreStoryboardVersion: (id: string, body: { version_index: number; confirm: boolean }) =>
     request<Project>(`/api/projects/${id}/storyboard/restore`, json(body)),
-  job: (id: string) => request<Job>(`/api/jobs/${id}`),
+  job: (id: string, signal?: AbortSignal) => request<Job>(`/api/jobs/${id}`, { signal }),
   jobs: (projectId: string) => request<Job[]>(`/api/projects/${projectId}/jobs`),
   outputStorage: (id: string) => request<OutputStorageInfo>(`/api/projects/${id}/outputs`),
   cleanupOutputs: (id: string, tokens: string[]) =>
@@ -415,7 +423,7 @@ export const api = {
     request<Project>(`/api/projects/${id}/subtitles`, { method: "PUT", body: JSON.stringify({ segments, revision }) }),
   edit: (id: string, prompt: string) =>
     request<{ summary: string; changed: boolean; project: Project }>(`/api/projects/${id}/edit`, json({ prompt })),
-  setPlan: (id: string, plan: Plan) => request<Project>(`/api/projects/${id}/plan`, { method: "PUT", body: JSON.stringify({ plan }) }),
+  setPlan: (id: string, plan: Plan, revision?: string) => request<Project>(`/api/projects/${id}/plan`, { method: "PUT", body: JSON.stringify({ plan, revision }) }),
   undo: (id: string) => request<Project>(`/api/projects/${id}/plan/undo`, { method: "POST" }),
   timeline: (id: string) => request<TimelineInfo>(`/api/projects/${id}/timeline`),
   setLayerTimings: (id: string, revision: string, layers: LayerTiming[]) => request<Project>(`/api/projects/${id}/timeline/layers`,
@@ -475,13 +483,44 @@ export const api = {
   subtitleExportUrl: (id: string, fmt: "srt" | "vtt") => `${API_URL}/api/projects/${id}/subtitles.${fmt}`,
 };
 
-/** Bir işi tamamlanana kadar izler. */
-export async function waitForJob(id: string, onUpdate: (job: Job) => void, intervalMs = 1000): Promise<Job> {
+function pollingDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    const abort = () => { clearTimeout(timer); reject(signal?.reason); };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+/** Retry only safe job reads, never the POST that starts paid work. */
+export async function waitForJob(id: string, onUpdate: (job: Job) => void, intervalMs = 1000,
+  options: { signal?: AbortSignal; onConnectionChange?: (connected: boolean) => void } = {}): Promise<Job> {
+  let failures = 0;
   for (;;) {
-    const job = await api.job(id);
+    options.signal?.throwIfAborted();
+    let job: Job;
+    try {
+      const timeout = AbortSignal.timeout(15000);
+      const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+      job = await api.job(id, signal);
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      if (!(error instanceof TypeError) && !(error instanceof DOMException && error.name === "TimeoutError") &&
+          !(error instanceof ApiError && (error.status === 408 || error.status === 429 || error.status >= 500))) throw error;
+      if (failures === 0) options.onConnectionChange?.(false);
+      failures++;
+      await pollingDelay(Math.min(10000, Math.max(intervalMs, 1000) * 2 ** Math.min(failures - 1, 4)), options.signal);
+      continue;
+    }
+    options.signal?.throwIfAborted();
+    if (failures > 0) options.onConnectionChange?.(true);
+    failures = 0;
     onUpdate(job);
     if (job.status === "done" || job.status === "failed") return job;
-    await new Promise((r) => setTimeout(r, intervalMs));
+    await pollingDelay(intervalMs, options.signal);
   }
 }
 
@@ -546,4 +585,3 @@ export function describeOp(op: Operation): string {
 }
 
 export type JobMap = Partial<Record<Job["kind"], Job>>;
-

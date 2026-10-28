@@ -11,6 +11,24 @@
   height: 60vh;
   color: var(--text-dim);
 }
+.loadError {
+  min-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.loadError p {
+  margin-top: 12px;
+  color: var(--text-dim);
+}
+.loadError button,
+.loadError a {
+  min-height: 44px;
+}
 .topbar {
   display: flex;
   align-items: center;

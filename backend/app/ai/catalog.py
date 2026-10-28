@@ -269,7 +269,7 @@ def preflight(
     estimated = round(sum(required_costs), 4) if priced else None
     warnings = []
     if settings.is_mock:
-        warnings.append("Demo modu: gerçek sağlayıcı çağrısı yapılmaz, ücret oluşmaz.")
+        warnings.append("Test sağlayıcısı: gerçek AI çağrısı yapılmaz, ücret oluşmaz.")
     if video.note:
         warnings.append(video.note)
     if text.note and planning_scene_count:

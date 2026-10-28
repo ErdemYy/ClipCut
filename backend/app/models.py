@@ -81,6 +81,8 @@ def init_db() -> None:
         for job in s.exec(select(Job).where(Job.status.in_(["queued", "running"]))).all():
             job.status = "failed"
             job.error = "Sunucu yeniden başlatıldı."
+            job.message = "İşlem yarım kaldı; yeniden başlatabilirsiniz."
+            job.finished_at = _now()
             s.add(job)
         for p in s.exec(select(Project).where(Project.status == "generating")).all():
             p.status = "ready" if p.storyboard and p.source_file else "failed"

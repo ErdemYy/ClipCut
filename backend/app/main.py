@@ -272,15 +272,22 @@ def upload_project(file: UploadFile = File(...), name: str = Form(""), session: 
     p = Project(name=name.strip() or Path(file.filename or "Video").stem, origin="upload")
     pdir = jobs.project_dir(p.id)
     dst = pdir / f"source{ext}"
-    with dst.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
     try:
-        jobs.ingest_source(p, dst)
-    except Exception as exc:
+        try:
+            with dst.open("wb") as out:
+                shutil.copyfileobj(file.file, out)
+        except OSError as exc:
+            raise HTTPException(507, "Video kaydedilemedi; disk alanını ve yazma izinlerini kontrol edin.") from exc
+        try:
+            jobs.ingest_source(p, dst)
+        except Exception as exc:
+            raise HTTPException(400, f"Video okunamadı: {exc}") from exc
+        session.add(p)
+        session.commit()
+    except Exception:
+        session.rollback()
         shutil.rmtree(pdir, ignore_errors=True)
-        raise HTTPException(400, f"Video okunamadı: {exc}") from exc
-    session.add(p)
-    session.commit()
+        raise
     session.refresh(p)
     return serialize(p)
 
@@ -299,6 +306,11 @@ class GenerateBody(BaseModel):
 async def duplicate_job_handler(_request: Any, exc: jobs.DuplicateJobError) -> PlainTextResponse:
     # Any double submission (transcribe/translate/render/export/generate) maps to a clean 409.
     return PlainTextResponse(str(exc), status_code=409, media_type="text/plain; charset=utf-8")
+
+
+@app.exception_handler(jobs.ProjectNotFoundError)
+async def missing_job_project_handler(_request: Request, exc: jobs.ProjectNotFoundError) -> PlainTextResponse:
+    return PlainTextResponse(str(exc), status_code=404)
 
 
 @app.post("/api/projects/generate")
@@ -547,12 +559,18 @@ def patch_project(project_id: str, body: PatchBody, session: Session = Depends(g
 
 @app.delete("/api/projects/{project_id}")
 def delete_project(project_id: str, session: Session = Depends(get_session)) -> dict:
-    p = get_project(project_id, session)
-    session.delete(p)
-    for j in session.exec(select(Job).where(Job.project_id == project_id)).all():
-        session.delete(j)
-    session.commit()
-    shutil.rmtree(settings.storage_dir / "projects" / project_id, ignore_errors=True)
+    # Share submit's lock: checking active jobs and deleting must not race a submit
+    # in this process. Workers need their project/files until they have finished.
+    with jobs._submit_lock:
+        p = get_project(project_id, session)
+        rows = session.exec(select(Job).where(Job.project_id == project_id)).all()
+        if any(j.status in ("queued", "running") for j in rows):
+            raise HTTPException(409, "Projedeki işlem sırada veya sürüyor; silmeden önce bitmesini bekleyin.")
+        session.delete(p)
+        for j in rows:
+            session.delete(j)
+        session.commit()
+        shutil.rmtree(settings.storage_dir / "projects" / project_id, ignore_errors=True)
     return {"ok": True}
 
 
@@ -798,53 +816,66 @@ def edit_with_prompt(project_id: str, body: EditBody, session: Session = Depends
     if p.status != "ready":
         raise HTTPException(409, "Video henüz hazır değil.")
     current = EditPlan.model_validate(p.plan)
+    revision = jobs.render_revision(p)
     try:
         plan, summary = ai.plan_edit(body.prompt, current, _context(p))
     except Exception as exc:
         raise HTTPException(502, f"Planlayıcı hatası: {exc}") from exc
-    changed = plan.model_dump() != current.model_dump()
-    if changed:
-        _set_plan(p, plan)
-    now = datetime.now(timezone.utc).isoformat()
-    p.chat = [*p.chat, {"role": "user", "text": body.prompt, "at": now},
-              {"role": "assistant", "text": summary, "at": now, "changed": changed}][-100:]
-    session.add(p)
-    session.commit()
-    session.refresh(p)
-    return {"summary": summary, "changed": changed, "project": serialize(p)}
+    with _layer_edit_lock:
+        session.refresh(p)
+        if revision != jobs.render_revision(p):
+            raise HTTPException(409, "Plan hazırlanırken edit veya kaynak değişti; komut uygulanmadı. Güncel projeyi yükleyin.")
+        changed = plan.model_dump() != current.model_dump()
+        if changed:
+            _set_plan(p, plan)
+        now = datetime.now(timezone.utc).isoformat()
+        p.chat = [*p.chat, {"role": "user", "text": body.prompt, "at": now},
+                  {"role": "assistant", "text": summary, "at": now, "changed": changed}][-100:]
+        session.add(p)
+        session.commit()
+        session.refresh(p)
+        return {"summary": summary, "changed": changed, "project": serialize(p)}
 
 
 class PlanBody(BaseModel):
     plan: dict[str, Any]
+    revision: Optional[str] = Field(None, min_length=64, max_length=64)
 
 
 @app.put("/api/projects/{project_id}/plan")
 def put_plan(project_id: str, body: PlanBody, session: Session = Depends(get_session)) -> dict:
-    p = get_project(project_id, session)
     try:
         plan = EditPlan.model_validate(body.plan)
     except ValidationError as exc:
         raise HTTPException(422, exc.errors(include_url=False)) from exc
-    _set_plan(p, plan)
-    session.add(p)
-    session.commit()
-    session.refresh(p)
-    return serialize(p)
+    with _layer_edit_lock:
+        p = get_project(project_id, session)
+        session.refresh(p)
+        if body.revision is not None and body.revision != jobs.render_revision(p):
+            raise HTTPException(409, "Edit planı veya kaynak değişti; sayfayı yenileyip değişikliğinizi tekrar uygulayın.")
+        if plan.model_dump() != p.plan:
+            _set_plan(p, plan)
+            session.add(p)
+            session.commit()
+            session.refresh(p)
+        return serialize(p)
 
 
 @app.post("/api/projects/{project_id}/plan/undo")
 def undo_plan(project_id: str, session: Session = Depends(get_session)) -> dict:
-    p = get_project(project_id, session)
-    if not p.plan_history:
-        raise HTTPException(409, "Geri alınacak adım yok.")
-    history = list(p.plan_history)
-    p.plan = history.pop()
-    p.plan_history = history
-    touch(p)
-    session.add(p)
-    session.commit()
-    session.refresh(p)
-    return serialize(p)
+    with _layer_edit_lock:
+        p = get_project(project_id, session)
+        session.refresh(p)
+        if not p.plan_history:
+            raise HTTPException(409, "Geri alınacak adım yok.")
+        history = list(p.plan_history)
+        p.plan = history.pop()
+        p.plan_history = history
+        touch(p)
+        session.add(p)
+        session.commit()
+        session.refresh(p)
+        return serialize(p)
 
 
 @app.get("/api/projects/{project_id}/timeline")

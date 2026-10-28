@@ -52,7 +52,11 @@ export default function EditPanel({ project, setProject, notify, disabled }: Pro
 
   const removeOp = async (index: number) => {
     const plan = { operations: ops.filter((_, i) => i !== index) };
-    setProject(await api.setPlan(project.id, plan));
+    try {
+      setProject(await api.setPlan(project.id, plan, project.render_revision));
+    } catch (e) {
+      notify((e as Error).message, true);
+    }
   };
 
   const undo = async () => {

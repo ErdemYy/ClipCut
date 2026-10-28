@@ -6,6 +6,7 @@ import { JobProgress } from "./SubtitlePanel";
 import { PublishingResults, RenderSettings } from "./PublishingControls";
 import OutputStoragePanel from "./OutputStoragePanel";
 import PreviewPanel from "./PreviewPanel";
+import { mainRenderMessage } from "@/lib/render-preview";
 import styles from "./editor-parts.module.css";
 import pub from "./publishing.module.css";
 
@@ -86,6 +87,7 @@ export default function ExportPanel({ project, jobs, setProject, track, notify, 
     <OutputStoragePanel projectId={project.id} disabled={disabled} notify={notify} />
     {jobs.render?.status === "failed" && <p className={pub.error} role="alert">{jobs.render.error}</p>}
     {project.output_url && <a className="btn" href={downloadUrl(project.output_url)} download id="export-download">Son tekli render · MP4 indir</a>}
+    {project.output_url && <p className={pub.note} role="status">{mainRenderMessage(project)}</p>}
     {project.has_transcript && <div className={pub.actions}>
       <a className="btn btn-sm" href={api.subtitleExportUrl(project.id, "srt")}>SRT altyazı</a>
       <a className="btn btn-sm" href={api.subtitleExportUrl(project.id, "vtt")}>VTT altyazı</a>

@@ -67,7 +67,7 @@ export default function GenerationCost(props: Props) {
   return <section className={styles.cost} aria-labelledby={`${budgetId}-title`}>
     <header className={styles.head}>
       <h4 id={`${budgetId}-title`}>Model ve maliyet</h4>
-      <span className={styles.badge}>{catalog?.mock ? "Demo · ücretsiz" : "Tahmini liste fiyatı"}</span>
+      <span className={styles.badge}>{catalog?.mock ? "Test sağlayıcısı · ücretsiz" : "Tahmini liste fiyatı"}</span>
     </header>
     <div className={styles.models}>
       {onVideoModel && <label>Video modeli

@@ -19,6 +19,7 @@ import StoryboardPanel from "@/components/editor/StoryboardPanel";
 import SceneTimeline from "@/components/editor/SceneTimeline";
 import TranscriptPanel from "@/components/editor/TranscriptPanel";
 import styles from "./editor.module.css";
+import { mainRenderFreshness, mainRenderMessage } from "@/lib/render-preview";
 
 type PanelTab = "scenes" | "templates" | "voiceover" | "broll" | "edit" | "transcript" | "subtitles" | "audio" | "clips" | "export";
 const TABS: { id: PanelTab; label: string; icon: string }[] = [
@@ -37,6 +38,8 @@ const TABS: { id: PanelTab; label: string; icon: string }[] = [
 export default function EditorPage() {
   const { id } = useParams<{ id: string }>();
   const [project, updateProject] = useState<Project | null>(null);
+  const [loadError, setLoadError] = useState<{ id: string; message: string } | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [storyDraft, setStoryDraft] = useState<Storyboard | null>(null);
   const [storyPending, setStoryPending] = useState(false);
   const [library, setLibrary] = useState<Library | null>(null);
@@ -48,7 +51,7 @@ export default function EditorPage() {
   const [time, setTime] = useState(0);
   const [editingName, setEditingName] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const tracking = useRef<Set<string>>(new Set());
+  const tracking = useRef<Map<string, AbortController>>(new Map());
   const setProject = useCallback((p: Project) => {
     updateProject(p);
     setStoryDraft((current) => current?.revision === p.storyboard?.revision ? current : p.storyboard ?? null);
@@ -59,52 +62,87 @@ export default function EditorPage() {
     setTimeout(() => setToast(null), 4200);
   }, []);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (signal?: AbortSignal) => {
     const p = await api.project(id);
-    setProject(p);
+    if (!signal?.aborted) setProject(p);
     return p;
   }, [id, setProject]);
 
   const track = useCallback(
     async (job: Job, onDone?: (job: Job) => void) => {
       if (tracking.current.has(job.id)) return;
-      tracking.current.add(job.id);
+      const controller = new AbortController();
+      tracking.current.set(job.id, controller);
       setJobs((m) => ({ ...m, [job.kind]: job }));
       try {
-        const final = await waitForJob(job.id, (j) => setJobs((m) => ({ ...m, [j.kind]: j })));
-        await reload();
+        const final = await waitForJob(job.id, (j) => setJobs((m) => ({ ...m, [j.kind]: j })), 1000, {
+          signal: controller.signal,
+          onConnectionChange: (connected) => notify(connected ? "Bağlantı geri geldi; iş takibi sürüyor." :
+            "Bağlantı kesildi; iş yeniden başlatılmadan takip tekrar denenecek.", !connected),
+        });
+        try { await reload(controller.signal); }
+        catch { if (!controller.signal.aborted) notify("İş sonucu alındı, proje yenilenemedi; sayfayı yenileyebilirsiniz.", true); }
+        if (controller.signal.aborted) return;
         if (final.status === "failed") notify(final.error || "İşlem başarısız.", true);
         else onDone?.(final);
       } catch (e) {
+        if (controller.signal.aborted) return;
         notify((e as Error).message, true);
         setJobs((m) => {
           if (m[job.kind]?.id !== job.id) return m;
           const next = { ...m }; delete next[job.kind]; return next;
         });
-      } finally { tracking.current.delete(job.id); }
+      } finally {
+        if (tracking.current.get(job.id) === controller) tracking.current.delete(job.id);
+      }
     },
     [reload, notify],
   );
 
   useEffect(() => {
-    api.project(id).then((p) => { setProject(p); if (p.storyboard) setTab("scenes"); }).catch((e: Error) => notify(e.message, true));
-    api.library().then(setLibrary).catch(() => {});
+    const active = tracking.current;
+    return () => {
+      active.forEach((controller) => controller.abort());
+      active.clear();
+    };
+  }, [id]);
+
+  useEffect(() => {
+    let disposed = false;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]);
+    api.project(id, signal).then((p) => {
+      if (!disposed) { setLoadError(null); setProject(p); if (p.storyboard) setTab("scenes"); }
+    }).catch((e: Error) => {
+      if (!disposed) setLoadError({ id, message: e.name === "TimeoutError" ? "Proje isteği zaman aşımına uğradı." : e.message });
+    });
+    api.library().then((value) => { if (!disposed) setLibrary(value); }).catch(() => {});
     api
       .jobs(id)
       .then((list) => {
+        if (disposed) return;
         const latest: JobMap = {};
         list.forEach((j) => { if (!latest[j.kind]) latest[j.kind] = j; });
-        setJobs((current) => ({ ...latest, ...current }));
+        setJobs((current) => ({ ...latest, ...Object.fromEntries(
+          Object.entries(current).filter(([, job]) => job?.project_id === id),
+        ) }));
         list.filter((j) => j.status === "queued" || j.status === "running").forEach((j) => track(j));
       })
       .catch(() => {});
-  }, [id, track, notify, setProject]);
+    return () => { disposed = true; controller.abort(); };
+  }, [id, track, notify, setProject, loadAttempt]);
 
   // Üretim sürüyorsa periyodik yenile
   useEffect(() => {
     if (project?.status !== "generating") return;
-    const t = setInterval(reload, 2500);
-    return () => clearInterval(t);
+    const controller = new AbortController();
+    let pending = false;
+    const t = setInterval(() => {
+      if (pending) return;
+      pending = true;
+      void reload(controller.signal).catch(() => {}).finally(() => { pending = false; });
+    }, 2500);
+    return () => { controller.abort(); clearInterval(t); };
   }, [project?.status, reload]);
 
   // Plan değişince zaman çizelgesini güncelle
@@ -131,9 +169,23 @@ export default function EditorPage() {
     if (project && name.trim() && name !== project.name) setProject(await api.rename(id, name));
   };
 
-  if (!project) {
+  if (!project || project.id !== id) {
+    const message = loadError?.id === id ? loadError.message : null;
+    if (message) return (
+      <main className={`${styles.page} ${styles.loadError}`}>
+        <div role="alert">
+          <h1>Proje yüklenemedi</h1>
+          <p>{message}</p>
+          <p>Bağlantıyı kontrol edip yeniden deneyin. Proje silinmişse proje listesine dönün.</p>
+        </div>
+        <button id="editor-retry" className="btn btn-primary" onClick={() => { setLoadError(null); setLoadAttempt((value) => value + 1); }}>
+          Yeniden dene
+        </button>
+        <Link href="/dashboard" className="btn btn-ghost">Projelere dön</Link>
+      </main>
+    );
     return (
-      <main className={styles.loading}>
+      <main className={styles.loading} role="status" aria-live="polite">
         <span className="spinner" /> Proje yükleniyor…
       </main>
     );
@@ -224,9 +276,10 @@ export default function EditorPage() {
                   disabled={!project.output_url}
                   title={project.output_url ? "" : "Henüz render alınmadı"}
                 >
-                  Render Çıktısı {project.output_url ? "✓" : ""}
+                  Render Çıktısı {mainRenderFreshness(project) === "fresh" ? "✓" : ""}
                 </button>
               </div>
+              {view === "output" && project.output_url && <p role="status" aria-live="polite">{mainRenderMessage(project)}</p>}
               <Player
                 ref={videoRef}
                 project={project}

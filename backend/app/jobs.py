@@ -39,6 +39,10 @@ class DuplicateJobError(RuntimeError):
     """Raised when the same job kind is already queued or running for the project."""
 
 
+class ProjectNotFoundError(ValueError):
+    """The project disappeared before a task could be queued."""
+
+
 def project_dir(project_id: str) -> Path:
     d = get_settings().storage_dir / "projects" / project_id
     d.mkdir(parents=True, exist_ok=True)
@@ -95,6 +99,8 @@ def submit(project_id: str, kind: str, fn: Callable[..., dict | None], *args, ca
     # calls (generate/transcribe/translate) or waste long local runs (render/export).
     with _submit_lock:
         with Session(engine) as s:
+            if s.get(Project, project_id) is None:
+                raise ProjectNotFoundError("Proje bulunamadı")
             active = s.exec(select(Job).where(
                 Job.project_id == project_id, Job.kind == kind,
                 Job.status.in_(("queued", "running")))).first()  # type: ignore[attr-defined]
@@ -111,7 +117,20 @@ def submit(project_id: str, kind: str, fn: Callable[..., dict | None], *args, ca
                 with _cancel_lock:
                     _cancels[job_id] = cancel_event
     # The event is appended as the last positional argument for cancellable tasks.
-    _executor.submit(_run, job_id, fn, cancel_event, *args)
+    try:
+        _executor.submit(_run, job_id, fn, cancel_event, *args)
+    except Exception as exc:
+        # A persisted queued row must not block retries if the executor rejects it.
+        _update(job_id, status="failed", message="İş başlatılamadı", error=str(exc)[:4000],
+                finished_at=datetime.now(timezone.utc))
+        with _cancel_lock:
+            _cancels.pop(job_id, None)
+        if kind in ("generate", "storyboard_generate"):
+            def failed_start(p: Project) -> None:
+                if p.status == "generating":
+                    p.status = "ready" if p.source_file else "failed"
+            _save_project(project_id, failed_start)
+        raise
     with Session(engine) as s:
         return s.get(Job, job_id)
 
@@ -264,6 +283,7 @@ def task_render(progress, project_id: str, options: dict | None = None) -> dict:
     pdir = project_dir(project_id)
     plan = EditPlan.model_validate(p.plan)
     progress(0.03, "Zaman çizelgesi hesaplanıyor")
+    revision = render_revision(p)
     timeline = project_timeline(p, plan)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     out_rel = f"outputs/clipcut_{stamp}.mp4"
@@ -280,6 +300,8 @@ def task_render(progress, project_id: str, options: dict | None = None) -> dict:
     meta = render(req, lambda v: progress(0.06 + v * 0.92, "Render ediliyor"))
     meta["timeline"] = timeline.to_dict()
     meta["rendered_at"] = datetime.now(timezone.utc).isoformat()
+    # Capture the rendered snapshot, never the potentially newer project at publication.
+    meta["render_revision"] = revision
 
     def mutate(proj: Project) -> None:
         proj.output_file = out_rel

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, API_URL, downloadUrl, formatTime, mediaUrl, type Project } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 import styles from "./dashboard.module.css";
@@ -10,13 +10,34 @@ export default function DashboardPage() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const request = useRef<AbortController | null>(null);
+  const deletion = useRef<string | null>(null);
 
-  const load = useCallback(() => {
-    api.projects().then(setProjects).catch((e: Error) => setError(e.message));
+  const load = useCallback(async () => {
+    if (request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    try {
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]);
+      const value = await api.projects(signal);
+      if (!controller.signal.aborted) { setProjects(value); setError(null); }
+    } catch (e) {
+      if (!controller.signal.aborted) setError((e as Error).name === "TimeoutError" ? "Proje listesi isteği zaman aşımına uğradı." : (e as Error).message);
+    } finally {
+      if (request.current === controller) {
+        request.current = null;
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }
   }, []);
 
   useEffect(() => {
-    load();
+    let disposed = false;
+    void Promise.resolve().then(() => { if (!disposed) return load(); });
+    return () => { disposed = true; request.current?.abort(); request.current = null; };
   }, [load]);
 
   // Üretimde olan proje varsa periyodik yenile
@@ -27,9 +48,20 @@ export default function DashboardPage() {
   }, [projects, load]);
 
   const remove = async (p: Project) => {
+    if (deletion.current) return;
     if (!confirm(`“${p.name}” projesi silinsin mi?`)) return;
-    await api.remove(p.id);
-    load();
+    deletion.current = p.id;
+    setDeleting(p.id);
+    setActionError(null);
+    try {
+      await api.remove(p.id);
+      request.current?.abort();
+      request.current = null;
+      setProjects((current) => current?.filter((item) => item.id !== p.id) ?? null);
+      await load();
+    } catch (e) {
+      setActionError(`Proje silinemedi: ${(e as Error).message}`);
+    } finally { deletion.current = null; setDeleting(null); }
   };
 
   const filtered = projects?.filter((p) => p.name.toLowerCase().includes(query.toLowerCase())) ?? [];
@@ -56,17 +88,19 @@ export default function DashboardPage() {
       </div>
 
       {error && (
-        <div className={`${styles.empty} glass`}>
-          <h3>Backend’e bağlanılamadı</h3>
-          <p>
-            <code>backend</code> klasöründe sunucuyu başlatın: <code>.venv\Scripts\uvicorn app.main:app --reload</code>
-          </p>
+        <div className={`${styles.empty} glass`} role="alert">
+          <h3>{projects ? "Proje listesi yenilenemedi" : "Projeler yüklenemedi"}</h3>
+          <p>{projects ? "Son yüklenen liste gösteriliyor. Bağlantıyı kontrol edip yeniden deneyin." : "Bağlantıyı ve uygulama sunucusunu kontrol edip yeniden deneyin."}</p>
           <p className={styles.err}>{error}</p>
+          <button id="dashboard-retry" className={`btn btn-primary ${styles.retry}`} onClick={() => { setLoading(true); void load(); }} disabled={loading}>
+            {loading ? "Yeniden deneniyor…" : "Yeniden dene"}
+          </button>
         </div>
       )}
+      {actionError && <p role="alert" className={styles.err}>{actionError}</p>}
 
       {!error && projects === null && (
-        <div className={styles.grid}>
+        <div className={styles.grid} role="status" aria-label="Projeler yükleniyor" aria-busy="true">
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className={`${styles.card} ${styles.skeleton}`} />
           ))}
@@ -119,8 +153,8 @@ export default function DashboardPage() {
                 </div>}
                 <div className={styles.footer}>
                   <span>{new Date(p.updated_at).toLocaleString("tr-TR", { dateStyle: "medium", timeStyle: "short" })}</span>
-                  <button className="btn btn-ghost btn-sm btn-danger" onClick={() => remove(p)} id={`delete-${p.id}`}>
-                    Sil
+                  <button className="btn btn-ghost btn-sm btn-danger" onClick={() => remove(p)} id={`delete-${p.id}`} disabled={deleting !== null}>
+                    {deleting === p.id ? "Siliniyor…" : "Sil"}
                   </button>
                 </div>
               </div>

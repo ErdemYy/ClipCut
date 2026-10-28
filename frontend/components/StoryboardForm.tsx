@@ -77,7 +77,7 @@ export default function StoryboardForm() {
       onTextModel={setTextModel} planningSceneCount={count} planningChars={brief.length}
       showBudget={false} disabled={pending} />
     {health?.video_model_warning && <p className={styles.note}>{health.video_model_warning}</p>}
-    {health?.mock ? <p className={styles.note}>Demo modu: plan mekanik bir taslaktır; videolar demo görselleri, seslendirme konuşma yerine sentetik tondur. API çağrısı yapılmaz.</p> : health && <label className={styles.check}>
+    {health?.mock ? <p className={styles.note}>Test sağlayıcısı etkin: plan mekanik bir taslak, videolar sentetik görsellerdir. Seslendirme gerçek konuşma değil sentetik tondur. Gerçek AI üretimi veya harici API çağrısı yapılmaz.</p> : health && <label className={styles.check}>
       <input type="checkbox" checked={approved} onChange={(e) => setApproved(e.target.checked)} disabled={pending} />
       Plan için 1 gerçek AI metin çağrısını onaylıyorum. Ücret sağlayıcıya bağlıdır; bu adım video üretmez.
     </label>}

@@ -217,8 +217,8 @@ def generate_voiceover(
             duration, words = asyncio.run(_edge_tts_generate(clean_text, voice_id, speed, out_file))
         except Exception as exc:
             if not allow_fallback:
-                raise RuntimeError("Seslendirme başarısız; gerçek konuşma yerine demo tonu kullanılmadı.") from exc
-            log.warning("edge-tts başarısız; demo tonu kullanılıyor: %s", exc)
+                raise RuntimeError("Seslendirme başarısız; gerçek konuşma yerine sentetik test tonu kullanılmadı.") from exc
+            log.warning("edge-tts başarısız; sentetik test tonu kullanılıyor: %s", exc)
             synthetic = True
             duration, words = _fallback_generate(clean_text, speed, out_file)
 

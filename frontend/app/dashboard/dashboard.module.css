@@ -20,9 +20,13 @@
   display: flex;
   gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
+  max-width: 100%;
 }
-.actions .input {
+.actions input {
   width: 240px;
+  max-width: 100%;
+  min-width: 0;
   border-radius: 999px;
   padding: 10px 16px;
 }
@@ -157,4 +161,8 @@
 .err {
   color: var(--red) !important;
   font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.retry {
+  min-height: 44px;
 }

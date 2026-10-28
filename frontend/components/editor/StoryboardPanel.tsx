@@ -117,7 +117,7 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
   return <div className={styles.panel}>
     <header className={styles.intro}><h3>Sahne planı</h3>
       <p>Görsel zaman çizelgesinden sıralama, kırpma ve geçişleri yönetebilirsiniz. Önce kaydedin, ardından yerel olarak yeniden birleştirin. Kırpma/sıralama/geçiş yeni AI üretimi başlatmaz. Üretim ayarı değiştirilen sahnenin kırpması sıfırlanır. Geçiş süresi kısa sahnelerde otomatik olarak sınırlanır.</p>
-      {story.mock_plan && <p className={styles.note}>Bu plan demo modunda mekanik olarak oluşturuldu; gerçek AI senaryo yazımı veya çeviri değildir.</p>}
+      {story.mock_plan && <p className={styles.note}>Bu plan test sağlayıcısıyla mekanik olarak oluşturuldu; gerçek AI senaryo yazımı veya çeviri değildir.</p>}
     </header>
     <div className={styles.formGrid}>
       <label className={styles.wide}>Video başlığı<input className="input" maxLength={120} value={draft.title} disabled={busy} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></label>
@@ -172,7 +172,7 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
         </select></label>
         {draft.voiceover && scene.narration.split(/\s+/).length > scene.duration * 3 && <p className={styles.note}>Anlatım bu süre için uzun olabilir. Metni kısaltın; gerekirse son kare anlatım bitene kadar tutulur.</p>}
         {state.video_url && <video controls preload="none" src={mediaUrl(state.video_url)} aria-label={`${scene.title} önizlemesi`} />}
-        {state.mock && <small className={styles.note}>Demo görsel / {draft.voiceover ? "konuşma yerine sentetik ton" : "demo ses"}</small>}
+        {state.mock && <small className={styles.note}>Sentetik test görseli / {draft.voiceover ? "konuşma yerine sentetik ton" : "test sesi"}</small>}
         {state.actual_duration && <small className={styles.note}>Gerçek sahne süresi: {state.actual_duration.toFixed(1)} sn</small>}
         {state.error && <p className={styles.error} role="alert">{state.error}</p>}
         <button className="btn btn-sm" disabled={!canGenerate || (!health?.mock && !approved)} onClick={() => generate(scene.id)}>
@@ -184,7 +184,7 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
     {dirty && <p className={styles.note}>Kaydedilmemiş değişiklikler var. Üretimden önce kaydedin. Dil seçimi mevcut anlatım metinlerini otomatik çevirmez.</p>}
     <p className={styles.note}>{draft.scenes.length} sahne · planlanan {draft.scenes.reduce((t, s) => t + s.duration, 0)} sn · kayıtlı plan geçişlerle {story.timeline_duration.toFixed(2)} sn · {story.pending_scenes} sahne hazır değil. Görsel tutarlılığı ortak promptlarla teşvik edilir; kimlik tutarlılığı garanti edilmez.</p>
     {health?.video_model_warning && <p className={styles.note}>{health.video_model_warning}</p>}
-    {health?.mock ? <p className={styles.note}>Demo: gerçek API çağrısı yapılmaz. Gerçek modda seslendirme başarısızsa işlem durur; konuşma yerine demo tonu konmaz.</p> : health && <label className={styles.check}>
+    {health?.mock ? <p className={styles.note}>Test sağlayıcısı gerçek API çağrısı yapmaz. Gerçek üretimde seslendirme başarısızsa işlem durur; konuşma yerine sentetik ton konmaz.</p> : health && <label className={styles.check}>
       <input type="checkbox" checked={approved} disabled={busy} onChange={(e) => setApproved(e.target.checked)} />
       Eksik sahneler için planlanan {story.pending_scenes} video üretimini ve seçili seslendirmeyi onaylıyorum. Görsel promptlar Google’a, seslendirme metinleri açıksa Edge TTS servisine gönderilir. Tek sahne yeniden üretimi ek 1 video üretimi başlatır. Sonucu alınamayan istek sağlayıcıda ücretlenmiş olabilir; yeniden deneme ek ücret doğurabilir. Kesin tutar sağlayıcıya bağlıdır.
     </label>}

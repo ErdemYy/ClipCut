@@ -42,11 +42,12 @@ export default function AudioPanel({ project, setProject, library, notify }: Pro
   };
 
   const save = async (operations: Operation[]) => {
-    setProject({ ...project, plan: { operations } });
     try {
-      setProject(await api.setPlan(project.id, { operations }));
+      setProject(await api.setPlan(project.id, { operations }, project.render_revision));
+      return true;
     } catch (e) {
       notify((e as Error).message, true);
+      return false;
     }
   };
 
@@ -63,8 +64,9 @@ export default function AudioPanel({ project, setProject, library, notify }: Pro
     try {
       const item = await api.uploadAudio(project.id, file);
       setOwn((o) => [...o.filter((x) => x.id !== item.id), item]);
-      await upsert("music", { track: item.id }, { volume: 0.18, ducking: true, fade_in: 1, fade_out: 2 });
-      notify("Müzik yüklendi ve eklendi");
+      if (await upsert("music", { track: item.id }, { volume: 0.18, ducking: true, fade_in: 1, fade_out: 2 })) {
+        notify("Müzik yüklendi ve eklendi");
+      }
     } catch (e) {
       notify((e as Error).message, true);
     }
@@ -137,7 +139,7 @@ export default function AudioPanel({ project, setProject, library, notify }: Pro
             <button
               className="btn btn-sm"
               id={`sfx-add-${s.id}`}
-              onClick={() => save([...ops, { type: "sfx", track: s.id, at: sfxAt, volume: 0.8 }]).then(() => notify(`${s.label} ${sfxAt}. saniyeye eklendi`))}
+              onClick={() => save([...ops, { type: "sfx", track: s.id, at: sfxAt, volume: 0.8 }]).then((saved) => { if (saved) notify(`${s.label} ${sfxAt}. saniyeye eklendi`); })}
             >
               +
             </button>

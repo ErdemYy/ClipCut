@@ -44,6 +44,8 @@ export default function CreatePage() {
   const [name, setName] = useState("");
   const [styleTags, setStyleTags] = useState<string[]>([]);
   const [job, setJob] = useState<Job | null>(null);
+  const [starting, setStarting] = useState(false);
+  const generation = useRef<AbortController | null>(null);
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [videoModel, setVideoModel] = useState("");
   const [budget, setBudget] = useState("");
@@ -55,7 +57,9 @@ export default function CreatePage() {
   const [drag, setDrag] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const busy = (job && job.status !== "failed") || uploadPct !== null;
+  const busy = starting || (job && job.status !== "failed") || uploadPct !== null;
+
+  useEffect(() => () => { generation.current?.abort(); }, []);
 
   useEffect(() => {
     api.aiModels().then((value) => {
@@ -76,6 +80,10 @@ export default function CreatePage() {
     setStyleTags((s) => (s.includes(text) ? s.filter((x) => x !== text) : [...s, text]));
 
   const generate = async () => {
+    if (generation.current) return;
+    const controller = new AbortController();
+    generation.current = controller;
+    setStarting(true);
     setError(null);
     const full = [prompt.trim(), ...styleTags].filter(Boolean).join(", ");
     try {
@@ -88,13 +96,21 @@ export default function CreatePage() {
         video_model: videoModel || undefined,
         max_cost_usd: budget.trim() === "" ? undefined : Number(budget),
       });
+      if (controller.signal.aborted) return;
       setJob(job);
-      const final = await waitForJob(job.id, setJob, 1500);
+      const final = await waitForJob(job.id, setJob, 1500, { signal: controller.signal,
+        onConnectionChange: (connected) => setError(connected ? null :
+          "Bağlantı kesildi; üretim yeniden başlatılmadan iş takibi tekrar denenecek."),
+      });
       if (final.status === "done") router.push(`/editor/${project.id}`);
       else setError(final.error || "Video üretilemedi.");
     } catch (e) {
+      if (controller.signal.aborted) return;
       setError((e as Error).message);
       setJob(null);
+    } finally {
+      if (generation.current === controller) generation.current = null;
+      if (!controller.signal.aborted) setStarting(false);
     }
   };
 

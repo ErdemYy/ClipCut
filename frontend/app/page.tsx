@@ -127,7 +127,7 @@ export default function Home() {
       <section className={`container ${styles.section}`}>
         <div className={`${styles.cta} glass`}>
           <h2>İlk videonu şimdi oluştur</h2>
-          <p>API anahtarı olmadan demo modunda tüm akışı deneyebilirsin.</p>
+          <p>Videonu yükle, düzenle ve dışa aktar. AI üretimi için kendi API anahtarını bağla.</p>
           <Link href="/create" className="btn btn-primary btn-lg" id="footer-create">
             Hemen Dene
           </Link>

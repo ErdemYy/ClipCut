@@ -64,7 +64,7 @@ export default function SubtitleTimingEditor({ project, setProject, notify, seek
 
   return <section className={pub.results} aria-labelledby="subtitle-timing-title">
     <h4 id="subtitle-timing-title">Metin ve zamanlama · {segments.length} satır</h4>
-    {project.subtitles?.mock && <p className={pub.note}>Demo altyazısı: metin ve zamanlar gerçek konuşmayı temsil etmeyebilir.</p>}
+    {project.subtitles?.mock && <p className={pub.note}>Test altyazısı: bu metin ve zamanlar gerçek konuşmadan çıkarılmamıştır.</p>}
     <p id="subtitle-timing-help" className={pub.note}>Zamanlar kaynak saatindedir; kesme/hız render sırasında uygulanır. Satır süresini değiştirince kelime zamanları orantılı taşınır. Metin değişince kelime süreleri yaklaşık yeniden dağıtılır; bölme/birleştirme mevcut süreleri korur.</p>
     <p className={pub.note}>Taslak, Kaydet sonrası önizleme ve dışa aktarmaya uygulanır. Kaynak transkripti ve video değiştirilmez. Stiller uzun satırları görsel olarak tekrar bölebilir; SRT/VTT kaydedilen satır sınırlarını korur.</p>
     {conflict && <p role="alert" className={pub.error}>Kaynak veya kaydedilmiş altyazılar değişti. Taslağınız korunuyor; güncel veriyi yüklemek için “Taslağı at / güncel veriyi yükle” düğmesini kullanın.</p>}

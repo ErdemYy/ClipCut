@@ -43,7 +43,7 @@ export default function BrollPanel({ project, setProject, notify, disabled, time
   const savePlan = async (newOverlays: OverlayOp[]) => {
     const otherOps = (project.plan?.operations || []).filter((o) => o.type !== "overlay");
     const updatedPlan = { operations: [...otherOps, ...newOverlays] };
-    const p = await api.setPlan(project.id, updatedPlan);
+    const p = await api.setPlan(project.id, updatedPlan, project.render_revision);
     setProject(p);
   };
 

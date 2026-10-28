@@ -64,9 +64,8 @@ export default function SubtitlePanel({ project, setProject, library, jobs, trac
     const base = sub ?? DEFAULT_SUB;
     const next = { ...base, ...patch };
     const plan = { operations: sub ? ops.map((o) => (o.type === "subtitles" ? next : o)) : [...ops, next] };
-    setProject({ ...project, plan });
     try {
-      setProject(await api.setPlan(project.id, plan));
+      setProject(await api.setPlan(project.id, plan, project.render_revision));
     } catch (e) {
       notify((e as Error).message, true);
     }
