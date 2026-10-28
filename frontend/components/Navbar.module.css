@@ -67,9 +67,11 @@
   gap: 12px;
 }
 @media (max-width: 640px) {
-  .inner { gap: 8px; }
-  .brand { gap: 4px; }
-  .status { gap: 4px; }
+  .inner { gap: 8px; width: calc(100% - 24px); }
+  .brand { gap: 4px; font-size: 1.1rem; min-height: 44px; }
+  .logo { width: 30px; height: 30px; flex-shrink: 0; }
+  .status { gap: 4px; min-width: 0; }
+  .status :global(.btn) { min-height: 44px; }
   .links {
     display: none;
   }

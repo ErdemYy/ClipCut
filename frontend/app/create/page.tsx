@@ -6,6 +6,8 @@ import { API_URL, api, waitForJob, type Job, type ModelCatalog, type Project } f
 import GenerationCost from "@/components/editor/GenerationCost";
 import styles from "./create.module.css";
 import StoryboardForm from "@/components/StoryboardForm";
+import AIConnectionPanel from "@/components/AIConnectionPanel";
+import { approveProduction } from "@/lib/production-review";
 
 const STYLES = [
   { label: "Sinematik", text: "cinematic lighting, shallow depth of field, 35mm film look" },
@@ -87,7 +89,7 @@ export default function CreatePage() {
     setError(null);
     const full = [prompt.trim(), ...styleTags].filter(Boolean).join(", ");
     try {
-      const { project, job } = await api.generate({
+      const body = {
         prompt: full,
         name: name || prompt.slice(0, 48),
         aspect_ratio: aspect,
@@ -95,7 +97,10 @@ export default function CreatePage() {
         negative_prompt: negative || undefined,
         video_model: videoModel || undefined,
         max_cost_usd: budget.trim() === "" ? undefined : Number(budget),
-      });
+      };
+      const estimate = await api.preflight({ video_model: body.video_model, scene_durations: [body.duration] });
+      if (controller.signal.aborted || !approveProduction(estimate, body.max_cost_usd)) return;
+      const { project, job } = await api.generate({ ...body, confirm_api_usage: !estimate.mock });
       if (controller.signal.aborted) return;
       setJob(job);
       const final = await waitForJob(job.id, setJob, 1500, { signal: controller.signal,
@@ -160,6 +165,7 @@ export default function CreatePage() {
         <p>Yapay zeka ile sıfırdan üret ya da elindeki videoyu yükleyip düzenlemeye başla.</p>
       </div>
 
+      <AIConnectionPanel />
       <div className={styles.tabs} role="tablist">
         <button role="tab" id="tab-storyboard" aria-selected={tab === "storyboard"}
           className={`${styles.tab} ${tab === "storyboard" ? styles.tabActive : ""}`} onClick={() => setTab("storyboard")} disabled={!!busy}>
@@ -340,7 +346,7 @@ export default function CreatePage() {
                   id="generate-submit"
                   className="btn btn-primary btn-lg"
                   onClick={generate}
-                  disabled={prompt.trim().length < 3}
+                  disabled={!!busy || !catalog || prompt.trim().length < 3}
                 >
                   ✦ Videoyu Üret
                 </button>

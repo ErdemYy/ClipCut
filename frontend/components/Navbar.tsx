@@ -53,10 +53,10 @@ export default function Navbar() {
             </span>
           ) : health ? (
             <span
-              className={`badge ${health.mock ? "badge-generating" : "badge-ready"}`}
-              title={health.mock ? "Test sağlayıcısı etkin: gerçek AI çağrısı yapılmaz. Gerçek üretim için GEMINI_API_KEY ayarlayın." : "Gemini & Veo yapılandırıldı"}
+              className="badge badge-generating"
+              title={health.mock ? "Test sağlayıcısı etkin: gerçek AI çağrısı yapılmaz. Gerçek üretim için GEMINI_API_KEY ayarlayın." : "Anahtarın tanımlı olması bağlantıyı doğrulamaz. Yeni Video sayfasındaki AI bağlantısı panelinden kontrol edin."}
             >
-              <span className="dot" /> {health.mock ? "Test sağlayıcısı" : "Gemini hazır"}
+              <span className="dot" /> {health.mock ? "Test sağlayıcısı" : health.ai_key_configured === false ? "AI anahtarı yok" : "AI yapılandırıldı"}
             </span>
           ) : null}
           <Link href="/create" className="btn btn-primary btn-sm" id="nav-cta">

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, type Health, type ModelCatalog } from "@/lib/api";
 import GenerationCost from "./editor/GenerationCost";
+import { approveProduction } from "@/lib/production-review";
 import styles from "./editor/storyboard.module.css";
 
 export default function StoryboardForm() {
@@ -21,6 +22,7 @@ export default function StoryboardForm() {
   const [approved, setApproved] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const submitting = useRef(false);
 
   useEffect(() => {
     api.health().then(setHealth).catch((e: Error) => setError(e.message));
@@ -38,13 +40,20 @@ export default function StoryboardForm() {
     if (!next.includes(duration)) setDuration(next[next.length - 1] ?? 8);
   };
   const create = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
     setPending(true); setError(null);
     try {
-      const project = await api.createStoryboard({ brief, scene_count: count, scene_duration: duration, aspect_ratio: aspect,
+      const body = { brief, scene_count: count, scene_duration: duration, aspect_ratio: aspect,
         language, style, text_model: textModel || undefined, video_model: videoModel || undefined,
-        confirm_api_usage: approved });
+        confirm_api_usage: approved };
+      const estimate = await api.preflight({ video_model: body.video_model, text_model: body.text_model,
+        planning_scene_count: body.scene_count, planning_chars: body.brief.length });
+      if (!approveProduction(estimate)) { setPending(false); return; }
+      const project = await api.createStoryboard({ ...body, confirm_api_usage: body.confirm_api_usage && !estimate.mock });
       router.push(`/editor/${project.id}`);
     } catch (e) { setError((e as Error).message); setPending(false); }
+    finally { submitting.current = false; }
   };
 
   return <section className={styles.studio} aria-label="Senaryodan çok sahneli video">

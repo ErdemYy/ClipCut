@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from ..config import get_settings
 from ..storyboard import SceneDraft, StoryboardCreateBody, StoryboardInput, revision
 from .services import AIError, _client
+from .provider_errors import normalize_provider_errors
 
 
 class _ScenePlan(BaseModel):
@@ -16,6 +17,7 @@ class _ScenePlan(BaseModel):
     scenes: list[SceneDraft] = Field(..., min_length=2, max_length=12)
 
 
+@normalize_provider_errors
 def plan_storyboard(body: StoryboardCreateBody) -> dict:
     if get_settings().is_mock:
         sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", body.brief) if s.strip()]

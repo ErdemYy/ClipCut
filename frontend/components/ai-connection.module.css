@@ -1,0 +1,24 @@
+.panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  margin-bottom: 24px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  scroll-margin-top: 90px;
+}
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.head h2 { font-size: 1.1rem; }
+.panel p, .head span { color: var(--text-dim); font-size: 0.85rem; line-height: 1.6; }
+.models { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.models li { display: grid; gap: 4px; min-width: 0; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.models span, .models small { color: var(--text-dim); }
+.panel button { min-height: 44px; white-space: normal; }

@@ -15,6 +15,7 @@ from ..config import get_settings
 from ..edit.schema import EditPlan, dsl_reference
 from ..subtitles.builder import distribute_words
 from . import mock
+from .provider_errors import ProviderFailure, failure_for_status, normalize_provider_errors
 
 LANGUAGES = {
     "tr": "Türkçe", "en": "English", "de": "Deutsch", "fr": "Français", "es": "Español", "it": "Italiano",
@@ -32,7 +33,8 @@ def _client():
 
     settings = get_settings()
     if not settings.gemini_api_key:
-        raise AIError("GEMINI_API_KEY ayarlanmamış.")
+        raise ProviderFailure("missing_api_key", "GEMINI_API_KEY ayarlanmamış.",
+                              "Sunucudaki backend/.env dosyasını yapılandırıp backend sunucusunu yeniden başlatın.", 422)
     return genai.Client(api_key=settings.gemini_api_key)
 
 
@@ -68,6 +70,7 @@ class _Transcript(BaseModel):
     segments: list[_Seg]
 
 
+@normalize_provider_errors
 def transcribe(audio_path: Path, duration: float) -> dict:
     """Ses dosyasını kelime bazlı zaman damgalarıyla yazıya döker."""
     if get_settings().is_mock:
@@ -121,6 +124,7 @@ class _Translation(BaseModel):
     segments: list[_TSeg]
 
 
+@normalize_provider_errors
 def translate(transcript: dict, target: str) -> dict:
     """Segmentleri hedef dile çevirir; kelime zamanları segment içinde yeniden dağıtılır."""
     segs = transcript.get("segments", [])
@@ -157,6 +161,7 @@ def translate(transcript: dict, target: str) -> dict:
 
 # ------------------------------------------------------------ Edit planlayıcı ----
 
+@normalize_provider_errors
 def plan_edit(prompt: str, current: EditPlan, context: dict) -> tuple[EditPlan, str]:
     """Doğal dil komutunu mevcut plana uygulanmış yeni bir EditPlan'a çevirir."""
     if get_settings().is_mock:
@@ -206,6 +211,7 @@ def video_model_constraints(model: str | None = None) -> dict:
     }
 
 
+@normalize_provider_errors
 def generate_video(
     prompt: str, aspect_ratio: str, duration: int, negative_prompt: Optional[str], out_path: Path,
     on_progress: Callable[[float, str], None], model: str | None = None,
@@ -237,7 +243,9 @@ def generate_video(
         time.sleep(8)
         operation = client.operations.get(operation)
     if getattr(operation, "error", None):
-        raise AIError(f"Veo hatası: {operation.error}")
+        error = operation.error
+        code = error.get("code") if isinstance(error, dict) else getattr(error, "code", None)
+        raise failure_for_status(code)
     videos = getattr(operation.response, "generated_videos", None) or []
     if not videos:
         raise AIError("Veo video döndürmedi (içerik politikası filtresi olabilir).")

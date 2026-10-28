@@ -317,7 +317,16 @@ export type Template = {
   plan: Plan;
 };
 
-export type Health = { ok: boolean; mock: boolean; ffmpeg: string; veo_model: string; video_durations?: number[]; video_model_warning?: string | null };
+export type Health = { ok: boolean; mock: boolean; ai_key_configured?: boolean; ffmpeg: string; veo_model: string; video_durations?: number[]; video_model_warning?: string | null };
+
+export type AIConnectionReport = {
+  status: "test" | "unchecked" | "missing_key" | "checked" | "partial" | "error";
+  key_configured: boolean; mode: "test" | "real"; can_check: boolean;
+  checked_at: string | null; message: string; scope_note: string;
+  models: { role: "text" | "transcription" | "video"; id: string;
+    status: "unchecked" | "available" | "unavailable" | "unknown";
+    message: string; reason?: string | null; catalog_status: string | null }[];
+};
 export type ModelInfo = {
   id: string; label: string; kind: "text" | "video"; status: "active" | "deprecated" | "closed" | "unpriced";
   configured: boolean; selectable: boolean; note: string | null; durations: number[];
@@ -373,6 +382,8 @@ const json = (body: unknown): RequestInit => ({ method: "POST", body: JSON.strin
 
 export const api = {
   health: () => request<Health>("/api/health"),
+  aiConnection: (signal?: AbortSignal) => request<AIConnectionReport>("/api/ai/connection", { signal }),
+  checkAiConnection: (signal?: AbortSignal) => request<AIConnectionReport>("/api/ai/connection/check", { method: "POST", signal }),
   aiModels: () => request<ModelCatalog>("/api/ai/models"),
   preflight: (body: { video_model?: string; text_model?: string; scene_durations?: number[]; voiceover?: boolean;
     planning_scene_count?: number; planning_chars?: number }) => request<CostEstimate>("/api/ai/preflight", json(body)),
@@ -391,7 +402,7 @@ export const api = {
     return request<Project>("/api/projects/upload", { method: "POST", body: fd });
   },
   generate: (body: { prompt: string; name?: string; aspect_ratio: string; duration: number; negative_prompt?: string;
-    video_model?: string; max_cost_usd?: number }) =>
+    video_model?: string; max_cost_usd?: number; confirm_api_usage?: boolean }) =>
     request<{ project: Project; job: Job }>("/api/projects/generate", json(body)),
   createStoryboard: (body: { brief: string; scene_count: number; scene_duration: number; aspect_ratio: string; language: string; style: string;
     text_model?: string; video_model?: string; max_cost_usd?: number; confirm_api_usage: boolean }) =>
@@ -399,6 +410,8 @@ export const api = {
   saveStoryboard: (id: string, body: Storyboard) => request<Project>(`/api/projects/${id}/storyboard`, { method: "PUT", body: JSON.stringify(body) }),
   generateStoryboard: (id: string, body: { revision: string; scene_id?: string; confirm_api_usage: boolean; confirm_replace_source: boolean; max_cost_usd?: number }) =>
     request<Job>(`/api/projects/${id}/storyboard/generate`, json(body)),
+  preflightStoryboard: (id: string, body: { revision: string; scene_id?: string }) =>
+    request<CostEstimate>(`/api/projects/${id}/storyboard/preflight`, json(body)),
   cancelJob: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   restoreStoryboardVersion: (id: string, body: { version_index: number; confirm: boolean }) =>
     request<Project>(`/api/projects/${id}/storyboard/restore`, json(body)),

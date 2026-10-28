@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { approveProduction } from "@/lib/production-review";
 import { api, mediaUrl, type Health, type Job, type JobMap, type ModelCatalog, type Project, type Storyboard, type StoryScene, type Voice } from "@/lib/api";
 import GenerationCost from "./GenerationCost";
 import { JobProgress } from "./SubtitlePanel";
@@ -25,6 +26,7 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
   const [health, setHealth] = useState<Health | null>(null);
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [budget, setBudget] = useState("");
+  const submitting = useRef(false);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [approved, setApproved] = useState(false);
   const [replaceApproved, setReplaceApproved] = useState(false);
@@ -67,11 +69,16 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
     finally { setPending(false); }
   };
   const generate = async (sceneId?: string) => {
+    if (submitting.current) return;
+    submitting.current = true;
     setPending(true);
     try {
-      const j = await api.generateStoryboard(project.id, { revision: story.revision, scene_id: sceneId,
+      const body = { revision: story.revision, scene_id: sceneId,
         confirm_api_usage: approved, confirm_replace_source: replaceApproved,
-        max_cost_usd: budget.trim() === "" ? undefined : Number(budget) });
+        max_cost_usd: budget.trim() === "" ? undefined : Number(budget) };
+      const estimate = await api.preflightStoryboard(project.id, { revision: body.revision, scene_id: body.scene_id });
+      if (!approveProduction(estimate, body.max_cost_usd)) return;
+      const j = await api.generateStoryboard(project.id, { ...body, confirm_api_usage: body.confirm_api_usage && !estimate.mock });
       await track(j, (final) => {
         const r = final.result as { assembled?: boolean; stopped?: boolean; message?: string } | null;
         if (r?.stopped) notify(r.message || "Üretim durduruldu; hazır sahneler korunuyor.");
@@ -79,7 +86,7 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
         else notify("Seçilen sahne hazır; kalan sahneleri tamamlayabilirsiniz.");
       });
     } catch (e) { notify((e as Error).message, true); }
-    finally { setPending(false); }
+    finally { setPending(false); submitting.current = false; }
   };
   const stop = async () => {
     if (!job) return;

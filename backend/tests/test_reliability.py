@@ -343,3 +343,31 @@ def test_render_records_its_start_revision_without_overwriting_newer_edits(studi
         assert getattr(s.get(Project, pid), change) == values[change]
     assert (root / "source.mp4").read_bytes() == b"original source"
     assert client.get(f"/api/projects/{pid}/download/" + result["output"].split(f"/media/projects/{pid}/")[1]).content == b"rendered snapshot"
+
+
+def test_provider_error_guidance_reaches_http_and_job_without_sdk_secrets(studio, monkeypatch, caplog):
+    from google.genai.errors import ClientError
+    from app.ai.provider_errors import normalize_provider_errors
+    client, engine, _ = studio
+    pid = _editable_project(engine)
+    calls = []
+    @normalize_provider_errors
+    def unavailable(*args):
+        calls.append(True)
+        raise ClientError(403, {"error": {"message": "SECRET_KEY_AND_PROMPT"}})
+    monkeypatch.setattr(main.ai, "plan_edit", unavailable)
+    monkeypatch.setattr(main, "_context", lambda _: {})
+    response = client.post(f"/api/projects/{pid}/edit", json={"prompt": "edit"})
+    assert response.status_code == 422
+    assert response.json()["code"] == "provider_permission_denied"
+    assert "izin" in response.json()["hint"]
+    assert "SECRET_KEY_AND_PROMPT" not in response.text
+    class Inline:
+        def submit(self, fn, *args):
+            fn(*args)
+    monkeypatch.setattr(jobs, "_executor", Inline())
+    job = jobs.submit(pid, "transcribe", unavailable)
+    assert job.status == "failed" and "izin" in job.error
+    assert "SECRET_KEY_AND_PROMPT" not in job.error
+    assert "SECRET_KEY_AND_PROMPT" not in caplog.text
+    assert len(calls) == 2  # One explicit HTTP request and one explicit worker run, no retry.

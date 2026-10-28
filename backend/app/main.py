@@ -14,13 +14,15 @@ from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session, select
 
 from . import assets, jobs, output_cleanup
 from .ai import broll, catalog as ai_catalog, services as ai, tts
+from .ai import connection as ai_connection
+from .ai.provider_errors import ProviderFailure
 from .config import get_settings
 from .edit.schema import EditPlan, OverlayOp, SubtitlesOp, dsl_reference
 from .edit.layers import LayerTimingsBody, timeline_revision, update_layer_timings
@@ -55,6 +57,11 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="ClipCut API", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(ProviderFailure)
+async def provider_failure_handler(_request: Request, exc: ProviderFailure) -> JSONResponse:
+    return JSONResponse({"detail": str(exc), "code": exc.code, "hint": exc.hint}, status_code=exc.http_status)
 
 
 @app.middleware("http")
@@ -182,7 +189,7 @@ def health() -> dict:
         ff = ffmpeg_exe()
     except Exception as exc:
         ff = f"HATA: {exc}"
-    return {"ok": True, "mock": settings.is_mock, "ffmpeg": ff, "veo_model": settings.veo_model,
+    return {"ok": True, "mock": settings.is_mock, "ai_key_configured": bool(settings.gemini_api_key.strip()), "ffmpeg": ff, "veo_model": settings.veo_model,
             "text_model": settings.gemini_text_model, **ai.video_model_constraints()}
 
 
@@ -190,6 +197,21 @@ def health() -> dict:
 def ai_models() -> dict:
     """Selectable models and the pricing snapshot used for pre-generation estimates."""
     return ai_catalog.model_catalog()
+
+
+@app.get("/api/ai/connection")
+def ai_connection_status() -> dict:
+    """Local configuration only: never contacts a provider on page load."""
+    return ai_connection.configuration(settings)
+
+
+@app.post("/api/ai/connection/check")
+def check_ai_connection() -> dict:
+    """Explicit metadata-only check; no content generation, upload or TTS."""
+    try:
+        return ai_connection.check(settings)
+    except ai_connection.CheckInProgress as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 class PreflightBody(BaseModel):
@@ -300,6 +322,7 @@ class GenerateBody(BaseModel):
     negative_prompt: Optional[str] = None
     video_model: Optional[str] = Field(None, max_length=128)
     max_cost_usd: Optional[float] = Field(None, ge=0, le=10000)
+    confirm_api_usage: bool = False
 
 
 @app.exception_handler(jobs.DuplicateJobError)
@@ -326,6 +349,8 @@ def generate_project(body: GenerateBody, session: Session = Depends(get_session)
         blocked = ai_catalog.budget_error(estimate, body.max_cost_usd)
         if blocked:
             raise HTTPException(422, blocked)
+    if not settings.is_mock and not body.confirm_api_usage:
+        raise HTTPException(422, "Gerçek video üretimi ücretli olabilir; açık API kullanım onayı gerekli.")
     p = Project(name=body.name.strip() or body.prompt[:48], origin="veo", status="generating", generation_prompt=body.prompt)
     session.add(p)
     session.commit()
@@ -365,6 +390,8 @@ def create_storyboard(body: StoryboardCreateBody, session: Session = Depends(get
 
     try:
         spec = plan_storyboard(body)
+    except ProviderFailure:
+        raise
     except Exception as exc:
         raise HTTPException(502, f"Sahne planı oluşturulamadı: {exc}") from exc
     p = Project(name=spec["title"], origin="storyboard", status="draft", generation_prompt=body.brief, storyboard=spec)
@@ -422,6 +449,27 @@ def scene_thumbnail(project_id: str, scene_id: str, session: Session = Depends(g
         finally:
             temp.unlink(missing_ok=True)
     return FileResponse(thumb, media_type="image/jpeg")
+
+
+@app.post("/api/projects/{project_id}/storyboard/preflight")
+def storyboard_preflight(project_id: str, body: StoryboardGenerateBody, session: Session = Depends(get_session)) -> dict:
+    """Estimate exactly the ready-file-aware pending set without changing it or creating jobs."""
+    with _storyboard_lock:
+        p = get_project(project_id, session)
+        session.refresh(p)
+        spec = p.storyboard
+        if not spec:
+            raise HTTPException(409, "Önce sahne planı oluşturun.")
+        if spec["revision"] != body.revision:
+            raise HTTPException(409, "Sahne planı değişti; sayfayı yenileyin.")
+        if body.scene_id and body.scene_id not in {s["id"] for s in spec["scenes"]}:
+            raise HTTPException(422, "Seçilen sahne bu projeye ait değil.")
+        pending = [s for s in spec["scenes"] if s["id"] == body.scene_id] if body.scene_id else [s for s in spec["scenes"] if not scene_ready(p.id, spec, s)]
+        try:
+            return ai_catalog.preflight(video_model=spec.get("video_model"), text_model=spec.get("text_model"),
+                                        scene_durations=[s["duration"] for s in pending], voiceover=spec.get("voiceover", False))
+        except (ai_catalog.UnknownModel, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/storyboard/generate")
@@ -819,6 +867,8 @@ def edit_with_prompt(project_id: str, body: EditBody, session: Session = Depends
     revision = jobs.render_revision(p)
     try:
         plan, summary = ai.plan_edit(body.prompt, current, _context(p))
+    except ProviderFailure:
+        raise
     except Exception as exc:
         raise HTTPException(502, f"Planlayıcı hatası: {exc}") from exc
     with _layer_edit_lock:

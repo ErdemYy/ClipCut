@@ -931,6 +931,33 @@ def test_single_scene_budget_blocks_before_job(studio):
     assert captures == []
 
 
+def test_single_scene_real_generation_requires_explicit_confirmation_before_job(studio):
+    client, settings, _, captures = studio
+    settings.mock_ai = "false"
+    body = {"prompt": "A short video", "duration": 8}
+    response = client.post("/api/projects/generate", json=body)
+    assert response.status_code == 422 and "onay" in response.text
+    assert captures == []
+    assert client.post("/api/projects/generate", json={**body, "confirm_api_usage": True}).status_code == 200
+    assert len(captures) == 1
+
+
+def test_storyboard_preflight_is_server_authoritative_and_never_creates_jobs(studio):
+    client, _, _, captures = studio
+    p = create(client)
+    revision = p["storyboard"]["revision"]
+    endpoint = f"/api/projects/{p['id']}/storyboard/preflight"
+    response = client.post(endpoint, json={"revision": revision})
+    assert response.status_code == 200 and response.json()["video_calls"] == 2
+    scene = p["storyboard"]["scenes"][0]
+    response = client.post(endpoint, json={"revision": revision, "scene_id": scene["id"]})
+    assert response.status_code == 200 and response.json()["video_calls"] == 1
+    assert client.get(f"/api/projects/{p['id']}").json() == p
+    assert captures == []
+    assert client.post(endpoint, json={"revision": "0" * 12}).status_code == 409
+    assert client.post(endpoint, json={"revision": revision, "scene_id": "foreign"}).status_code == 422
+
+
 def test_explicit_models_are_saved_and_fingerprint_changes(studio):
     client, _, _, _ = studio
     p = create(client, scene_duration=4, text_model="gemini-2.5-pro", video_model="veo-3.0-generate-001")
