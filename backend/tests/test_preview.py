@@ -156,14 +156,22 @@ def test_real_preview_matches_full_render_window(tmp_path, monkeypatch, audio_mo
                         voiceover=vo if audio_mode == "voiceover" else None)
     render(req, lambda _: None)
     for index, t in enumerate([0.5, 1.0, 3.0, 4.8]):
-        pixels = []
-        for label, file, at in [("short", output, t), ("full", full, t + 1.5)]:
-            raw = tmp_path / f"{label}_{index}.rgb"
-            run_ffmpeg(["-ss", str(at), "-i", str(file), "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", str(raw)])
-            pixels.append(raw.read_bytes())
-        assert len(pixels[0]) == len(pixels[1]) == 160 * 90 * 3
-        error = sum(abs(a - b) for a, b in zip(*pixels)) / len(pixels[0])
-        assert error < 8, f"frame at {t}: mean channel error {error}"
+        def frame(file, at: float, label: str) -> bytes:
+            raw = tmp_path / f"{label}_{index}_{at}.rgb"
+            run_ffmpeg(["-ss", str(at), "-i", str(file), "-frames:v", "1", "-pix_fmt", "rgb24",
+                        "-f", "rawvideo", str(raw)])
+            return raw.read_bytes()
+
+        short = frame(output, t, "short")
+        # Container timestamps can land on the neighbouring frame when the preview
+        # and the full render are seeked separately. Accept the best of ±1 frame;
+        # genuinely different content still exceeds the threshold at every offset.
+        errors = []
+        for offset in (-1 / 30, 0, 1 / 30):
+            full_frame = frame(full, t + 1.5 + offset, f"full_{offset:+.4f}")
+            assert len(short) == len(full_frame) == 160 * 90 * 3
+            errors.append(sum(abs(a - b) for a, b in zip(short, full_frame)) / len(short))
+        assert min(errors) < 8, f"frame at {t}: mean channel error {min(errors)}"
     samples = []
     for label, file, at in [("short", output, 0), ("full", full, 1.5)]:
         raw = tmp_path / f"{label}.pcm"
