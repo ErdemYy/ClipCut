@@ -27,11 +27,14 @@ TOKEN_RE = re.compile(r"^[a-f0-9]{32}$")
 RENDER_NAME_RE = re.compile(r"^clipcut_[A-Za-z0-9_]{1,100}\.mp4$")
 WORK_RENDER_RE = re.compile(r"^\d{8}_\d{6}(?:_[a-f0-9]{8})?$")
 PREVIEW_FILE_RE = re.compile(r"^[a-f0-9]{32}\.mp4$")
+VOICEOVER_FILE_RE = re.compile(r"^voiceover_[a-f0-9]{32}\.mp3$")
+TEMP_PREVIEW_FILE_RE = re.compile(r"^preview_[a-f0-9]{8}\.mp3$")
 MIN_AGE_SECONDS = 60 * 60
 TRASH_RETENTION_SECONDS = 7 * 24 * 60 * 60
 MAX_TOKENS = 50
 MAX_RENDER_FILES = 50
 MAX_WORK_ITEMS = 50
+MAX_VOICEOVERS = 50
 MAX_TRASH_BATCH = 50
 CATEGORY_IDS = ("source", "renders", "staging", "previews", "work", "trash", "other")
 PREVIEW_DIRS = ("previews", "clip_previews")
@@ -49,6 +52,9 @@ _PREVIEW_REFERENCE_RE = re.compile(
     r"/media/projects/([A-Za-z0-9_-]+)/outputs/(previews|clip_previews)/([a-f0-9]{32}\.mp4)")
 _RELATIVE_PREVIEW_REFERENCE_RE = re.compile(
     r"(?:^|[\\/])outputs[\\/](previews|clip_previews)[\\/]([a-f0-9]{32}\.mp4)")
+_VOICE_REFERENCE_RE = re.compile(
+    r"/media/projects/([A-Za-z0-9_-]+)/(voiceover_[a-f0-9]{32}\.mp3)")
+_VOICE_NAME_RE = re.compile(r"voiceover_[a-f0-9]{32}\.mp3")
 
 
 class OutputCleanupBody(BaseModel):
@@ -130,6 +136,19 @@ class PreviewCleanupBody(BaseModel):
             seen.add(key)
             if not PREVIEW_FILE_RE.fullmatch(item.name):
                 raise ValueError("Geçersiz önizleme dosyası.")
+        return values
+
+
+class VoiceoverCleanupBody(BaseModel):
+    files: list[str] = Field(..., min_length=1, max_length=MAX_VOICEOVERS)
+
+    @field_validator("files")
+    @classmethod
+    def _unique_files(cls, values: list[str]) -> list[str]:
+        if len(set(values)) != len(values):
+            raise ValueError("Her seslendirme dosyası bir kez gönderilmeli.")
+        if any(not VOICEOVER_FILE_RE.fullmatch(name) for name in values):
+            raise ValueError("Geçersiz seslendirme dosyası.")
         return values
 
 
@@ -221,6 +240,27 @@ def _previews_in(project_id: str, value: Any) -> set[str]:
         return set().union(*(_previews_in(project_id, item) for item in value.values())) if value else set()
     if isinstance(value, (list, tuple, set)):
         return set().union(*(_previews_in(project_id, item) for item in value)) if value else set()
+    return set()
+
+
+def voiceover_references(project_id: str, values: Iterable[Any]) -> set[str]:
+    """Collect ``voiceover_<hex>.mp3`` names referenced by project or job data."""
+    references: set[str] = set()
+    for value in values:
+        references.update(_voices_in(project_id, value))
+    return references
+
+
+def _voices_in(project_id: str, value: Any) -> set[str]:
+    if isinstance(value, str):
+        absolute = list(_VOICE_REFERENCE_RE.finditer(value))
+        if absolute:
+            return {match.group(2) for match in absolute if match.group(1) == project_id}
+        return set(_VOICE_NAME_RE.findall(value))
+    if isinstance(value, dict):
+        return set().union(*(_voices_in(project_id, item) for item in value.values())) if value else set()
+    if isinstance(value, (list, tuple, set)):
+        return set().union(*(_voices_in(project_id, item) for item in value)) if value else set()
     return set()
 
 
@@ -518,6 +558,108 @@ def trash_previews(project_path: Path, referenced: set[str], requested: Iterable
     }
 
 
+def scan_voiceovers(project_path: Path, referenced: set[str], *,
+                    min_age_seconds: int = MIN_AGE_SECONDS, now: float | None = None
+                    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return old ``voiceover_<hex>.mp3`` files no longer referenced by the project.
+
+    Superseded or revision-conflicted TTS files stay in the project folder; only
+    regular, unreferenced files past the minimum age become eligible.
+    """
+    current = time.time() if now is None else now
+    eligible: list[dict[str, Any]] = []
+    protected: list[dict[str, Any]] = []
+    if not project_path.is_dir() or _is_link(project_path):
+        return eligible, protected
+    try:
+        entries = sorted(project_path.iterdir(), key=lambda entry: entry.name)
+    except OSError:
+        return eligible, protected
+    for entry in entries:
+        if not VOICEOVER_FILE_RE.fullmatch(entry.name):
+            continue
+        if _entry_is_link(entry):
+            protected.append({"file": entry.name, "bytes": 0, "age_seconds": 0, "reason": "symlink"})
+            continue
+        try:
+            if not entry.is_file():
+                protected.append({"file": entry.name, "bytes": 0, "age_seconds": 0, "reason": "special"})
+                continue
+            info = entry.stat()
+        except OSError:
+            protected.append({"file": entry.name, "bytes": 0, "age_seconds": 0, "reason": "unreadable"})
+            continue
+        age = max(0.0, current - info.st_mtime)
+        item = {"file": entry.name, "bytes": info.st_size, "age_seconds": int(age)}
+        if entry.name in referenced:
+            protected.append({**item, "reason": "referenced"})
+        elif age < min_age_seconds:
+            protected.append({**item, "reason": "recent"})
+        else:
+            eligible.append(item)
+    return eligible, protected
+
+
+def trash_voiceovers(project_path: Path, referenced: set[str], requested: Iterable[str], *,
+                     min_age_seconds: int = MIN_AGE_SECONDS, now: float | None = None) -> dict[str, Any]:
+    """Move requested unreferenced voiceover files into trash, reporting outcomes."""
+    current = time.time() if now is None else now
+    eligible, protected = scan_voiceovers(project_path, referenced,
+                                          min_age_seconds=min_age_seconds, now=current)
+    allowed = {item["file"]: item for item in eligible}
+    batch_id = uuid.uuid4().hex
+    trashed: list[dict[str, Any]] = []
+    failed: list[str] = []
+    skipped: list[str] = []
+    for name in dict.fromkeys(requested):
+        item = allowed.get(name)
+        if item is None:
+            skipped.append(name)
+            continue
+        try:
+            trashed.append(_move_to_trash(
+                project_path, project_path / name, kind="voiceover", name=name,
+                size=item["bytes"], files=1, batch_id=batch_id, now=current))
+        except OSError:
+            failed.append(name)
+    removed = {entry["name"] for entry in trashed}
+    remaining = [item for item in eligible if item["file"] not in removed]
+    return {
+        "trashed": trashed,
+        "moved_bytes": sum(entry["bytes"] for entry in trashed),
+        "failed": failed,
+        "skipped": skipped,
+        "eligible": remaining,
+        "protected": protected,
+    }
+
+
+def purge_temp_previews(temp_dir: Path, *, max_age_seconds: int = 24 * 60 * 60,
+                        now: float | None = None) -> int:
+    """Delete expired ``preview_<hex>.mp3`` voice audition files from ``storage/temp``."""
+    current = time.time() if now is None else now
+    if not temp_dir.is_dir() or _is_link(temp_dir):
+        return 0
+    removed = 0
+    try:
+        entries = list(temp_dir.iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        if not TEMP_PREVIEW_FILE_RE.fullmatch(entry.name):
+            continue
+        try:
+            if _entry_is_link(entry) or not entry.is_file():
+                continue
+            if current - entry.stat().st_mtime < max_age_seconds:
+                continue
+            entry.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def _work_source(project_path: Path, kind: str, name: str) -> Path:
     if kind == "work_render":
         return project_path / "work" / name
@@ -639,6 +781,8 @@ def _manifest_original(manifest: dict[str, Any]) -> str | None:
         return f"outputs/previews/{name}"
     if kind == "clip_preview" and PREVIEW_FILE_RE.fullmatch(name):
         return f"outputs/clip_previews/{name}"
+    if kind == "voiceover" and VOICEOVER_FILE_RE.fullmatch(name):
+        return name
     if kind == "work_render" and WORK_RENDER_RE.fullmatch(name):
         return f"work/{name}"
     if kind == "work_publish" and TOKEN_RE.fullmatch(name):

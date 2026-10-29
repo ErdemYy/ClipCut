@@ -152,8 +152,18 @@ export type OutputStoragePreviews = {
   eligible_bytes: number;
   protected_bytes: number;
 };
+export type OutputStorageVoiceover = { file: string; bytes: number; age_seconds: number };
+export type OutputStorageProtectedVoiceover = OutputStorageVoiceover & {
+  reason: "referenced" | "recent" | "symlink" | "special" | "unreadable";
+};
+export type OutputStorageVoiceovers = {
+  eligible: OutputStorageVoiceover[];
+  protected: OutputStorageProtectedVoiceover[];
+  eligible_bytes: number;
+  protected_bytes: number;
+};
 export type OutputTrashEntry = {
-  id: string; kind: "staging" | "render" | WorkKind | PreviewKind; name: string; bytes: number; files: number;
+  id: string; kind: "staging" | "render" | "voiceover" | WorkKind | PreviewKind; name: string; bytes: number; files: number;
   deleted_at: string; batch_id: string | null; age_seconds: number; expires_in_seconds: number;
 };
 export type OutputStorageTrash = {
@@ -167,6 +177,7 @@ export type OutputStorageInfo = {
   renders: OutputStorageRenders;
   work: OutputStorageWorkInventory;
   previews: OutputStoragePreviews;
+  voiceovers: OutputStorageVoiceovers;
   categories: StorageCategory[];
   total_bytes: number;
   reclaimable_bytes: number;
@@ -210,6 +221,14 @@ export type PreviewCleanupResult = {
   skipped: string[];
   eligible: OutputStoragePreview[];
   protected: OutputStorageProtectedPreview[];
+};
+export type VoiceoverCleanupResult = {
+  trashed: OutputTrashEntry[];
+  moved_bytes: number;
+  failed: string[];
+  skipped: string[];
+  eligible: OutputStorageVoiceover[];
+  protected: OutputStorageProtectedVoiceover[];
 };
 export type TrashRestoreResult = {
   restored: OutputTrashEntry[];
@@ -467,6 +486,8 @@ export const api = {
     request<WorkCleanupResult>(`/api/projects/${id}/outputs/work/cleanup`, json({ items })),
   cleanupPreviews: (id: string, items: PreviewCleanupItem[]) =>
     request<PreviewCleanupResult>(`/api/projects/${id}/outputs/previews/cleanup`, json({ items })),
+  cleanupVoiceovers: (id: string, files: string[]) =>
+    request<VoiceoverCleanupResult>(`/api/projects/${id}/outputs/voiceovers/cleanup`, json({ files })),
   restoreTrash: (id: string, ids: string[]) =>
     request<TrashRestoreResult>(`/api/projects/${id}/outputs/trash/restore`, json({ ids })),
   emptyTrash: (id: string, ids: string[] = []) =>

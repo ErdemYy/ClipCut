@@ -27,6 +27,10 @@ class Settings(BaseSettings):
 
     storage_dir: Path = ROOT_DIR / "storage"
     assets_dir: Path = ROOT_DIR / "assets"
+    # Tamamlanmış istek kimlikleri bu süreden sonra sunucu açılışında temizlenir.
+    # 0 veya negatif değer otomatik temizliği kapatır. Bekleyen (belirsiz)
+    # rezervasyonlar hiçbir zaman otomatik silinmez.
+    idempotency_ttl_hours: int = 168
     database_url: str = ""
     ffmpeg_path: str = ""
 

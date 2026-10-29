@@ -11,11 +11,11 @@ import pytest
 
 from app.output_cleanup import (
     MIN_AGE_SECONDS, TRASH_RETENTION_SECONDS, OutputCleanupBody, PreviewCleanupBody,
-    PreviewCleanupItem, RenderCleanupBody, TrashEmptyBody, TrashRestoreBody, WorkCleanupBody,
-    WorkCleanupItem, empty_trash, preview_references, purge_all_expired_trash,
-    purge_expired_trash, render_references, referenced_tokens, restore_trash, scan_outputs,
-    scan_previews, scan_renders, scan_storage, scan_trash, scan_work, trash_outputs, trash_previews,
-    trash_renders, trash_work,
+    PreviewCleanupItem, RenderCleanupBody, TrashEmptyBody, TrashRestoreBody, VoiceoverCleanupBody,
+    WorkCleanupBody, WorkCleanupItem, empty_trash, preview_references, purge_all_expired_trash,
+    purge_expired_trash, purge_temp_previews, render_references, referenced_tokens, restore_trash,
+    scan_outputs, scan_previews, scan_renders, scan_storage, scan_trash, scan_voiceovers, scan_work,
+    trash_outputs, trash_previews, trash_renders, trash_voiceovers, trash_work, voiceover_references,
 )
 
 
@@ -989,3 +989,135 @@ def test_trash_is_not_served_by_media(storage_api):
         response = client.get(path)
         assert response.status_code == 404
         assert "Bulunamad" in response.text
+
+
+def _voice(root: Path, token: str, *, size: int = 100, age: float = 7200) -> Path:
+    path = root / f"voiceover_{token}.mp3"
+    path.write_bytes(b"a" * size)
+    _age(path, age)
+    return path
+
+
+def test_voiceover_references_scope_absolute_urls_and_read_nested_values():
+    token, other = "a" * 32, "b" * 32
+    values = [
+        f"/media/projects/store/voiceover_{token}.mp3",
+        f"/media/projects/other/voiceover_{other}.mp3",
+        {"result": [f"voiceover_{other}.mp3"]},
+    ]
+    assert voiceover_references("store", values) == {f"voiceover_{token}.mp3", f"voiceover_{other}.mp3"}
+    assert voiceover_references("other", values) == {f"voiceover_{other}.mp3"}
+
+
+def test_scan_voiceovers_protects_referenced_recent_and_non_files(tmp_path):
+    referenced = _voice(tmp_path, "1" * 32)
+    recent = _voice(tmp_path, "2" * 32, age=0)
+    orphan = _voice(tmp_path, "3" * 32)
+    folder = tmp_path / f"voiceover_{'4' * 32}.mp3"
+    folder.mkdir()
+    (tmp_path / "note.mp3").write_bytes(b"n")
+
+    eligible, protected = scan_voiceovers(tmp_path, {referenced.name})
+    assert [item["file"] for item in eligible] == [orphan.name]
+    assert eligible[0]["bytes"] == 100
+    assert {item["file"]: item["reason"] for item in protected} == {
+        referenced.name: "referenced", recent.name: "recent", folder.name: "special",
+    }
+
+
+def test_trash_voiceovers_moves_and_restores_original_path(tmp_path):
+    referenced = _voice(tmp_path, "a" * 32)
+    orphan = _voice(tmp_path, "b" * 32)
+    protected_only = _voice(tmp_path, "c" * 32)
+    _age(protected_only, 0)
+
+    result = trash_voiceovers(tmp_path, {referenced.name}, [orphan.name, referenced.name, protected_only.name])
+    assert [item["name"] for item in result["trashed"]] == [orphan.name]
+    assert result["moved_bytes"] == 100
+    assert set(result["skipped"]) == {referenced.name, protected_only.name}
+    assert not orphan.exists() and referenced.exists() and protected_only.exists()
+
+    trash = scan_trash(tmp_path)["entries"]
+    assert [entry["kind"] for entry in trash] == ["voiceover"]
+    restored = restore_trash(tmp_path, [trash[0]["id"]])
+    assert [entry["name"] for entry in restored["restored"]] == [orphan.name]
+    assert orphan.read_bytes() == b"a" * 100
+
+
+def test_voiceover_cleanup_body_rejects_unknown_and_duplicate_names():
+    name = f"voiceover_{'d' * 32}.mp3"
+    assert VoiceoverCleanupBody(files=[name]).files == [name]
+    for bad in ([f"voiceover_{'d' * 31}.mp3"], ["../" + name], [name, name], []):
+        with pytest.raises(ValueError):
+            VoiceoverCleanupBody(files=bad)
+
+
+def test_purge_temp_previews_removes_only_expired_regular_auditions(tmp_path):
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    old = temp / "preview_aaaaaaaa.mp3"
+    old.write_bytes(b"a")
+    recent = temp / "preview_bbbbbbbb.mp3"
+    recent.write_bytes(b"b")
+    other = temp / "voiceover_cccccccc.mp3"
+    other.write_bytes(b"c")
+    directory = temp / "preview_dddddddd.mp3"
+    directory.mkdir()
+    _age(old, 3 * 86400)
+    _age(recent, 3600)
+
+    assert purge_temp_previews(temp, max_age_seconds=86400) == 1
+    assert not old.exists() and recent.exists() and other.exists() and directory.is_dir()
+    assert purge_temp_previews(tmp_path / "missing") == 0
+
+
+def test_output_api_cleans_orphan_voiceovers_and_restores_them(storage_api):
+    client, engine, root = storage_api
+    from sqlmodel import Session
+    from app.models import Job, Project
+
+    referenced = _voice(root, "e" * 32)
+    orphan = _voice(root, "f" * 32)
+    recent = _voice(root, "9" * 32, age=0)
+    consumer = _voice(root, "8" * 32)
+    with Session(engine) as session:
+        project = session.get(Project, "store")
+        project.voiceover_file = referenced.name
+        session.add(project)
+        session.add(Job(project_id="store", kind="render", status="done",
+                        result={"voiceover": f"/media/projects/store/{consumer.name}"}))
+        session.commit()
+
+    data = client.get("/api/projects/store/outputs").json()
+    assert [item["file"] for item in data["voiceovers"]["eligible"]] == [orphan.name]
+    assert data["voiceovers"]["eligible_bytes"] == 100
+    assert {item["file"]: item["reason"] for item in data["voiceovers"]["protected"]} == {
+        referenced.name: "referenced", recent.name: "recent", consumer.name: "referenced",
+    }
+    assert data["reclaimable_bytes"] == 100
+
+    response = client.post("/api/projects/store/outputs/voiceovers/cleanup", json={"files": [orphan.name]})
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()["trashed"]] == [orphan.name]
+    assert not orphan.exists() and referenced.exists() and consumer.exists() and recent.exists()
+
+    trash = client.get("/api/projects/store/outputs").json()["trash"]["entries"]
+    assert len(trash) == 1 and trash[0]["kind"] == "voiceover"
+    assert client.post("/api/projects/store/outputs/trash/restore", json={"ids": [trash[0]["id"]]}).status_code == 200
+    assert orphan.read_bytes() == b"a" * 100
+
+
+def test_output_api_refuses_stale_voiceover_cleanup(storage_api):
+    client, engine, root = storage_api
+    from sqlmodel import Session
+    from app.models import Project
+
+    name = _voice(root, "7" * 32).name
+    with Session(engine) as session:
+        project = session.get(Project, "store")
+        project.voiceover_file = name
+        session.add(project)
+        session.commit()
+    response = client.post("/api/projects/store/outputs/voiceovers/cleanup", json={"files": [name]})
+    assert response.status_code == 409
+    assert (root / name).exists()

@@ -16,7 +16,7 @@ function load(file) {
 const {
   formatBytes, formatMinAge, formatTrashExpiry, previewProtectionSummary, renderProtectionSummary,
   storageCategoryLabel, storageProtectionSummary, storageTrashLabel, storageUsageSummary,
-  trashBatches, workProtectionSummary,
+  trashBatches, voiceoverProtectionSummary, workProtectionSummary,
 } = load("../lib/storage.ts");
 
 test("formatBytes uses readable binary units without hiding small files", () => {
@@ -104,6 +104,15 @@ test("previewProtectionSummary keeps the current preview reason visible", () => 
   assert.equal(previewProtectionSummary([]), "");
   assert.equal(previewProtectionSummary([item("referenced"), item("recent")]),
     "1 en güncel önizleme · 1 yeni oluşturuldu");
+});
+
+test("voiceoverProtectionSummary explains why old TTS files stay", () => {
+  const item = (reason) => ({ file: "voiceover_" + "a".repeat(32) + ".mp3", bytes: 1, age_seconds: 7200, reason });
+  assert.equal(voiceoverProtectionSummary([]), "");
+  assert.equal(voiceoverProtectionSummary([item("referenced"), item("recent"), item("recent")]),
+    "1 proje veya iş sonucunda kullanılıyor · 2 yeni oluşturuldu");
+  assert.equal(storageTrashLabel({ kind: "voiceover", name: "voiceover_" + "b".repeat(32) + ".mp3" }),
+    "Seslendirme · voiceover_bbbbbbbb…");
 });
 
 test("workProtectionSummary groups scratch protection reasons", () => {

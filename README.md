@@ -154,11 +154,13 @@ Sonuçtaki **1 çıktı korundu · 1 kapak yenilendi · 2 çıktı yeniden hazı
 
 **Eski ana render'ları temizle** yalnızca doğrudan `outputs/` altındaki `clipcut_*.mp4` dosyalarından projenin güncel çıktısı olmayan, proje durumunda veya başka bir iş sonucunda kullanılmayan ve en az 1 saat önce oluşturulmuş olanları çöp kutusuna taşır. Bir render işinin kendi sonucu, dosyanın üretim kaydı olarak değerlendirilir ve tek başına koruma nedeni sayılmaz; güncel `output_file`, storyboard sürümlerindeki çıktılar ve hazırlama/toplama iş sonuçları korunur.
 
-**Tek tek seçerek temizle** aynı panelde uygun hazırlama klasörlerini ve ana render MP4'lerini satır satır listeler. Her satır bir onay kutusudur; **Tümünü seç / Seçimi temizle** ve seçilen öğe sayısı/boyutu görünür. **Seçilenleri çöpe taşı** yalnızca işaretlenenleri taşır; 50'lik istek sınırı istemci tarafından parçalanır. Hiçbir öğe varsayılan olarak seçili değildir; yeni tarama veya taşıma sonrası seçim sıfırlanır.
+**Tek tek seçerek temizle** aynı panelde uygun hazırlama klasörlerini, ana render MP4'lerini, çalışma klasörlerini, önizlemeleri ve seslendirme dosyalarını satır satır listeler. Her satır bir onay kutusudur; **Tümünü seç / Seçimi temizle** ve seçilen öğe sayısı/boyutu görünür. **Seçilenleri çöpe taşı** yalnızca işaretlenenleri taşır; 50'lik istek sınırı istemci tarafından parçalanır. Hiçbir öğe varsayılan olarak seçili değildir; yeni tarama veya taşıma sonrası seçim sıfırlanır.
 
 **Çalışma klasörlerini temizle** `work/` altındaki üretilmiş ara klasörleri kapsar: `work/<zaman-damgası>`, `work/<yayın-kimliği>` (iç içe klip klasörleri dahil), `work/previews/<kimlik>`, `work/clip_previews/<kimlik>` ve `work/waveforms` önbelleği. Yalnızca en az 1 saat önce oluşturulmuş, sembolik bağlantı/özel dosya içermeyen ve süren render, önizleme veya hazırlama işi bulunmayan klasörler çöpe taşınır. Dalga formu önbelleği silinirse bir sonraki açılışta yeniden üretilir. Geri alma özgün `work/...` yoluna yapılır; kaynak video, güncel render/önizlemeler ve proje verisi değişmez.
 
 **Eski önizlemeleri temizle** yalnızca `outputs/previews/<32-karakter kimlik>.mp4` ve `outputs/clip_previews/<32-karakter kimlik>.mp4` dosyalarını kapsar. Normal ve klip önizlemesi için **en güncel tamamlanmış önizleme sonucu** korunur; daha eski önizleme iş sonuçları yalnızca üretim kaydı sayılır ve tek başına koruma nedeni olmaz. En az 1 saat yaş, symlink/özel dosya denetimi ve süren önizleme işi kontrolü uygulanır. Geri alma özgün `outputs/previews` veya `outputs/clip_previews` yoluna yapılır.
+
+**Eski seslendirmeleri temizle** proje kökündeki `voiceover_<32-karakter kimlik>.mp3` dosyalarını kapsar. Güncel seslendirme, proje planı/storyboard sürümleri ve herhangi bir iş sonucunda adı geçen dosyalar korunur; yalnızca en az 1 saat önce oluşturulmuş, artık hiçbir kayıtta kullanılmayan (örneğin revizyon çakışmasıyla projeye bağlanmamış) dosyalar çöpe taşınır. Seslendirme önizleme denemeleri `storage/temp/preview_<8-karakter kimlik>.mp3` olarak yazılır ve **24 saatten eski** olanlar sunucu açılışında sessizce silinir; bu dosyalar proje çöp kutusuna girmez ve geri alınamaz.
 
 Temizlik hemen silmez: taşınan öğeler proje içindeki `.trash` klasöründe **7 gün** tutulur. Çöp kutusu öğeleri son temizlik gruplarına göre listeler; her grupta toplam boyut, her öğede kalan süre ve **Bu grubu geri al** düğmesi bulunur. Öğeler tek tek veya **Tümünü geri al** ile eski konumuna döndürülebilir; özgün yol doluysa üzerine yazılmaz. **Çöp kutusunu boşalt** kalıcı siler ve geri alınamaz. Süresi dolan öğeler sunucu açılışında ve bir sonraki depolama taramasında otomatik temizlenir; ayrı bir zamanlayıcı yoktur. `.trash` içeriği medya URL'siyle sunulmaz.
 
@@ -176,11 +178,11 @@ Editörün üstündeki **Kütüphane** ve **İş listesi** alanları ayrı ayrı
 
 Editör, eski bir proje okuma veya kayıt yanıtının daha yeni düzenlemeleri ekranda ezmesini engeller. Şablon, AI Edit, geri alma, seslendirme ve otomatik B-Roll işlemleri görüntülenen edit revizyonunu gönderir; plan/altyazı/zaman çizelgesi kayıtları kendi revizyonlarını kullanır. İşlem sırasında içerik değişirse eski sonuç **409** ile uygulanmadan reddedilir. Transkripsiyon ve çeviri işleri de sonuçlarını yayınlamadan önce başlangıç revizyonunu kontrol eder. API ve arka plan kayıtları aynı süreç içi kilidi kullanır; bu, çok süreçli dağıtım desteği değildir. Revizyonsuz eski API istemcileri için eski davranış korunur.
 
-Seslendirme yeni, benzersiz bir MP3'e hazırlanır; başarılı sürüm kontrolünden sonra projeye bağlanır. Eski ses dosyalarının üzerine yazılmaz veya kaldırma düğmesinde fiziksel olarak silinmez; açık renderlar ve korunan sürümler bunları kullanabilir. Bu dosyalar ek disk alanı kullanır; bu değişiklik ses dosyaları için otomatik temizlik eklemez.
+Seslendirme yeni, benzersiz bir MP3'e hazırlanır; başarılı sürüm kontrolünden sonra projeye bağlanır. Eski ses dosyalarının üzerine yazılmaz veya kaldırma düğmesinde fiziksel olarak silinmez; açık renderlar ve korunan sürümler bunları kullanabilir. Artık hiçbir kayıtta kullanılmayan eski ses dosyaları **Depolama → eski seslendirmeleri temizle** ile çöp kutusuna taşınabilir; otomatik silme yalnızca 24 saatten eski seslendirme önizleme denemeleri için geçerlidir.
 
 Arayüz, dosya yüklemeleri ve salt kontrol/tahmin çağrıları dışındaki değişiklik isteklerine `Idempotency-Key` ekler. Aynı anda gönderilen aynı istek tek ağ çağrısında birleştirilir. Yanıt kaybolursa **otomatik üretim tekrarı yapılmaz**; aynı yöntem/adres/gövde ile elle yeniden deneme aynı kimliği kullanır. Tamamlanmış isteğin saklanan yanıtı döner, ikinci proje/iş/sağlayıcı çağrısı başlatılmaz. Aynı kimlik farklı adres veya içerikle kullanılırsa 409 döner. Başarıyla yanıtı alınmış bir işlemden sonraki yeni düğme eylemi yeni istek sayılır.
 
-İstek rezervasyonları SQLite'taki `mutationrequest` tablosunda kalıcıdır (açılışta eklenir; mevcut proje tabloları değiştirilmez). İstek sürüyorsa, 5xx döndüyse veya sunucu yanıt kaydedilmeden kapandıysa aynı kimlik **sonucu belirsiz** olarak 409 ile engellenir; süre dolunca otomatik açılmaz. Önce proje/iş listesini ve gerekiyorsa sağlayıcı hesabını kontrol edin. Bu koruma, sağlayıcının ilk çağrıyı ücretlendirmediği garantisi vermez. Rezervasyonlar otomatik temizlenmez; veritabanını yedeklerken bunlar da korunmalıdır.
+İstek rezervasyonları SQLite'taki `mutationrequest` tablosunda kalıcıdır (açılışta eklenir; mevcut proje tabloları değiştirilmez). İstek sürüyorsa, 5xx döndüyse veya sunucu yanıt kaydedilmeden kapandıysa aynı kimlik **sonucu belirsiz** olarak 409 ile engellenir; bu kayıtlar hiçbir zaman otomatik silinmez. Önce proje/iş listesini ve gerekiyorsa sağlayıcı hesabını kontrol edin; ardından `backend/` klasöründe `.venv\Scripts\python.exe -m app.idempotency_admin list --status pending` ile kayıtları görün ve bilinçli olarak `release <kimlik>` çalıştırın. Yalnızca pending kayıt serbest bırakılır; tamamlanmış yanıtlar yeniden oynatılmaya devam eder. Tamamlanmış kayıtlar varsayılan **168 saat** sonra sunucu açılışında silinir (`IDEMPOTENCY_TTL_HOURS`; `0` otomatik temizliği kapatır) ve `purge --yes` ile elle de temizlenebilir. Bu koruma, sağlayıcının ilk çağrıyı ücretlendirmediği garantisi vermez. Veritabanını yedeklerken rezervasyonları da koruyun.
 
 Tarayıcı `sessionStorage` alanında yalnızca istek parmak izi ve rastgele kimlik saklar, prompt/metin saklamaz. Aynı sekmedeki sayfa yenilemelerinde kimlik korunur; depolama engelliyse yalnızca sayfa belleğinde kalır. Sekmeyi kapatmak, depolamayı temizlemek, farklı içerik göndermek veya farklı kimlik kullanan eski/harici bir istemci yeni istek oluşturabilir. Bu protokol çok kullanıcılı kimlik doğrulama ya da sağlayıcı tarafında “tam bir kez ücretlendirme” garantisi değildir.
 
@@ -223,8 +225,10 @@ Eski kaynak videolar Sahneler panelinden açılabilir.
 ```powershell
 cd C:\Users\Okul\.gemini\antigravity-ide\scratch\clipcut\backend
 
-# Sanal ortamı aktive edin (zaten hazır)
+# Sanal ortamı oluşturun (ilk kurulum) ve etkinleştirin
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 
 # (İsteğe bağlı) Gerçek Gemini & Veo için API anahtarı ayarlayın
 # backend\.env dosyasında:
@@ -301,7 +305,7 @@ Editör içindeki prompt kutusuna Türkçe veya İngilizce serbestçe yazabilirs
 - **Backend:** FastAPI + Pydantic + SQLAlchemy (SQLite), yerel FFmpeg motoru (`imageio-ffmpeg` ile taşınabilir ikili), Google Gemini / Veo istemcileri, Edge TTS.
 - **Frontend:** Next.js (App Router) + TypeScript, CSS modülleri; görsel tasarım dokunmatik ve erişilebilirlik hedeflerine uygun (44px dokunmatik hedefler).
 - **Depolama:** Her proje kendi klasöründe izole; üretilen çıktılar kategorize edilir, 7 günlük çöp kutusu ile kontrollü temizlik yapılır.
-- **Testler:** backend `pytest` ve frontend `npm test`; ücretli AI/TTS çağrısı yapmadan mock + gerçek FFmpeg ile doğrulanır. Backend klasöründe `.venv\Scripts\python.exe -m pytest tests/test_process_restart.py -q` gerçek süreç yeniden başlatma testini tek başına çalıştırır: ayrı SQLite/depolama alanında Uvicorn zorla kapatılıp yeniden açılır; kayıtlar, dosya hash'leri ve istek kimlikleri doğrulanır. FFmpeg gerçek çalışır, TTS yerel sentetik sestir ve harici ağ bağlantıları engellenir. Kesinti, encoder kapandıktan sonra sonuç yayınlanmadan önce kontrollü bir bekleme noktasındadır; aktif encoder veya gerçek sağlayıcı kesintisi simüle edilmez.
+- **Testler:** backend `pytest` ve frontend `npm test`; ücretli AI/TTS çağrısı yapmadan mock + gerçek FFmpeg ile doğrulanır. Aynı komutlar `.github/workflows/ci.yml` ile her `main` push'unda ve pull request'te GitHub Actions üzerinde çalışır (backend bağımlılıkları `backend/requirements.txt`). Backend klasöründe `.venv\Scripts\python.exe -m pytest tests/test_process_restart.py -q` gerçek süreç yeniden başlatma testini tek başına çalıştırır: ayrı SQLite/depolama alanında Uvicorn zorla kapatılıp yeniden açılır; kayıtlar, dosya hash'leri ve istek kimlikleri doğrulanır. FFmpeg gerçek çalışır, TTS yerel sentetik sestir ve harici ağ bağlantıları engellenir. Kesinti, encoder kapandıktan sonra sonuç yayınlanmadan önce kontrollü bir bekleme noktasındadır; aktif encoder veya gerçek sağlayıcı kesintisi simüle edilmez.
 
 ```
 clipcut/
@@ -314,4 +318,4 @@ clipcut/
 
 ## 📄 Lisans
 
-Kişisel/depolar içi kullanım içindir; kendi API anahtarınızın kullanım koşulları ve sağlayıcı fiyatlaması sizin sorumluluğunuzdadır.
+Kişisel/depolar içi kullanım içindir; ayrıntılar için [LICENSE](LICENSE) dosyasına bakın. Kendi API anahtarınızın kullanım koşulları ve sağlayıcı fiyatlaması sizin sorumluluğunuzdadır.

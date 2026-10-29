@@ -1,6 +1,7 @@
 import type {
   OutputStorageProtectedDir, OutputStorageProtectedPreview, OutputStorageProtectedRender,
-  OutputStorageProtectedWork, OutputTrashEntry, PreviewKind, StorageCategoryId, WorkKind,
+  OutputStorageProtectedVoiceover, OutputStorageProtectedWork, OutputTrashEntry, PreviewKind,
+  StorageCategoryId, WorkKind,
 } from "./api";
 
 export type TrashBatch = {
@@ -32,6 +33,14 @@ export const STORAGE_PREVIEW_PROTECTED_LABELS: Record<OutputStorageProtectedPrev
   recent: "yeni oluşturuldu",
   symlink: "bağlantı içeriyor",
   special: "özel dosya içeriyor",
+  unreadable: "okunamıyor",
+};
+
+export const STORAGE_VOICEOVER_PROTECTED_LABELS: Record<OutputStorageProtectedVoiceover["reason"], string> = {
+  referenced: "proje veya iş sonucunda kullanılıyor",
+  recent: "yeni oluşturuldu",
+  symlink: "bağlantı",
+  special: "özel dosya",
   unreadable: "okunamıyor",
 };
 
@@ -97,14 +106,22 @@ export function previewProtectionSummary(protectedPreviews: OutputStorageProtect
     `${count} ${STORAGE_PREVIEW_PROTECTED_LABELS[reason as OutputStorageProtectedPreview["reason"]] ?? reason}`).join(" · ");
 }
 
+export function voiceoverProtectionSummary(protectedVoices: OutputStorageProtectedVoiceover[]): string {
+  const counts = new Map<string, number>();
+  for (const item of protectedVoices) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+  return [...counts].map(([reason, count]) =>
+    `${count} ${STORAGE_VOICEOVER_PROTECTED_LABELS[reason as OutputStorageProtectedVoiceover["reason"]] ?? reason}`).join(" · ");
+}
+
 export function storageUsageSummary(totalBytes: number, moveableBytes: number, trashBytes: number): string {
   return `Toplam ${formatBytes(totalBytes)} · ${formatBytes(moveableBytes)} çöpe taşınabilir · ` +
     `${formatBytes(trashBytes)} çöpte.`;
 }
 
-export function storageTrashLabel(entry: { kind: "staging" | "render" | WorkKind | PreviewKind; name: string }): string {
+export function storageTrashLabel(entry: { kind: "staging" | "render" | "voiceover" | WorkKind | PreviewKind; name: string }): string {
   if (entry.kind === "render") return entry.name;
   if (entry.kind === "staging") return `Hazırlama · ${entry.name.slice(0, 8)}…`;
+  if (entry.kind === "voiceover") return `Seslendirme · ${entry.name.slice(0, 18)}…`;
   if (entry.kind === "work_render") return `Çalışma · ${entry.name}`;
   if (entry.kind === "work_publish") return `Yayın çalışması · ${entry.name.slice(0, 8)}…`;
   if (entry.kind === "work_preview") return `Önizleme çalışması · ${entry.name.slice(0, 8)}…`;

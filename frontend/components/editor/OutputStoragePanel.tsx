@@ -5,12 +5,12 @@ import { api, type OutputStorageInfo, type PreviewCleanupItem, type PreviewKind,
 import {
   formatBytes, formatMinAge, formatTrashExpiry, previewProtectionSummary, renderProtectionSummary,
   storageCategoryLabel, storageProtectionSummary, storageTrashLabel, storageUsageSummary, trashBatches,
-  workProtectionSummary,
+  voiceoverProtectionSummary, workProtectionSummary,
 } from "@/lib/storage";
 import styles from "./publishing.module.css";
 
 type CleanupKind = "staging" | "renders";
-type Selection = { tokens: string[]; files: string[]; work: string[]; previews: string[] };
+type Selection = { tokens: string[]; files: string[]; work: string[]; previews: string[]; voices: string[] };
 
 const workKey = (kind: WorkKind, name: string) => `${kind}:${name}`;
 const previewKey = (kind: PreviewKind, name: string) => `${kind}:${name}`;
@@ -19,8 +19,8 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
   projectId: string; disabled?: boolean; notify: (text: string, error?: boolean) => void;
 }) {
   const [scanned, setScanned] = useState<{ projectId: string; data: OutputStorageInfo } | null>(null);
-  const [pending, setPending] = useState<"scan" | CleanupKind | "work" | "previews" | "selected" | "restore" | "empty" | null>(null);
-  const [selected, setSelected] = useState<Selection>({ tokens: [], files: [], work: [], previews: [] });
+  const [pending, setPending] = useState<"scan" | CleanupKind | "work" | "previews" | "voices" | "selected" | "restore" | "empty" | null>(null);
+  const [selected, setSelected] = useState<Selection>({ tokens: [], files: [], work: [], previews: [], voices: [] });
   const data = scanned?.projectId === projectId ? scanned.data : null;
   const minAge = formatMinAge(data?.min_age_seconds ?? 3600);
   const trashDays = formatMinAge(data?.trash.retention_seconds ?? 7 * 86400);
@@ -30,21 +30,24 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
     selected.work.includes(workKey(item.kind, item.name))) : [];
   const selectedPreviews = data ? data.previews.eligible.filter((item) =>
     selected.previews.includes(previewKey(item.kind, item.name))) : [];
+  const selectedVoices = data ? data.voiceovers.eligible.filter((item) =>
+    selected.voices.includes(item.file)) : [];
   const selectionCount = selectedTokens.length + selectedRenders.length + selectedWork.length +
-    selectedPreviews.length;
+    selectedPreviews.length + selectedVoices.length;
   const selectionBytes = selectedTokens.reduce((sum, item) => sum + item.bytes, 0) +
     selectedRenders.reduce((sum, item) => sum + item.bytes, 0) +
     selectedWork.reduce((sum, item) => sum + item.bytes, 0) +
-    selectedPreviews.reduce((sum, item) => sum + item.bytes, 0);
+    selectedPreviews.reduce((sum, item) => sum + item.bytes, 0) +
+    selectedVoices.reduce((sum, item) => sum + item.bytes, 0);
   const eligibleCount = data
     ? data.eligible.length + data.renders.eligible.length + data.work.eligible.length +
-      data.previews.eligible.length : 0;
+      data.previews.eligible.length + data.voiceovers.eligible.length : 0;
   const allSelected = eligibleCount > 0 && selectionCount === eligibleCount;
 
   const refresh = async () => {
     const next = await api.outputStorage(projectId);
     setScanned({ projectId, data: next });
-    setSelected({ tokens: [], files: [], work: [], previews: [] });
+    setSelected({ tokens: [], files: [], work: [], previews: [], voices: [] });
   };
 
   const toggleToken = (token: string) => {
@@ -83,13 +86,23 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
     }));
   };
 
+  const toggleVoice = (file: string) => {
+    setSelected((current) => ({
+      ...current,
+      voices: current.voices.includes(file)
+        ? current.voices.filter((value) => value !== file)
+        : [...current.voices, file],
+    }));
+  };
+
   const selectAll = () => {
     if (!data) return;
-    setSelected(allSelected ? { tokens: [], files: [], work: [], previews: [] } : {
+    setSelected(allSelected ? { tokens: [], files: [], work: [], previews: [], voices: [] } : {
       tokens: data.eligible.map((item) => item.token),
       files: data.renders.eligible.map((item) => item.file),
       work: data.work.eligible.map((item) => workKey(item.kind, item.name)),
       previews: data.previews.eligible.map((item) => previewKey(item.kind, item.name)),
+      voices: data.voiceovers.eligible.map((item) => item.file),
     });
   };
 
@@ -213,6 +226,37 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
     } finally { setPending(null); }
   };
 
+  const cleanVoices = async () => {
+    if (!data || data.voiceovers.eligible.length === 0) return;
+    const files = data.voiceovers.eligible.map((item) => item.file);
+    if (!window.confirm(`${files.length} eski seslendirme dosyası (${formatBytes(data.voiceovers.eligible_bytes)}) ` +
+      `çöp kutusuna taşınsın mı?\n\nGüncel seslendirme ve proje/iş sonuçlarında kullanılan dosyalar korunur. ` +
+      `Taşınanlar ${trashDays} boyunca geri alınabilir.`)) return;
+    setPending("voices");
+    try {
+      let trashed = 0;
+      let moved = 0;
+      let atRisk = 0;
+      let firstError = "";
+      for (let start = 0; start < files.length; start += 50) {
+        try {
+          const result = await api.cleanupVoiceovers(projectId, files.slice(start, start + 50));
+          trashed += result.trashed.length;
+          moved += result.moved_bytes;
+          atRisk += result.failed.length + result.skipped.length;
+        } catch (e) {
+          if (!firstError) firstError = (e as Error).message;
+        }
+      }
+      notify([
+        `${trashed} seslendirme dosyası çöp kutusuna taşındı · ${formatBytes(moved)} ${trashDays} içinde geri alınabilir.`,
+        atRisk > 0 ? `${atRisk} öğe güvenlik denetimi nedeniyle atlandı.` : "",
+        firstError ? `Bazı seslendirme dosyaları taşınamadı: ${firstError}` : "",
+      ].filter(Boolean).join(" "), atRisk > 0 || !!firstError);
+      try { await refresh(); } catch { setScanned(null); }
+    } finally { setPending(null); }
+  };
+
   const moveSelected = async () => {
     if (!data || selectionCount === 0) return;
     if ((selectedTokens.length > 0 && data.busy) || (selectedRenders.length > 0 && data.render_busy) ||
@@ -224,14 +268,16 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
     const files = selectedRenders.map((item) => item.file);
     const work: WorkCleanupItem[] = selectedWork.map((item) => ({ kind: item.kind, name: item.name }));
     const previews: PreviewCleanupItem[] = selectedPreviews.map((item) => ({ kind: item.kind, name: item.name }));
+    const voices = selectedVoices.map((item) => item.file);
     const parts = [
       tokens.length > 0 ? `${tokens.length} hazırlama klasörü` : "",
       files.length > 0 ? `${files.length} ana render` : "",
       work.length > 0 ? `${work.length} çalışma klasörü` : "",
       previews.length > 0 ? `${previews.length} önizleme` : "",
+      voices.length > 0 ? `${voices.length} seslendirme` : "",
     ].filter(Boolean).join(" + ");
     if (!window.confirm(`Seçilen ${parts} (${formatBytes(selectionBytes)}) çöp kutusuna taşınsın mı?\n\n` +
-      `Kaynak video, proje kapağı, güncel ana render, önizlemeler ve proje verisi korunur. ` +
+      `Kaynak video, proje kapağı, güncel ana render, önizlemeler ve güncel seslendirme korunur. ` +
       `Seçilenler ${trashDays} boyunca geri alınabilir.`)) return;
     setPending("selected");
     try {
@@ -272,6 +318,16 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
       for (let start = 0; start < previews.length; start += 50) {
         try {
           const result = await api.cleanupPreviews(projectId, previews.slice(start, start + 50));
+          trashed += result.trashed.length;
+          moved += result.moved_bytes;
+          atRisk += result.failed.length + result.skipped.length;
+        } catch (e) {
+          if (!firstError) firstError = (e as Error).message;
+        }
+      }
+      for (let start = 0; start < voices.length; start += 50) {
+        try {
+          const result = await api.cleanupVoiceovers(projectId, voices.slice(start, start + 50));
           trashed += result.trashed.length;
           moved += result.moved_bytes;
           atRisk += result.failed.length + result.skipped.length;
@@ -334,7 +390,7 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
     <h4>Depolama</h4>
     <p className={styles.note}>Projenin toplam disk kullanımını kategori bazında görün. Yalnızca en az {minAge}{" "}
       önce oluşturulmuş ve kullanılmayan hazırlama klasörleri, eski ana render MP4&apos;leri, work/ çalışma
-      klasörleri ve eski önizleme MP4&apos;leri çöpe taşınabilir. Bunlar hemen silinmez; {trashDays} boyunca çöp
+      klasörleri, eski önizleme MP4&apos;leri ve kullanılmayan seslendirme MP3&apos;leri çöpe taşınabilir. Bunlar hemen silinmez; {trashDays} boyunca çöp
       kutusunda tutulur. Kaynak medya, kapak, güncel ana render, güncel önizleme ve proje verisi korunur.</p>
     <div className={styles.actions}>
       <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`} disabled={disabled || pending !== null} onClick={scan}>
@@ -355,6 +411,10 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
       {data && data.previews.eligible.length > 0 && <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
         disabled={disabled || pending !== null || data.preview_busy} onClick={cleanPreviews}>
         {pending === "previews" ? "Taşınıyor…" : `${data.previews.eligible.length} eski önizlemeyi çöpe taşı`}
+      </button>}
+      {data && data.voiceovers.eligible.length > 0 && <button type="button" className={`btn btn-sm ${styles.trimShiftButton}`}
+        disabled={disabled || pending !== null} onClick={cleanVoices}>
+        {pending === "voices" ? "Taşınıyor…" : `${data.voiceovers.eligible.length} eski seslendirmeyi çöpe taşı`}
       </button>}
     </div>
     {data && <>
@@ -395,6 +455,14 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
           : `${data.previews.eligible.length} önizleme · ${formatBytes(data.previews.eligible_bytes)} çöpe taşınabilir.`}
         {data.previews.protected.length > 0
           ? ` ${data.previews.protected.length} önizleme korunuyor (${previewProtectionSummary(data.previews.protected)}).`
+          : ""}
+      </p>
+      <p className={styles.note} role="status" aria-atomic="true">
+        {data.voiceovers.eligible.length === 0
+          ? "Çöpe taşınacak eski seslendirme dosyası yok."
+          : `${data.voiceovers.eligible.length} seslendirme · ${formatBytes(data.voiceovers.eligible_bytes)} çöpe taşınabilir.`}
+        {data.voiceovers.protected.length > 0
+          ? ` ${data.voiceovers.protected.length} seslendirme korunuyor (${voiceoverProtectionSummary(data.voiceovers.protected)}).`
           : ""}
       </p>
       {eligibleCount > 0 && <details className={styles.selection}>
@@ -462,6 +530,19 @@ export default function OutputStoragePanel({ projectId, disabled, notify }: {
                 </label>
               </li>;
             })}
+          </ul>
+        </fieldset>}
+        {data.voiceovers.eligible.length > 0 && <fieldset className={styles.selectionGroup}>
+          <legend>Seslendirme dosyaları</legend>
+          <ul className={styles.selectionList}>
+            {data.voiceovers.eligible.map((item) => <li key={item.file}>
+              <label className={styles.selectionRow} title={item.file}>
+                <input type="checkbox" checked={selected.voices.includes(item.file)}
+                  disabled={disabled || pending !== null} onChange={() => toggleVoice(item.file)} />
+                <span className={styles.selectionName}>{storageTrashLabel({ kind: "voiceover", name: item.file })}</span>
+                <span className={styles.selectionAmount}>{formatBytes(item.bytes)}</span>
+              </label>
+            </li>)}
           </ul>
         </fieldset>}
         <div className={styles.actions}>

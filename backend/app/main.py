@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session, select
 
 from . import assets, jobs, output_cleanup
+from . import idempotency_admin
 from .idempotency import protect as protect_mutation
 from .project_writes import lock as project_write_lock
 from .ai import broll, catalog as ai_catalog, services as ai, tts
@@ -71,9 +72,17 @@ def check_edit_revision(p: Project, revision: str | None) -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    try:
+        removed = idempotency_admin.purge_expired()
+        if removed:
+            logging.getLogger(__name__).info("Süresi dolmuş %s istek kimliği kaydı silindi.", removed)
+    except Exception:
+        logging.getLogger(__name__).exception("İstek kimliği bakımı yapılamadı; sunucu açılmaya devam ediyor.")
     threading.Thread(target=assets.ensure_assets, daemon=True).start()
     threading.Thread(target=output_cleanup.purge_all_expired_trash,
                      args=(settings.storage_dir / "projects",), daemon=True).start()
+    threading.Thread(target=output_cleanup.purge_temp_previews,
+                     args=(settings.storage_dir / "temp",), daemon=True).start()
     yield
 
 
@@ -232,6 +241,12 @@ def output_render_references(p: Project, session: Session) -> set[str]:
     values: list[Any] = [p.model_dump(mode="json")]
     values.extend(job.result for job in jobs_rows if job.kind != "render" and job.result)
     return output_cleanup.render_references(p.id, values)
+
+
+def output_voice_references(p: Project, session: Session) -> set[str]:
+    """Voiceover MP3s kept by the current project state or any stored job result."""
+    results = session.exec(select(Job.result).where(Job.project_id == p.id)).all()
+    return output_cleanup.voiceover_references(p.id, [p.model_dump(mode="json"), *results])
 
 
 # ------------------------------------------------------------------ genel ----
@@ -725,6 +740,8 @@ def output_storage(project_id: str, session: Session = Depends(get_session)) -> 
     work_eligible, work_protected = output_cleanup.scan_work(root)
     preview_eligible, preview_protected = output_cleanup.scan_previews(
         root, output_preview_references(p, session))
+    voice_eligible, voice_protected = output_cleanup.scan_voiceovers(
+        root, output_voice_references(p, session))
     categories, total_bytes = output_cleanup.scan_storage(
         root, (p.source_file, p.thumbnail_file, p.voiceover_file))
     trash = output_cleanup.scan_trash(root)
@@ -732,6 +749,7 @@ def output_storage(project_id: str, session: Session = Depends(get_session)) -> 
     render_eligible_bytes = sum(item["bytes"] for item in render_eligible)
     work_eligible_bytes = sum(item["bytes"] for item in work_eligible)
     preview_eligible_bytes = sum(item["bytes"] for item in preview_eligible)
+    voice_eligible_bytes = sum(item["bytes"] for item in voice_eligible)
     return {
         "eligible": eligible, "protected": protected,
         "eligible_bytes": eligible_bytes,
@@ -754,9 +772,16 @@ def output_storage(project_id: str, session: Session = Depends(get_session)) -> 
             "eligible_bytes": preview_eligible_bytes,
             "protected_bytes": sum(item["bytes"] for item in preview_protected),
         },
+        "voiceovers": {
+            "eligible": voice_eligible,
+            "protected": voice_protected,
+            "eligible_bytes": voice_eligible_bytes,
+            "protected_bytes": sum(item["bytes"] for item in voice_protected),
+        },
         "categories": categories,
         "total_bytes": total_bytes,
-        "reclaimable_bytes": eligible_bytes + render_eligible_bytes + work_eligible_bytes + preview_eligible_bytes,
+        "reclaimable_bytes": (eligible_bytes + render_eligible_bytes + work_eligible_bytes +
+                              preview_eligible_bytes + voice_eligible_bytes),
         "trash": trash,
         "min_age_seconds": output_cleanup.MIN_AGE_SECONDS,
         "busy": publishing_busy(p.id, session),
@@ -820,6 +845,18 @@ def cleanup_output_previews(project_id: str, body: output_cleanup.PreviewCleanup
         jobs.project_dir(p.id), referenced, [(item.kind, item.name) for item in body.items])
     if not result["trashed"]:
         raise HTTPException(409, "İstenen önizlemeler artık temizlenebilir değil; listeyi yenileyin.")
+    return result
+
+
+@app.post("/api/projects/{project_id}/outputs/voiceovers/cleanup")
+def cleanup_output_voiceovers(project_id: str, body: output_cleanup.VoiceoverCleanupBody,
+                              session: Session = Depends(get_session)) -> dict:
+    """Move old, unreferenced TTS files (superseded or revision-conflicted) to trash."""
+    p = get_project(project_id, session)
+    referenced = output_voice_references(p, session)
+    result = output_cleanup.trash_voiceovers(jobs.project_dir(p.id), referenced, body.files)
+    if not result["trashed"]:
+        raise HTTPException(409, "İstenen seslendirme dosyaları artık temizlenebilir değil; listeyi yenileyin.")
     return result
 
 
