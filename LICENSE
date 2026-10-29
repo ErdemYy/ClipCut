@@ -1,0 +1,26 @@
+Copyright (c) 2026 ErdemYy. All rights reserved.
+
+ClipCut is provided for personal and internal use. No permission is granted to
+copy, modify, merge, publish, distribute, sublicense or sell copies of this
+software, in whole or in part, without the prior written permission of the
+copyright holder.
+
+Third-party components and assets keep their own licenses:
+
+- Python and Node.js dependencies are covered by their respective package
+  licenses.
+- Fonts, music, sound effects and stock B-roll media under `assets/` are
+  distributed under the terms declared in their source packages.
+- NASA Apollo archive photography used in the README demo project is in the
+  public domain.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+You are responsible for the terms of any AI provider API key you configure and
+for the provider's pricing.
