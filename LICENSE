@@ -1,18 +1,16 @@
-Copyright (c) 2026 ErdemYy. All rights reserved.
+MIT License
 
-ClipCut is provided for personal and internal use. No permission is granted to
-copy, modify, merge, publish, distribute, sublicense or sell copies of this
-software, in whole or in part, without the prior written permission of the
-copyright holder.
+Copyright (c) 2026 ErdemYy
 
-Third-party components and assets keep their own licenses:
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-- Python and Node.js dependencies are covered by their respective package
-  licenses.
-- Fonts, music, sound effects and stock B-roll media under `assets/` are
-  distributed under the terms declared in their source packages.
-- NASA Apollo archive photography used in the README demo project is in the
-  public domain.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -22,5 +20,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-You are responsible for the terms of any AI provider API key you configure and
-for the provider's pricing.
+Third-party assets keep their own terms: fonts, music, sound effects and
+stock B-roll media under assets/ are distributed under their source package
+licenses, and the NASA Apollo archive photography used in the README demo is
+in the public domain. AI provider usage and pricing remain the operator's
+responsibility.

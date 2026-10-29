@@ -225,7 +225,7 @@ Eski kaynak videolar Sahneler panelinden açılabilir.
 ### 2. Backend'i Başlatma
 
 ```powershell
-cd C:\Users\Okul\.gemini\antigravity-ide\scratch\clipcut\backend
+cd ClipCut\backend
 
 # Sanal ortamı oluşturun (ilk kurulum) ve etkinleştirin
 python -m venv .venv
@@ -248,7 +248,7 @@ Etkileşimli Swagger dokümantasyonu: `http://localhost:8000/docs`
 ### 3. Frontend'i Başlatma
 
 ```powershell
-cd C:\Users\Okul\.gemini\antigravity-ide\scratch\clipcut\frontend
+cd ClipCut\frontend
 
 npm run dev
 ```
@@ -320,4 +320,4 @@ clipcut/
 
 ## 📄 Lisans
 
-Kişisel/depolar içi kullanım içindir; ayrıntılar için [LICENSE](LICENSE) dosyasına bakın. Kendi API anahtarınızın kullanım koşulları ve sağlayıcı fiyatlaması sizin sorumluluğunuzdadır.
+[MIT](LICENSE) lisansı ile paylaşılır. Depodaki üçüncü taraf font, müzik, ses efekti ve B-roll dosyaları kendi kaynak lisanslarına tabidir; README'deki NASA Apollo arşivi fotoğrafları kamu malıdır. Kendi API anahtarınızın kullanım koşulları ve sağlayıcı fiyatlaması sizin sorumluluğunuzdadır.
