@@ -119,6 +119,20 @@ def test_cli_release_purge_and_list(db, capsys, monkeypatch):
     assert "old-completed" not in _keys(engine)
 
 
+def test_missing_reservation_table_is_reported_without_creating_it(tmp_path, monkeypatch, capsys):
+    engine = create_engine(f"sqlite:///{tmp_path / 'fresh.db'}", connect_args={"check_same_thread": False})
+    monkeypatch.setattr(models, "engine", engine)
+
+    assert idempotency_admin.table_available() is False
+    assert idempotency_admin.list_records() == []
+    assert idempotency_admin.purge_expired(ttl_hours=1) == 0
+    assert idempotency_admin.release("missing") is False
+    assert idempotency_admin.main(["list"]) == 0
+    assert "henüz yok" in capsys.readouterr().out
+    assert idempotency_admin.table_available() is False  # read commands never create it
+    engine.dispose()
+
+
 def test_startup_purges_expired_keys_and_survives_failure(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(main, "init_db", lambda: None)

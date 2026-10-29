@@ -20,6 +20,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import inspect
 from sqlmodel import Session, select
 
 from . import models
@@ -27,6 +28,15 @@ from .config import get_settings
 from .models import MutationRequest
 
 STATUSES = ("all", "pending", "completed", "failed")
+TABLE = MutationRequest.__tablename__
+
+
+def table_available() -> bool:
+    """A fresh database has no reservation table until the app's first start."""
+    try:
+        return inspect(models.engine).has_table(TABLE)
+    except Exception:
+        return False
 
 
 def _aware(value: datetime) -> datetime:
@@ -45,6 +55,8 @@ def list_records(*, status: str = "all", limit: int = 50,
     if status not in STATUSES:
         raise ValueError(f"Geçersiz durum: {status}")
     limit = max(1, min(int(limit), 1000))
+    if not table_available():
+        return []
     current = now or datetime.now(timezone.utc)
     with Session(models.engine) as session:
         rows = session.exec(select(MutationRequest).order_by(MutationRequest.created_at.desc())).all()
@@ -72,7 +84,7 @@ def purge_expired(*, ttl_hours: int | None = None,
                   now: datetime | None = None) -> int:
     """Delete completed records older than the TTL; pending ones always stay."""
     ttl = get_settings().idempotency_ttl_hours if ttl_hours is None else int(ttl_hours)
-    if ttl <= 0:
+    if ttl <= 0 or not table_available():
         return 0
     current = now or datetime.now(timezone.utc)
     cutoff = current - timedelta(hours=ttl)
@@ -94,6 +106,8 @@ def release(key: str) -> bool:
     Completed records are not released: they replay a stored response and expire
     with the TTL instead. Returns True only when a pending record was removed.
     """
+    if not table_available():
+        return False
     with Session(models.engine) as session:
         record = session.get(MutationRequest, key)
         if record is None or record.status_code is not None:
@@ -132,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "list":
+        if not table_available():
+            print("İstek kimliği tablosu henüz yok; sunucu ilk kez açıldığında oluşturulur.")
+            return 0
         _print_records(list_records(status=args.status, limit=args.limit))
         return 0
     if args.command == "release":
