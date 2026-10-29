@@ -19,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-Third-party assets keep their own terms: fonts, music, sound effects and
-stock B-roll media under assets/ are distributed under their source package
-licenses, and the NASA Apollo archive photography used in the README demo is
-in the public domain. AI provider usage and pricing remain the operator's
-responsibility.
