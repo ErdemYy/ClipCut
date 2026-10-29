@@ -1,7 +1,7 @@
 # ClipCut 🎬
 
 <p align="center">
-  <img src="assets/screenshots/editor.png" alt="ClipCut editör" width="100%">
+  <img src="assets/screenshots/editor.png" alt="ClipCut editör: kaynak oynatıcı, canlı altyazı ve şablon paneli" width="100%">
 </p>
 
 **ClipCut**, yapay zekâ destekli video üretim ve akıllı edit stüdyosudur: Veo ile prompt'tan video, Gemini ile kelime zamanlamalı altyazı, doğal dil promptu ile otomatik kurgu, çoklu platform dışa aktarma ve uzun videolardan kısa klip çıkarımı — hepsi tek yerel uygulamada.
@@ -10,10 +10,10 @@
 
 ## 🖼 Ekran görüntüleri
 
-Ekranlar, sentetik test projesiyle çalışan uygulamadan alınmıştır; gerçek AI üretim sonucu değildir.
+Ekranlar, yerel test sağlayıcısıyla çalışan uygulamadan sentetik bir örnek projeyle alınmıştır; gerçek AI üretimi değildir. Örnek projedeki Dünya fotoğrafları NASA arşivindendir (kamu malı).
 
 <p align="center">
-  <img src="assets/screenshots/gallery.png" alt="ClipCut ekran görüntüleri: ana sayfa, projeler, yeni video, promptyla edit, dışa aktarma ve kısa klipler" width="100%">
+  <img src="assets/screenshots/gallery.png" alt="ClipCut ekran görüntüleri: ana sayfa, projeler, yeni video, prompt ile edit, dışa aktarma ve kısa klipler" width="100%">
 </p>
 
 <details>
@@ -24,7 +24,10 @@ Ekranlar, sentetik test projesiyle çalışan uygulamadan alınmıştır; gerçe
 | Ana sayfa | ![Ana sayfa](assets/screenshots/landing.png) |
 | Projeler | ![Projeler](assets/screenshots/dashboard.png) |
 | Yeni video üret | ![Yeni video](assets/screenshots/create.png) |
-| Promptyla Edit + zaman çizelgesi | ![Zaman çizelgesi](assets/screenshots/editor-timeline.png) |
+| Prompt ile edit | ![Prompt ile edit](assets/screenshots/ai-edit.png) |
+| Zaman çizelgesi | ![Zaman çizelgesi](assets/screenshots/editor-timeline.png) |
+| Altyazı stüdyosu | ![Altyazı stüdyosu](assets/screenshots/subtitles.png) |
+| Seslendirme | ![Seslendirme](assets/screenshots/voiceover.png) |
 | Dışa aktarma | ![Dışa aktarma](assets/screenshots/export.png) |
 | Kısa klipler | ![Kısa klipler](assets/screenshots/shortclips.png) |
 
@@ -161,6 +164,26 @@ Temizlik hemen silmez: taşınan öğeler proje içindeki `.trash` klasöründe 
 
 Her temizlik onay ister ve yalnızca taramada gösterilen öğeleri taşır. Sunucu işlemden önce proje durumunu ve bütün iş sonuçlarını yeniden tarar; bu arada bir öğe korumaya alınmışsa taşınmaz. Süren bir render, önizleme veya hazırlama işi varsa ana render, work/ ve önizleme temizliği yapılmaz. Kaynak video, seslendirme, proje kapağı, güncel ana render, güncel önizleme, proje planı ve düzenleme geçmişi değişmez. Tarama ve temizlik otomatik başlamaz, ücretli AI/TTS çağrısı yapmaz. Tarama `/jobs` listesinin son 20 kaydıyla sınırlı değildir; hazırlama klasörleri için veritabanındaki bütün iş sonuçları, ana render'lar için render işi dışındaki bütün proje ve iş sonuçları taranır.
 
+### Eşzamanlı kayıt ve yinelenen istek koruması
+
+Editörün üstündeki **Kütüphane** ve **İş listesi** alanları ayrı ayrı yüklenir. Hata veya 15 saniyelik zaman aşımında açıklama ve **Yeniden dene** görünür; **Yenile** ile daha sonra tekrar okunabilir. Başarısız yenilemede son bilinen veriler ve takip edilen işler korunur. Bu düğmeler yalnızca veri okur, üretim/düzenleme isteğini tekrarlamaz. Yeniden bulunan aktif iş, aynı iş kimliğiyle takip edilir; gecikmiş liste yanıtları bu sırada başlayan veya ilerleyen işleri ezmez. Sayfadan ayrılınca okumalar iptal edilir; hata sonrası otomatik liste yenilemesi yapılmaz.
+
+**Şablonlar**, **Seslendirme**, **B-Roll** ve **Ses** panellerindeki listeler de aynı şekilde bağımsız **Yenile / Yeniden dene**, 15 saniye zaman aşımı ve son başarılı listeyi koruma davranışına sahiptir. Gerçekten boş bir liste, yükleme hatasından ayrı gösterilir. Panelden ayrılınca okuma iptal edilir; proje değişince eski projeye ait geç yanıtlar uygulanmaz. Seslendirici seçimi yeni liste isteği veya TTS başlatmaz; liste yenilenirken yazılan metin/hız/seçim korunur. Kullanılabilir seslendirici yüklenmemişse gizli bir varsayılanla ses üretmek yerine önizleme/uygulama kapalı kalır. Projeye yeni yüklenen ses, daha önce başlamış liste okuması yüzünden kaybolmaz.
+
+**Zaman çizelgesi** ve **Kaynak ses dalgası** birbirinden bağımsız yüklenir; çizelge hatası ses dalgasını gizlemez. Hatalar ve yeniden deneme kontrolleri çizelge ilk kez yüklenemediğinde de görünür. Aynı kaynağın son verisi yenileme sırasında korunur; güncel çizelge doğrulanana kadar katman kaydetme kapalıdır ve kaydedilmemiş taslak korunur. Yalnızca açık **Taslağı at / güncel veriyi yükle** eylemi, başarılı okumadan sonra taslağı temizler. Kaynak/proje değişince önceki kaynağın çizelgesi ve dalgası gizlenir; yalnızca edit değişince ses analizi yeniden yapılmaz. Önizleme panelinin süre/çizelge okuması da ayrıca yeniden denenebilir; aralık seçimi ve önceki önizleme indirmesi korunur, yeniden deneme render başlatmaz.
+
+Çizelge okuması 15 saniyede, kaynak ses dalgası ise sunucunun 120 saniyelik yerel FFmpeg analizine pay bırakmak için 130 saniyede zaman aşımına uğrar. Tarayıcı isteğinin iptali sunucuda başlamış yerel analizi durdurmayabilir. Ses dalgası hatası “kaynakta ses yok” olarak gösterilmez; sessiz bir ses kanalı düz çizgi olabilir. Bu okumalar AI/TTS kullanmaz; aynı dosya yolundaki içerik uygulama dışında değiştirilirse yenileme gerekebilir.
+
+Editör, eski bir proje okuma veya kayıt yanıtının daha yeni düzenlemeleri ekranda ezmesini engeller. Şablon, AI Edit, geri alma, seslendirme ve otomatik B-Roll işlemleri görüntülenen edit revizyonunu gönderir; plan/altyazı/zaman çizelgesi kayıtları kendi revizyonlarını kullanır. İşlem sırasında içerik değişirse eski sonuç **409** ile uygulanmadan reddedilir. Transkripsiyon ve çeviri işleri de sonuçlarını yayınlamadan önce başlangıç revizyonunu kontrol eder. API ve arka plan kayıtları aynı süreç içi kilidi kullanır; bu, çok süreçli dağıtım desteği değildir. Revizyonsuz eski API istemcileri için eski davranış korunur.
+
+Seslendirme yeni, benzersiz bir MP3'e hazırlanır; başarılı sürüm kontrolünden sonra projeye bağlanır. Eski ses dosyalarının üzerine yazılmaz veya kaldırma düğmesinde fiziksel olarak silinmez; açık renderlar ve korunan sürümler bunları kullanabilir. Bu dosyalar ek disk alanı kullanır; bu değişiklik ses dosyaları için otomatik temizlik eklemez.
+
+Arayüz, dosya yüklemeleri ve salt kontrol/tahmin çağrıları dışındaki değişiklik isteklerine `Idempotency-Key` ekler. Aynı anda gönderilen aynı istek tek ağ çağrısında birleştirilir. Yanıt kaybolursa **otomatik üretim tekrarı yapılmaz**; aynı yöntem/adres/gövde ile elle yeniden deneme aynı kimliği kullanır. Tamamlanmış isteğin saklanan yanıtı döner, ikinci proje/iş/sağlayıcı çağrısı başlatılmaz. Aynı kimlik farklı adres veya içerikle kullanılırsa 409 döner. Başarıyla yanıtı alınmış bir işlemden sonraki yeni düğme eylemi yeni istek sayılır.
+
+İstek rezervasyonları SQLite'taki `mutationrequest` tablosunda kalıcıdır (açılışta eklenir; mevcut proje tabloları değiştirilmez). İstek sürüyorsa, 5xx döndüyse veya sunucu yanıt kaydedilmeden kapandıysa aynı kimlik **sonucu belirsiz** olarak 409 ile engellenir; süre dolunca otomatik açılmaz. Önce proje/iş listesini ve gerekiyorsa sağlayıcı hesabını kontrol edin. Bu koruma, sağlayıcının ilk çağrıyı ücretlendirmediği garantisi vermez. Rezervasyonlar otomatik temizlenmez; veritabanını yedeklerken bunlar da korunmalıdır.
+
+Tarayıcı `sessionStorage` alanında yalnızca istek parmak izi ve rastgele kimlik saklar, prompt/metin saklamaz. Aynı sekmedeki sayfa yenilemelerinde kimlik korunur; depolama engelliyse yalnızca sayfa belleğinde kalır. Sekmeyi kapatmak, depolamayı temizlemek, farklı içerik göndermek veya farklı kimlik kullanan eski/harici bir istemci yeni istek oluşturabilir. Bu protokol çok kullanıcılı kimlik doğrulama ya da sağlayıcı tarafında “tam bir kez ücretlendirme” garantisi değildir.
+
 ## Senaryodan çok sahneli video
 
 1. **Yeni Video → Senaryodan Üret** bölümüne konuyu veya hazır senaryoyu yazın; dil, format, ortak stil, 2–12 sahne ve sahne süresini seçin.
@@ -278,7 +301,7 @@ Editör içindeki prompt kutusuna Türkçe veya İngilizce serbestçe yazabilirs
 - **Backend:** FastAPI + Pydantic + SQLAlchemy (SQLite), yerel FFmpeg motoru (`imageio-ffmpeg` ile taşınabilir ikili), Google Gemini / Veo istemcileri, Edge TTS.
 - **Frontend:** Next.js (App Router) + TypeScript, CSS modülleri; görsel tasarım dokunmatik ve erişilebilirlik hedeflerine uygun (44px dokunmatik hedefler).
 - **Depolama:** Her proje kendi klasöründe izole; üretilen çıktılar kategorize edilir, 7 günlük çöp kutusu ile kontrollü temizlik yapılır.
-- **Testler:** backend `pytest` (244 test) ve frontend `npm test` (129 test); ücretli AI/TTS çağrısı yapmadan mock + gerçek FFmpeg ile doğrulanır.
+- **Testler:** backend `pytest` ve frontend `npm test`; ücretli AI/TTS çağrısı yapmadan mock + gerçek FFmpeg ile doğrulanır. Backend klasöründe `.venv\Scripts\python.exe -m pytest tests/test_process_restart.py -q` gerçek süreç yeniden başlatma testini tek başına çalıştırır: ayrı SQLite/depolama alanında Uvicorn zorla kapatılıp yeniden açılır; kayıtlar, dosya hash'leri ve istek kimlikleri doğrulanır. FFmpeg gerçek çalışır, TTS yerel sentetik sestir ve harici ağ bağlantıları engellenir. Kesinti, encoder kapandıktan sonra sonuç yayınlanmadan önce kontrollü bir bekleme noktasındadır; aktif encoder veya gerçek sağlayıcı kesintisi simüle edilmez.
 
 ```
 clipcut/
