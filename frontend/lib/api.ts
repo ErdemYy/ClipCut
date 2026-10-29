@@ -25,6 +25,7 @@ export type Project = {
   has_voiceover?: boolean;
   output_url: string | null;
   render_revision?: string;
+  edit_revision?: string;
   subtitle_revision?: string;
   subtitle_time_limit?: number;
   timeline_revision?: string;
@@ -352,13 +353,13 @@ export const downloadUrl = (path: string | null | undefined) => {
 };
 
 export class ApiError extends Error {
-  constructor(message: string, public readonly status: number) {
+  constructor(message: string, public readonly status: number, public readonly idempotencyStatus?: string | null) {
     super(message);
     this.name = "ApiError";
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function transport<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: init?.body instanceof FormData ? init?.headers : { "Content-Type": "application/json", ...init?.headers },
@@ -373,9 +374,49 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* yok */
     }
-    throw new ApiError(detail || `İstek başarısız (${res.status})`, res.status);
+    throw new ApiError(detail || `İstek başarısız (${res.status})`, res.status, res.headers.get("Idempotency-Status"));
   }
   return res.json() as Promise<T>;
+}
+
+const mutationKeys = new Map<string, string>();
+const mutationFlights = new Map<string, Promise<unknown>>();
+
+/** No automatic mutation retries. A manual retry of an ambiguous request reuses its durable key. */
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = init?.method ?? "GET";
+  if (method === "GET" || init?.body instanceof FormData || /\/(preflight|check|suggest)$/.test(path)) {
+    return transport<T>(path, init);
+  }
+  // Reserve synchronously, before hashing: two concurrent hashes can finish in either order.
+  const flightKey = JSON.stringify([API_URL, method, path, init?.body ?? null]);
+  const flight = mutationFlights.get(flightKey);
+  if (flight) return flight as Promise<T>;
+  const promise = protectedMutation<T>(path, init, flightKey)
+    .finally(() => { mutationFlights.delete(flightKey); });
+  mutationFlights.set(flightKey, promise);
+  return promise;
+}
+
+async function protectedMutation<T>(path: string, init: RequestInit | undefined, fingerprint: string): Promise<T> {
+  // Store only a fingerprint and random key in sessionStorage, never prompts or project contents.
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(fingerprint));
+  const storageKey = "clipcut:mutation:" + Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  let key = mutationKeys.get(storageKey);
+  try { key ??= sessionStorage.getItem(storageKey) ?? undefined; } catch { /* restricted storage: session memory only */ }
+  key ??= crypto.randomUUID();
+  mutationKeys.set(storageKey, key);
+  try { sessionStorage.setItem(storageKey, key); } catch { /* restricted storage */ }
+  const forget = () => {
+    mutationKeys.delete(storageKey);
+    try { sessionStorage.removeItem(storageKey); } catch { /* restricted storage */ }
+  };
+  return transport<T>(path, { ...init, headers: { ...init?.headers, "Idempotency-Key": key } })
+    .then((value) => { forget(); return value; })
+    .catch((error: unknown) => {
+      if (error instanceof ApiError && error.status < 500 && error.idempotencyStatus !== "pending") forget();
+      throw error;
+    });
 }
 
 const json = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
@@ -387,10 +428,10 @@ export const api = {
   aiModels: () => request<ModelCatalog>("/api/ai/models"),
   preflight: (body: { video_model?: string; text_model?: string; scene_durations?: number[]; voiceover?: boolean;
     planning_scene_count?: number; planning_chars?: number }) => request<CostEstimate>("/api/ai/preflight", json(body)),
-  library: () => request<Library>("/api/library"),
-  templates: () => request<Template[]>("/api/templates"),
-  applyTemplate: (projectId: string, templateId: string) =>
-    request<{ summary: string; project: Project }>(`/api/projects/${projectId}/apply-template/${templateId}`, { method: "POST" }),
+  library: (signal?: AbortSignal) => request<Library>("/api/library", { signal }),
+  templates: (signal?: AbortSignal) => request<Template[]>("/api/templates", { signal }),
+  applyTemplate: (projectId: string, templateId: string, revision?: string) =>
+    request<{ summary: string; project: Project }>(`/api/projects/${projectId}/apply-template/${templateId}`, json({ revision })),
   projects: (signal?: AbortSignal) => request<Project[]>("/api/projects", { signal }),
   project: (id: string, signal?: AbortSignal) => request<Project>(`/api/projects/${id}`, { signal }),
   rename: (id: string, name: string) => request<Project>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
@@ -416,7 +457,7 @@ export const api = {
   restoreStoryboardVersion: (id: string, body: { version_index: number; confirm: boolean }) =>
     request<Project>(`/api/projects/${id}/storyboard/restore`, json(body)),
   job: (id: string, signal?: AbortSignal) => request<Job>(`/api/jobs/${id}`, { signal }),
-  jobs: (projectId: string) => request<Job[]>(`/api/projects/${projectId}/jobs`),
+  jobs: (projectId: string, signal?: AbortSignal) => request<Job[]>(`/api/projects/${projectId}/jobs`, { signal }),
   outputStorage: (id: string) => request<OutputStorageInfo>(`/api/projects/${id}/outputs`),
   cleanupOutputs: (id: string, tokens: string[]) =>
     request<OutputCleanupResult>(`/api/projects/${id}/outputs/cleanup`, json({ tokens })),
@@ -434,11 +475,11 @@ export const api = {
   translate: (id: string, target_language: string) => request<Job>(`/api/projects/${id}/translate`, json({ target_language })),
   saveSubtitles: (id: string, segments: SubtitleEditSegment[], revision?: string) =>
     request<Project>(`/api/projects/${id}/subtitles`, { method: "PUT", body: JSON.stringify({ segments, revision }) }),
-  edit: (id: string, prompt: string) =>
-    request<{ summary: string; changed: boolean; project: Project }>(`/api/projects/${id}/edit`, json({ prompt })),
+  edit: (id: string, prompt: string, revision?: string) =>
+    request<{ summary: string; changed: boolean; project: Project }>(`/api/projects/${id}/edit`, json({ prompt, revision })),
   setPlan: (id: string, plan: Plan, revision?: string) => request<Project>(`/api/projects/${id}/plan`, { method: "PUT", body: JSON.stringify({ plan, revision }) }),
-  undo: (id: string) => request<Project>(`/api/projects/${id}/plan/undo`, { method: "POST" }),
-  timeline: (id: string) => request<TimelineInfo>(`/api/projects/${id}/timeline`),
+  undo: (id: string, revision?: string) => request<Project>(`/api/projects/${id}/plan/undo`, json({ revision })),
+  timeline: (id: string, signal?: AbortSignal) => request<TimelineInfo>(`/api/projects/${id}/timeline`, { signal }),
   setLayerTimings: (id: string, revision: string, layers: LayerTiming[]) => request<Project>(`/api/projects/${id}/timeline/layers`,
     { method: "PATCH", body: JSON.stringify({ revision, layers }) }),
   waveform: (id: string, signal?: AbortSignal) => request<Waveform>(`/api/projects/${id}/waveform`, { signal }),
@@ -471,21 +512,21 @@ export const api = {
     fd.append("file", file);
     return request<LibraryItem>(`/api/projects/${id}/audio`, { method: "POST", body: fd });
   },
-  projectAudio: (id: string) => request<LibraryItem[]>(`/api/projects/${id}/audio`),
-  voices: () => request<Voice[]>("/api/voices"),
+  projectAudio: (id: string, signal?: AbortSignal) => request<LibraryItem[]>(`/api/projects/${id}/audio`, { signal }),
+  voices: (signal?: AbortSignal) => request<Voice[]>("/api/voices", { signal }),
   previewVoiceover: (body: { text: string; voice: string; speed?: number }) =>
     request<{ url: string; duration: number; words: Word[]; segments: Segment[] }>("/api/voiceover/preview", json(body)),
   applyVoiceover: (
     projectId: string,
-    body: { text: string; voice: string; speed?: number; auto_subtitles?: boolean; subtitle_style?: string }
+    body: { text: string; voice: string; speed?: number; auto_subtitles?: boolean; subtitle_style?: string; revision?: string }
   ) => request<{ summary: string; project: Project }>(`/api/projects/${projectId}/voiceover`, json(body)),
-  deleteVoiceover: (projectId: string) =>
-    request<{ summary: string; project: Project }>(`/api/projects/${projectId}/voiceover`, { method: "DELETE" }),
-  brollLibrary: () => request<BrollStockItem[]>("/api/broll/library"),
+  deleteVoiceover: (projectId: string, revision?: string) =>
+    request<{ summary: string; project: Project }>(`/api/projects/${projectId}/voiceover`, { method: "DELETE", body: JSON.stringify({ revision }) }),
+  brollLibrary: (signal?: AbortSignal) => request<BrollStockItem[]>("/api/broll/library", { signal }),
   projectBroll: (projectId: string) => request<LibraryItem[]>(`/api/projects/${projectId}/broll`),
   suggestBroll: (projectId: string) => request<{ suggestions: OverlayOp[] }>(`/api/projects/${projectId}/broll/suggest`, { method: "POST" }),
-  applyAutoBroll: (projectId: string) =>
-    request<{ summary: string; count: number; project: Project }>(`/api/projects/${projectId}/broll/apply-auto`, { method: "POST" }),
+  applyAutoBroll: (projectId: string, revision?: string) =>
+    request<{ summary: string; count: number; project: Project }>(`/api/projects/${projectId}/broll/apply-auto`, json({ revision })),
   generateBroll: (projectId: string, prompt: string) =>
     request<LibraryItem>(`/api/projects/${projectId}/broll/generate`, json({ prompt })),
   uploadBroll: (projectId: string, file: File) => {

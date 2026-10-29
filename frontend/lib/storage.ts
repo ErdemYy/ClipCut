@@ -1,6 +1,6 @@
 import type {
-  OutputStorageProtectedDir, OutputStorageProtectedRender, OutputStorageProtectedWork, OutputTrashEntry,
-  StorageCategoryId, WorkKind,
+  OutputStorageProtectedDir, OutputStorageProtectedPreview, OutputStorageProtectedRender,
+  OutputStorageProtectedWork, OutputTrashEntry, PreviewKind, StorageCategoryId, WorkKind,
 } from "./api";
 
 export type TrashBatch = {
@@ -21,6 +21,14 @@ export const STORAGE_PROTECTED_LABELS: Record<OutputStorageProtectedDir["reason"
 
 export const STORAGE_RENDER_PROTECTED_LABELS: Record<OutputStorageProtectedRender["reason"], string> = {
   referenced: "proje veya iş sonucunda kullanılıyor",
+  recent: "yeni oluşturuldu",
+  symlink: "bağlantı içeriyor",
+  special: "özel dosya içeriyor",
+  unreadable: "okunamıyor",
+};
+
+export const STORAGE_PREVIEW_PROTECTED_LABELS: Record<OutputStorageProtectedPreview["reason"], string> = {
+  referenced: "en güncel önizleme",
   recent: "yeni oluşturuldu",
   symlink: "bağlantı içeriyor",
   special: "özel dosya içeriyor",
@@ -82,19 +90,28 @@ export function workProtectionSummary(protectedWork: OutputStorageProtectedWork[
     `${count} ${STORAGE_PROTECTED_LABELS[reason as OutputStorageProtectedWork["reason"]] ?? reason}`).join(" · ");
 }
 
+export function previewProtectionSummary(protectedPreviews: OutputStorageProtectedPreview[]): string {
+  const counts = new Map<string, number>();
+  for (const item of protectedPreviews) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+  return [...counts].map(([reason, count]) =>
+    `${count} ${STORAGE_PREVIEW_PROTECTED_LABELS[reason as OutputStorageProtectedPreview["reason"]] ?? reason}`).join(" · ");
+}
+
 export function storageUsageSummary(totalBytes: number, moveableBytes: number, trashBytes: number): string {
   return `Toplam ${formatBytes(totalBytes)} · ${formatBytes(moveableBytes)} çöpe taşınabilir · ` +
     `${formatBytes(trashBytes)} çöpte.`;
 }
 
-export function storageTrashLabel(entry: { kind: "staging" | "render" | WorkKind; name: string }): string {
+export function storageTrashLabel(entry: { kind: "staging" | "render" | WorkKind | PreviewKind; name: string }): string {
   if (entry.kind === "render") return entry.name;
   if (entry.kind === "staging") return `Hazırlama · ${entry.name.slice(0, 8)}…`;
   if (entry.kind === "work_render") return `Çalışma · ${entry.name}`;
   if (entry.kind === "work_publish") return `Yayın çalışması · ${entry.name.slice(0, 8)}…`;
   if (entry.kind === "work_preview") return `Önizleme çalışması · ${entry.name.slice(0, 8)}…`;
   if (entry.kind === "work_clip_preview") return `Klip önizlemesi · ${entry.name.slice(0, 8)}…`;
-  return "Dalga formu önbelleği";
+  if (entry.kind === "work_waveforms") return "Dalga formu önbelleği";
+  if (entry.kind === "preview") return `Önizleme · ${entry.name.slice(0, 8)}…`;
+  return `Klip önizlemesi · ${entry.name.slice(0, 8)}…`;
 }
 
 export function formatTrashExpiry(seconds: number): string {

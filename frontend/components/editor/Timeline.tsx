@@ -1,23 +1,25 @@
 "use client";
 
-import { useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { api, formatTime, type LayerTiming, type Operation, type Project, type TimelineInfo } from "@/lib/api";
 import { adjustLayer, layerTimingError, outputToSource, sourceToOutput, timelineLayers, visibleLayer, type LayerGesture, type TimelineLayer } from "@/lib/layer-timeline";
-import SourceWaveform from "./SourceWaveform";
+import { checkedTimeline } from "@/lib/media-reads";
 import styles from "./timeline.module.css";
 
-type Props = { project: Project; timeline: TimelineInfo; time: number; onSeek: (t: number) => void;
-  setProject: (project: Project) => void; onTimeline: (timeline: TimelineInfo) => void; notify: (text: string, error?: boolean) => void };
+type Props = { project: Project; timeline: TimelineInfo; time: number; onSeek: (t: number) => void; readOnly?: boolean;
+  setProject: (project: Project) => void; onTimeline: (timeline: TimelineInfo) => boolean; notify: (text: string, error?: boolean) => void };
 type Draft = { base: string; operations: Operation[]; total: number; edits: Record<number, LayerTiming> };
 type Drag = { pointerId: number; x: number; width: number; layer: TimelineLayer; mode: LayerGesture; base: string; before: Draft | null };
 
-export default function Timeline({ project, timeline, time, onSeek, setProject, onTimeline, notify }: Props) {
+export default function Timeline({ project, timeline, time, onSeek, setProject, onTimeline, notify, readOnly = false }: Props) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [selection, setSelection] = useState<{ base: string; index: number } | null>(null);
   const [pending, setPending] = useState(false);
   const drag = useRef<Drag | null>(null);
+  const readRequest = useRef<AbortController | null>(null);
   const incoming = project.timeline_revision ?? timeline.revision ?? JSON.stringify([project.source_url, project.duration, project.plan]);
-  const current = !project.timeline_revision || timeline.revision === project.timeline_revision;
+  const current = !readOnly && !!timeline.revision && (!project.timeline_revision || timeline.revision === project.timeline_revision);
+  useEffect(() => () => { readRequest.current?.abort(); readRequest.current = null; }, [incoming]);
   const base = draft?.base ?? incoming;
   const total = draft?.total ?? timeline.exact_output_duration ?? timeline.output_duration;
   const operations = draft?.operations ?? project.plan?.operations ?? [];
@@ -81,18 +83,36 @@ export default function Timeline({ project, timeline, time, onSeek, setProject, 
       setProject(result); setDraft(null); setSelection(null); notify("Katman zamanları kaydedildi; tek edit adımı olarak geri alınabilir.");
     } catch (err) {
       notify((err as Error).message, true);
-      try { setProject(await api.project(project.id)); onTimeline(await api.timeline(project.id)); } catch { /* Keep the draft offline. */ }
+      await refresh(false);
     } finally { setPending(false); }
   };
+  const refresh = async (discard: boolean) => {
+    if (readRequest.current) return;
+    const controller = new AbortController();
+    readRequest.current = controller;
+    try {
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]);
+      const latest = await api.project(project.id, signal);
+      signal.throwIfAborted();
+      const info = checkedTimeline(await api.timeline(project.id, signal), latest.duration, latest.timeline_revision);
+      signal.throwIfAborted();
+      if (readRequest.current !== controller) return;
+      setProject(latest);
+      if (!onTimeline(info)) { notify("Proje değişti; taslak korundu. Güncel çizelgeyi inceleyip yeniden deneyin.", true); return; }
+      if (discard) { setDraft(null); setSelection(null); }
+    } catch (err) {
+      if (!controller.signal.aborted) notify(`Zaman çizelgesi yenilenemedi; taslak korunuyor. ${(err as Error).message}`, true);
+    } finally { if (readRequest.current === controller) readRequest.current = null; }
+  };
   const reload = async () => {
+    if (readRequest.current) return;
     setPending(true);
-    try { const latest = await api.project(project.id); const info = await api.timeline(project.id); setProject(latest); onTimeline(info); setDraft(null); setSelection(null); }
-    catch (err) { notify((err as Error).message, true); }
+    try { await refresh(true); }
     finally { setPending(false); }
   };
   const undo = async () => {
     setPending(true);
-    try { setProject(await api.undo(project.id)); setSelection(null); notify("Kaydedilen son edit adımı geri alındı."); }
+    try { setProject(await api.undo(project.id, project.edit_revision)); setSelection(null); notify("Kaydedilen son edit adımı geri alındı."); }
     catch (err) { notify((err as Error).message, true); }
     finally { setPending(false); }
   };
@@ -107,7 +127,6 @@ export default function Timeline({ project, timeline, time, onSeek, setProject, 
         {timeline.segments.map(([start, end], i) => <span className={styles.keep} key={i} style={{ left: pct(start), width: pct(end - start) }} title={`${start.toFixed(2)}–${end.toFixed(2)} sn`} />)}
         <span className={styles.cursor} style={{ left: pct(time) }} />
       </div>
-      <SourceWaveform project={project} />
       <span className={styles.note}>Altyazı aralıkları · kaynak saati · salt okunur</span>
       <div className={styles.sourceBand} aria-label="Kaynak saatinde altyazı aralıkları">
         {(project.subtitles?.segments ?? []).map((segment) => {
@@ -125,7 +144,7 @@ export default function Timeline({ project, timeline, time, onSeek, setProject, 
     <section className={styles.output} aria-label="Düzenlenebilir çıktı katmanları">
       <h4>Çıktı katmanları · {total.toFixed(2)} sn</h4>
       <p className={styles.note} id="layer-help">Metin/B-roll ortasından taşıyın, kenar tutamaçlarından süresini değiştirin. Ok tuşları 0.1 sn, Shift + ok 0.01 sn değiştirir. Sürüklemek yerine aşağıdaki seçim ve sayı alanlarını da kullanabilirsiniz. Buradaki zamanlar kesme/hız sonrası çıktı saatidir.</p>
-      {!current && <p className={styles.note} role="status">Zaman çizelgesi güncelleniyor…</p>}
+      {!current && <p className={styles.note} role="status">Güncel zaman çizelgesi doğrulanmadı; katman düzenleme kapalı.</p>}
       {conflict && <p className={styles.error} role="alert">Kaynak/edit değişti. Eski taslak korunuyor; üzerine yazılmaz. Güncel veriyi yükleyip tekrar düzenleyin.</p>}
       <div className={styles.ruler}><span>0 sn</span><span>{total.toFixed(2)} sn çıktı</span></div>
       {music && <div className={styles.laneRow}><span className={styles.laneLabel}>Müzik · salt okunur</span>
@@ -166,7 +185,7 @@ export default function Timeline({ project, timeline, time, onSeek, setProject, 
         <label>Süre (sn)<input id="layer-duration" className="input" type="number" min="0.1" max={Math.min(600, total)} step="0.01" value={selected.duration}
           onChange={(e) => change({ index: selected.index, start: selected.start, duration: Number(e.target.value) })} /></label>
         <p className={styles.note} role="status">Başlangıç: {selected.start.toFixed(2)} · süre: {selected.duration.toFixed(2)} · bitiş: {(selected.start + selected.duration).toFixed(2)} çıktı sn</p>
-        <button className="btn btn-sm" onClick={() => { const source = outputToSource(selected.start, timeline); if (source !== null) onSeek(source); }}>Kaynakta başlangıca git</button>
+        <button className="btn btn-sm" disabled={!current} onClick={() => { const source = outputToSource(selected.start, timeline); if (source !== null) onSeek(source); }}>Kaynakta başlangıca git</button>
       </fieldset>}
       {(error || selectedError) && <p className={styles.error} role="alert">{error || selectedError}</p>}
       <div className={styles.actions}>

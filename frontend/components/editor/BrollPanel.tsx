@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   API_URL,
   api,
-  type BrollStockItem,
   type OverlayOp,
   type Project,
 } from "@/lib/api";
+import { useReadList } from "@/lib/use-read-list";
+import ReadListStatus from "./ReadListStatus";
 import styles from "./editor-parts.module.css";
 
 type Props = {
@@ -19,8 +20,11 @@ type Props = {
   seek?: (t: number) => void;
 };
 
+const readStock = (_scope: string, signal: AbortSignal) => api.brollLibrary(signal);
+
 export default function BrollPanel({ project, setProject, notify, disabled, time = 0, seek }: Props) {
-  const [stock, setStock] = useState<BrollStockItem[]>([]);
+  const stockRead = useReadList(project.id, readStock);
+  const stock = stockRead.items;
   const [autoLoading, setAutoLoading] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
@@ -36,10 +40,6 @@ export default function BrollPanel({ project, setProject, notify, disabled, time
 
   const overlays = (project.plan?.operations?.filter((o) => o.type === "overlay") || []) as OverlayOp[];
 
-  useEffect(() => {
-    api.brollLibrary().then(setStock).catch(() => {});
-  }, [project.id]);
-
   const savePlan = async (newOverlays: OverlayOp[]) => {
     const otherOps = (project.plan?.operations || []).filter((o) => o.type !== "overlay");
     const updatedPlan = { operations: [...otherOps, ...newOverlays] };
@@ -51,7 +51,7 @@ export default function BrollPanel({ project, setProject, notify, disabled, time
     if (disabled || autoLoading) return;
     setAutoLoading(true);
     try {
-      const res = await api.applyAutoBroll(project.id);
+      const res = await api.applyAutoBroll(project.id, project.edit_revision);
       setProject(res.project);
       notify(res.summary);
     } catch (e) {
@@ -264,6 +264,7 @@ export default function BrollPanel({ project, setProject, notify, disabled, time
 
       {/* Hazır Stok B-Roll Kütüphanesi */}
       <div className={styles.block}>
+        <ReadListStatus id="broll-list" label="Stok B-roll listesi" empty="Kullanılabilir stok B-roll görseli yok." state={stockRead} />
         <label className={styles.label}>
           <span>Stok B-Roll Kütüphanesi</span>
           <span style={{ fontSize: "0.75rem", color: "var(--cyan)" }}>

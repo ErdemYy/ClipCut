@@ -4,15 +4,17 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from app.output_cleanup import (
-    MIN_AGE_SECONDS, TRASH_RETENTION_SECONDS, OutputCleanupBody, RenderCleanupBody,
-    TrashEmptyBody, TrashRestoreBody, WorkCleanupBody, WorkCleanupItem, empty_trash,
-    purge_all_expired_trash, purge_expired_trash, render_references, referenced_tokens,
-    restore_trash, scan_outputs, scan_renders, scan_storage, scan_trash, scan_work, trash_outputs,
+    MIN_AGE_SECONDS, TRASH_RETENTION_SECONDS, OutputCleanupBody, PreviewCleanupBody,
+    PreviewCleanupItem, RenderCleanupBody, TrashEmptyBody, TrashRestoreBody, WorkCleanupBody,
+    WorkCleanupItem, empty_trash, preview_references, purge_all_expired_trash,
+    purge_expired_trash, render_references, referenced_tokens, restore_trash, scan_outputs,
+    scan_previews, scan_renders, scan_storage, scan_trash, scan_work, trash_outputs, trash_previews,
     trash_renders, trash_work,
 )
 
@@ -51,6 +53,18 @@ def _render_name(hex_part: str) -> str:
 
 def _render_media(project: str, name: str) -> str:
     return f"/media/projects/{project}/outputs/{name}"
+
+
+def _preview(root: Path, folder: str, token: str, *, size: int = 100, age: float = 7200) -> Path:
+    path = root / "outputs" / folder / f"{token}.mp4"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * size)
+    _age(path, age)
+    return path
+
+
+def _preview_media(project: str, folder: str, token: str) -> str:
+    return f"/media/projects/{project}/outputs/{folder}/{token}.mp4"
 
 
 def _work_dir(root: Path, relative: str, *, age: float = 7200,
@@ -180,6 +194,76 @@ def test_scan_storage_does_not_follow_links(tmp_path):
     categories, total = scan_storage(tmp_path, ("source.mp4",))
     assert total == 6
     assert all(item["bytes"] == 0 for item in categories if item["id"] != "source")
+
+
+def test_preview_references_scope_absolute_urls_and_read_nested_values():
+    a, b, c = "a" * 32, "b" * 32, "c" * 32
+    names = {key: key + ".mp4" for key in (a, b, c)}
+    values = [
+        None,
+        {"output": f"outputs/previews/{names[a]}"},
+        [{"output": _preview_media("p1", "clip_previews", b)}],
+        _preview_media("p1", "previews", c),
+    ]
+    assert preview_references("p1", values) == {
+        f"outputs/previews/{names[a]}", f"outputs/clip_previews/{names[b]}",
+        f"outputs/previews/{names[c]}",
+    }
+    assert preview_references("p2", [_preview_media("p2", "previews", c),
+                                      _preview_media("p1", "previews", b)]) == {
+        f"outputs/previews/{names[c]}",
+    }
+
+
+def test_scan_previews_protects_referenced_recent_and_unsafe_files(tmp_path):
+    old, referenced, recent = "a" * 32, "b" * 32, "c" * 32
+    clip_old, clip_referenced = "d" * 32, "e" * 32
+    old_path = _preview(tmp_path, "previews", old, size=10)
+    referenced_path = _preview(tmp_path, "previews", referenced, size=20)
+    recent_path = _preview(tmp_path, "previews", recent, size=30, age=0)
+    clip_old_path = _preview(tmp_path, "clip_previews", clip_old, size=40)
+    clip_referenced_path = _preview(tmp_path, "clip_previews", clip_referenced, size=50)
+    (tmp_path / "outputs" / "previews" / "notes.mp4").write_bytes(b"ignored")
+
+    referenced_set = {f"outputs/previews/{referenced}.mp4",
+                      f"outputs/clip_previews/{clip_referenced}.mp4"}
+    eligible, protected = scan_previews(tmp_path, referenced_set, now=time.time())
+    assert {(item["kind"], item["name"]) for item in eligible} == {
+        ("preview", f"{old}.mp4"), ("clip_preview", f"{clip_old}.mp4"),
+    }
+    assert {(item["name"], item["reason"]) for item in protected} == {
+        (f"{referenced}.mp4", "referenced"), (f"{recent}.mp4", "recent"),
+        (f"{clip_referenced}.mp4", "referenced"),
+    }
+    result = trash_previews(tmp_path, referenced_set,
+                            [("preview", f"{old}.mp4"), ("clip_preview", f"{clip_old}.mp4")])
+    assert [item["kind"] for item in result["trashed"]] == ["preview", "clip_preview"]
+    assert not old_path.exists() and not clip_old_path.exists()
+    assert referenced_path.exists() and recent_path.exists() and clip_referenced_path.exists()
+    assert len(scan_trash(tmp_path)["entries"]) == 2
+
+
+def test_preview_cleanup_body_validates_names_and_uniqueness():
+    valid = PreviewCleanupItem(kind="preview", name="a" * 32 + ".mp4")
+    assert PreviewCleanupBody(items=[valid]).items[0].name == valid.name
+    for items in (
+        [valid, valid],
+        [PreviewCleanupItem(kind="preview", name="../preview.mp4")],
+        [PreviewCleanupItem(kind="clip_preview", name="a" * 31 + ".mp4")],
+        [PreviewCleanupItem(kind="preview", name="a" * 32 + ".jpg")],
+    ):
+        with pytest.raises(ValueError):
+            PreviewCleanupBody(items=items)
+
+
+def test_trash_previews_moves_file_and_restores_original_path(tmp_path):
+    token = "f" * 32
+    path = _preview(tmp_path, "previews", token, size=55)
+    entry = trash_previews(tmp_path, set(), [("preview", f"{token}.mp4")])["trashed"][0]
+    assert entry["kind"] == "preview" and not path.exists()
+    assert [item["name"] for item in scan_trash(tmp_path)["entries"]] == [f"{token}.mp4"]
+    assert restore_trash(tmp_path, [entry["id"]])["restored"][0]["id"] == entry["id"]
+    assert path.read_bytes() == b"x" * 55
 
 
 def test_scan_renders_protects_referenced_recent_and_reports_links(tmp_path):
@@ -486,12 +570,14 @@ def storage_api(tmp_path, monkeypatch):
         engine.dispose()
 
 
-def _job(engine, *, kind: str = "clip_render", status: str = "done", result=None):
+def _job(engine, *, kind: str = "clip_render", status: str = "done", result=None, created_at=None):
     from sqlmodel import Session
     from app.models import Job
 
     with Session(engine) as session:
         job = Job(project_id="store", kind=kind, status=status, result=result)
+        if created_at is not None:
+            job.created_at = created_at
         session.add(job)
         session.commit()
         return job.id
@@ -725,6 +811,75 @@ def test_output_api_validation_and_missing_project(storage_api):
     assert client.post("/api/projects/missing/outputs/renders/cleanup", json={"files": [name]}).status_code == 404
     assert client.post("/api/projects/missing/outputs/trash/restore", json={"ids": [token]}).status_code == 404
     assert client.post("/api/projects/missing/outputs/trash/empty", json={}).status_code == 404
+
+
+def test_output_api_protects_latest_preview_and_moves_older_results(storage_api):
+    client, engine, root = storage_api
+    old, latest = "a" * 32, "b" * 32
+    clip_old, clip_latest = "c" * 32, "d" * 32
+    old_path = _preview(root, "previews", old, size=10)
+    latest_path = _preview(root, "previews", latest, size=20)
+    clip_old_path = _preview(root, "clip_previews", clip_old, size=30)
+    clip_latest_path = _preview(root, "clip_previews", clip_latest, size=40)
+    now = datetime.now(timezone.utc)
+    _job(engine, kind="preview", result={"output": _preview_media("store", "previews", old)},
+         created_at=now - timedelta(hours=2))
+    _job(engine, kind="preview", result={"output": _preview_media("store", "previews", latest)},
+         created_at=now - timedelta(hours=1))
+    _job(engine, kind="clip_preview", result={"output": _preview_media("store", "clip_previews", clip_old)},
+         created_at=now - timedelta(hours=3))
+    _job(engine, kind="clip_preview", result={"output": _preview_media("store", "clip_previews", clip_latest)},
+         created_at=now - timedelta(minutes=30))
+
+    data = client.get("/api/projects/store/outputs").json()
+    assert {(item["kind"], item["name"]) for item in data["previews"]["eligible"]} == {
+        ("preview", f"{old}.mp4"), ("clip_preview", f"{clip_old}.mp4"),
+    }
+    assert {(item["name"], item["reason"]) for item in data["previews"]["protected"]} == {
+        (f"{latest}.mp4", "referenced"), (f"{clip_latest}.mp4", "referenced"),
+    }
+    assert data["preview_busy"] is False
+
+    response = client.post("/api/projects/store/outputs/previews/cleanup", json={"items": [
+        {"kind": "preview", "name": f"{old}.mp4"},
+        {"kind": "clip_preview", "name": f"{clip_old}.mp4"},
+    ]})
+    assert response.status_code == 200
+    assert {(item["kind"], item["name"]) for item in response.json()["trashed"]} == {
+        ("preview", f"{old}.mp4"), ("clip_preview", f"{clip_old}.mp4"),
+    }
+    assert not old_path.exists() and not clip_old_path.exists()
+    assert latest_path.exists() and clip_latest_path.exists()
+    entries = client.get("/api/projects/store/outputs").json()["trash"]["entries"]
+    assert {item["name"] for item in entries} == {f"{old}.mp4", f"{clip_old}.mp4"}
+    assert client.post("/api/projects/store/outputs/trash/restore",
+                       json={"ids": [entries[0]["id"]]}).status_code == 200
+
+
+def test_preview_cleanup_refuses_while_preview_is_active(storage_api):
+    client, engine, root = storage_api
+    _preview(root, "previews", "a" * 32)
+    _job(engine, kind="preview", status="running", result=None)
+
+    data = client.get("/api/projects/store/outputs").json()
+    assert data["preview_busy"] is True
+    response = client.post("/api/projects/store/outputs/previews/cleanup",
+                           json={"items": [{"kind": "preview", "name": "a" * 32 + ".mp4"}]})
+    assert response.status_code == 409
+    assert (root / "outputs" / "previews" / ("a" * 32 + ".mp4")).is_file()
+
+
+def test_output_api_preview_validation_and_missing_project(storage_api):
+    client, engine, root = storage_api
+    item = {"kind": "preview", "name": "a" * 32 + ".mp4"}
+    _preview(root, "previews", "a" * 32)
+    assert client.post("/api/projects/store/outputs/previews/cleanup", json={"items": []}).status_code == 422
+    assert client.post("/api/projects/store/outputs/previews/cleanup",
+                       json={"items": [item, item]}).status_code == 422
+    assert client.post("/api/projects/store/outputs/previews/cleanup",
+                       json={"items": [{"kind": "preview", "name": "../preview.mp4"}]}).status_code == 422
+    assert client.post("/api/projects/missing/outputs/previews/cleanup",
+                       json={"items": [item]}).status_code == 404
 
 
 def test_output_api_moves_selected_work_and_restores_it(storage_api):

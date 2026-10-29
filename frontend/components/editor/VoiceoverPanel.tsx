@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { api, mediaUrl, type Project, type Voice } from "@/lib/api";
+import { useMemo, useRef, useState } from "react";
+import { api, mediaUrl, type Project } from "@/lib/api";
+import { useReadList } from "@/lib/use-read-list";
+import ReadListStatus from "./ReadListStatus";
 import styles from "./editor-parts.module.css";
 
 type Props = {
@@ -30,9 +32,13 @@ const HOOK_PRESETS = [
   },
 ];
 
+const readVoices = (_scope: string, signal: AbortSignal) => api.voices(signal);
+
 export default function VoiceoverPanel({ project, setProject, notify, disabled }: Props) {
-  const [voices, setVoices] = useState<Voice[]>([]);
-  const [selectedVoice, setSelectedVoice] = useState<string>("tr-TR-EmelNeural");
+  const voicesRead = useReadList(project.id, readVoices);
+  const voices = voicesRead.items;
+  const [preferredVoice, setSelectedVoice] = useState<string>("tr-TR-EmelNeural");
+  const selectedVoice = voices.some((voice) => voice.id === preferredVoice) ? preferredVoice : voices[0]?.id ?? "";
   const [text, setText] = useState<string>("");
   const [speed, setSpeed] = useState<number>(1.0);
   const [autoSubtitles, setAutoSubtitles] = useState<boolean>(true);
@@ -49,18 +55,6 @@ export default function VoiceoverPanel({ project, setProject, notify, disabled }
   const activeVoAudioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlayingActive, setIsPlayingActive] = useState(false);
 
-  useEffect(() => {
-    api
-      .voices()
-      .then((data) => {
-        setVoices(data);
-        if (data.length > 0 && !data.some((v) => v.id === selectedVoice)) {
-          setSelectedVoice(data[0].id);
-        }
-      })
-      .catch(() => {});
-  }, [selectedVoice]);
-
   // Tahmini süre hesabı (kelime başı ortalama ~0.43 saniye)
   const estSeconds = useMemo(() => {
     const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
@@ -69,6 +63,7 @@ export default function VoiceoverPanel({ project, setProject, notify, disabled }
   }, [text, speed]);
 
   const handlePreview = async () => {
+    if (!selectedVoice || previewLoading) return;
     if (!text.trim()) {
       notify("Lütfen önce seslendirilecek bir metin girin.", true);
       return;
@@ -96,7 +91,7 @@ export default function VoiceoverPanel({ project, setProject, notify, disabled }
   };
 
   const handleApply = async () => {
-    if (disabled || applying) return;
+    if (disabled || applying || !selectedVoice) return;
     if (!text.trim()) {
       notify("Lütfen seslendirilecek bir metin yazın.", true);
       return;
@@ -109,6 +104,7 @@ export default function VoiceoverPanel({ project, setProject, notify, disabled }
         speed,
         auto_subtitles: autoSubtitles,
         subtitle_style: subStyle,
+        revision: project.edit_revision,
       });
       setProject(res.project);
       notify("🎙️ Seslendirme videoya başarıyla uygulandı!");
@@ -123,7 +119,7 @@ export default function VoiceoverPanel({ project, setProject, notify, disabled }
     if (disabled || deleting) return;
     setDeleting(true);
     try {
-      const res = await api.deleteVoiceover(project.id);
+      const res = await api.deleteVoiceover(project.id, project.edit_revision);
       setProject(res.project);
       setIsPlayingActive(false);
       notify("Seslendirme videodan kaldırıldı.");
@@ -188,10 +184,11 @@ export default function VoiceoverPanel({ project, setProject, notify, disabled }
 
       {/* Ses Seçici */}
       <div className={styles.block}>
+        <ReadListStatus id="voices-list" label="Seslendirici listesi" empty="Kullanılabilir seslendirici yok." state={voicesRead} />
         <label className={styles.label}>
           <span>Seslendirici / Ton</span>
           <span style={{ fontSize: "0.75rem", color: "var(--text-faint)" }}>
-            {voices.length} Farklı Ses
+            {voicesRead.loaded || voices.length > 0 ? `${voices.length} Farklı Ses` : "Ses listesi henüz yüklenmedi"}
           </span>
         </label>
         <div className={styles.voiceGrid}>
@@ -346,7 +343,7 @@ export default function VoiceoverPanel({ project, setProject, notify, disabled }
           type="button"
           className="btn btn-ghost"
           onClick={handlePreview}
-          disabled={previewLoading || !text.trim()}
+          disabled={previewLoading || !text.trim() || !selectedVoice}
           id="btn-voiceover-preview"
         >
           {previewLoading ? <span className="spinner" /> : "🎧 Sesi Dinle"}
@@ -355,7 +352,7 @@ export default function VoiceoverPanel({ project, setProject, notify, disabled }
           type="button"
           className="btn btn-primary"
           onClick={handleApply}
-          disabled={disabled || applying || !text.trim()}
+          disabled={disabled || applying || !text.trim() || !selectedVoice}
           id="btn-voiceover-apply"
         >
           {applying ? <span className="spinner" /> : "⚡ Videoya Uygula"}

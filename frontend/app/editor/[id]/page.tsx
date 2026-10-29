@@ -3,10 +3,10 @@
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, mediaUrl, waitForJob, type Job, type JobMap, type Library, type Project, type Storyboard, type TimelineInfo } from "@/lib/api";
+import { api, mediaUrl, waitForJob, type Job, type JobMap, type Library, type Project, type Storyboard } from "@/lib/api";
 import StatusBadge from "@/components/StatusBadge";
 import Player from "@/components/editor/Player";
-import Timeline from "@/components/editor/Timeline";
+import TimelineWorkspace from "@/components/editor/TimelineWorkspace";
 import EditPanel from "@/components/editor/EditPanel";
 import SubtitlePanel from "@/components/editor/SubtitlePanel";
 import AudioPanel from "@/components/editor/AudioPanel";
@@ -35,6 +35,13 @@ const TABS: { id: PanelTab; label: string; icon: string }[] = [
   { id: "export", label: "Dışa Aktar", icon: "⬇" },
 ];
 
+type AuxiliaryKind = "library" | "jobs";
+type ReadStatus = { id: string; pending: boolean; error: string | null; loaded: boolean };
+const AUXILIARY_READS: { kind: AuxiliaryKind; label: string; retry: string; refresh: string }[] = [
+  { kind: "library", label: "Kütüphane", retry: "Kütüphaneyi yeniden dene", refresh: "Kütüphaneyi yenile" },
+  { kind: "jobs", label: "İş listesi", retry: "İş listesini yeniden dene", refresh: "İş listesini yenile" },
+];
+
 export default function EditorPage() {
   const { id } = useParams<{ id: string }>();
   const [project, updateProject] = useState<Project | null>(null);
@@ -43,16 +50,31 @@ export default function EditorPage() {
   const [storyDraft, setStoryDraft] = useState<Storyboard | null>(null);
   const [storyPending, setStoryPending] = useState(false);
   const [library, setLibrary] = useState<Library | null>(null);
-  const [timeline, setTimeline] = useState<TimelineInfo | null>(null);
   const [tab, setTab] = useState<PanelTab>("templates");
   const [view, setView] = useState<"source" | "output">("source");
-  const [jobs, setJobs] = useState<JobMap>({});
+  const [jobState, setJobs] = useState<JobMap>({});
+  const jobs: JobMap = Object.fromEntries(Object.entries(jobState).filter(([, job]) => job?.project_id === id));
+  const [readStatus, setReadStatus] = useState<Record<AuxiliaryKind, ReadStatus>>({
+    library: { id, pending: true, error: null, loaded: false },
+    jobs: { id, pending: true, error: null, loaded: false },
+  });
+  const readRequests = useRef<Record<AuxiliaryKind, AbortController | null>>({ library: null, jobs: null });
+  const jobChanges = useRef<Partial<Record<Job["kind"], number>>>({});
   const [toast, setToast] = useState<{ text: string; error?: boolean } | null>(null);
   const [time, setTime] = useState(0);
   const [editingName, setEditingName] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const tracking = useRef<Map<string, AbortController>>(new Map());
+  const projectSnapshot = useRef<Project | null>(null);
+  const projectRoute = useRef(id);
+  useEffect(() => { projectRoute.current = id; }, [id]);
   const setProject = useCallback((p: Project) => {
+    if (p.id !== projectRoute.current) return;
+    const current = projectSnapshot.current;
+    // Preserve microseconds: Date.parse truncates them and can accept an older response.
+    const stamp = (value: string) => value.replace(/(?:Z|\+00:00)$/, "").padEnd(26, "0");
+    if (current?.id === p.id && stamp(p.updated_at) < stamp(current.updated_at)) return;
+    projectSnapshot.current = p;
     updateProject(p);
     setStoryDraft((current) => current?.revision === p.storyboard?.revision ? current : p.storyboard ?? null);
   }, []);
@@ -63,19 +85,24 @@ export default function EditorPage() {
   }, []);
 
   const reload = useCallback(async (signal?: AbortSignal) => {
-    const p = await api.project(id);
+    const p = await api.project(id, signal);
     if (!signal?.aborted) setProject(p);
     return p;
   }, [id, setProject]);
 
   const track = useCallback(
     async (job: Job, onDone?: (job: Job) => void) => {
-      if (tracking.current.has(job.id)) return;
+      if (job.project_id !== projectRoute.current || tracking.current.has(job.id)) return;
       const controller = new AbortController();
       tracking.current.set(job.id, controller);
+      jobChanges.current[job.kind] = (jobChanges.current[job.kind] ?? 0) + 1;
       setJobs((m) => ({ ...m, [job.kind]: job }));
       try {
-        const final = await waitForJob(job.id, (j) => setJobs((m) => ({ ...m, [j.kind]: j })), 1000, {
+        const final = await waitForJob(job.id, (j) => {
+          if (controller.signal.aborted || j.project_id !== projectRoute.current) return;
+          jobChanges.current[j.kind] = (jobChanges.current[j.kind] ?? 0) + 1;
+          setJobs((m) => m[j.kind]?.id && m[j.kind]?.id !== j.id ? m : { ...m, [j.kind]: j });
+        }, 1000, {
           signal: controller.signal,
           onConnectionChange: (connected) => notify(connected ? "Bağlantı geri geldi; iş takibi sürüyor." :
             "Bağlantı kesildi; iş yeniden başlatılmadan takip tekrar denenecek.", !connected),
@@ -88,6 +115,7 @@ export default function EditorPage() {
       } catch (e) {
         if (controller.signal.aborted) return;
         notify((e as Error).message, true);
+        jobChanges.current[job.kind] = (jobChanges.current[job.kind] ?? 0) + 1;
         setJobs((m) => {
           if (m[job.kind]?.id !== job.id) return m;
           const next = { ...m }; delete next[job.kind]; return next;
@@ -107,6 +135,71 @@ export default function EditorPage() {
     };
   }, [id]);
 
+  const loadAuxiliary = useCallback(async (kind: AuxiliaryKind) => {
+    if (projectRoute.current !== id || readRequests.current[kind]) return;
+    const controller = new AbortController();
+    readRequests.current[kind] = controller;
+    const before = { ...jobChanges.current };
+    setReadStatus((current) => ({ ...current, [kind]: {
+      id, pending: true, error: current[kind].id === id ? current[kind].error : null,
+      loaded: current[kind].id === id && current[kind].loaded,
+    } }));
+    try {
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]);
+      if (kind === "library") {
+        const value = await api.library(signal);
+        signal.throwIfAborted();
+        if (projectRoute.current !== id) return;
+        setLibrary(value);
+      } else {
+        const list = await api.jobs(id, signal);
+        signal.throwIfAborted();
+        if (projectRoute.current !== id) return;
+        const latest: JobMap = {};
+        list.filter((j) => j.project_id === id).forEach((j) => { if (!latest[j.kind]) latest[j.kind] = j; });
+        // A list GET is authoritative unless this kind changed locally after that GET began.
+        const changed = new Set((Object.keys(jobChanges.current) as Job["kind"][])
+          .filter((kind) => jobChanges.current[kind] !== before[kind]));
+        const monitored = new Set(tracking.current.keys());
+        setJobs((current) => {
+          const next = { ...latest };
+          // /jobs is a bounded recent list, not proof that an omitted watched job disappeared.
+          Object.values(current).forEach((job) => {
+            if (job?.project_id === id && monitored.has(job.id) && !next[job.kind] &&
+                (job.status === "queued" || job.status === "running")) next[job.kind] = job;
+          });
+          changed.forEach((kind) => {
+            if (current[kind]?.project_id === id) next[kind] = current[kind];
+            else delete next[kind];
+          });
+          return next;
+        });
+        Object.values(latest).filter((j): j is Job => !!j && !changed.has(j.kind) &&
+          (j.status === "queued" || j.status === "running")).forEach((j) => { void track(j); });
+      }
+      setReadStatus((current) => ({ ...current, [kind]: { id, pending: false, error: null, loaded: true } }));
+    } catch (error) {
+      if (!controller.signal.aborted && projectRoute.current === id) {
+        const message = (error as Error).name === "TimeoutError" ? "İstek zaman aşımına uğradı." : (error as Error).message;
+        setReadStatus((current) => ({ ...current, [kind]: { ...current[kind], id, pending: false, error: message } }));
+      }
+    } finally {
+      if (readRequests.current[kind] === controller) readRequests.current[kind] = null;
+    }
+  }, [id, track]);
+
+  useEffect(() => {
+    let disposed = false;
+    const requests = readRequests.current;
+    void Promise.resolve().then(() => {
+      if (!disposed) AUXILIARY_READS.forEach(({ kind }) => { void loadAuxiliary(kind); });
+    });
+    return () => {
+      disposed = true;
+      AUXILIARY_READS.forEach(({ kind }) => { requests[kind]?.abort(); requests[kind] = null; });
+    };
+  }, [loadAuxiliary, loadAttempt]);
+
   useEffect(() => {
     let disposed = false;
     const controller = new AbortController();
@@ -116,21 +209,8 @@ export default function EditorPage() {
     }).catch((e: Error) => {
       if (!disposed) setLoadError({ id, message: e.name === "TimeoutError" ? "Proje isteği zaman aşımına uğradı." : e.message });
     });
-    api.library().then((value) => { if (!disposed) setLibrary(value); }).catch(() => {});
-    api
-      .jobs(id)
-      .then((list) => {
-        if (disposed) return;
-        const latest: JobMap = {};
-        list.forEach((j) => { if (!latest[j.kind]) latest[j.kind] = j; });
-        setJobs((current) => ({ ...latest, ...Object.fromEntries(
-          Object.entries(current).filter(([, job]) => job?.project_id === id),
-        ) }));
-        list.filter((j) => j.status === "queued" || j.status === "running").forEach((j) => track(j));
-      })
-      .catch(() => {});
     return () => { disposed = true; controller.abort(); };
-  }, [id, track, notify, setProject, loadAttempt]);
+  }, [id, setProject, loadAttempt]);
 
   // Üretim sürüyorsa periyodik yenile
   useEffect(() => {
@@ -145,15 +225,6 @@ export default function EditorPage() {
     return () => { controller.abort(); clearInterval(t); };
   }, [project?.status, reload]);
 
-  // Plan değişince zaman çizelgesini güncelle
-  const planKey = JSON.stringify(project?.plan ?? null);
-  useEffect(() => {
-    if (project?.status !== "ready") return;
-    let cancelled = false;
-    const t = setTimeout(() => api.timeline(id).then((value) => { if (!cancelled) setTimeline(value); }).catch(() => {}), 250);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [planKey, project?.status, project?.source_url, project?.duration, id]);
-
   const seek = (t: number) => {
     setView("source");
     requestAnimationFrame(() => {
@@ -166,7 +237,10 @@ export default function EditorPage() {
 
   const rename = async (name: string) => {
     setEditingName(false);
-    if (project && name.trim() && name !== project.name) setProject(await api.rename(id, name));
+    if (project && name.trim() && name !== project.name) {
+      try { setProject(await api.rename(id, name)); }
+      catch (error) { notify((error as Error).message, true); }
+    }
   };
 
   if (!project || project.id !== id) {
@@ -229,6 +303,31 @@ export default function EditorPage() {
         </div>
       </div>
 
+      <section className={styles.reads} aria-label="Veri yükleme durumu">
+        {AUXILIARY_READS.map(({ kind, label, retry, refresh }) => {
+          const state = readStatus[kind].id === id ? readStatus[kind] : { pending: true, error: null, loaded: false };
+          const cached = kind === "library" ? library !== null : state.loaded || Object.keys(jobs).length > 0;
+          return (
+            <div key={kind} className={styles.readRow}>
+              <div>
+                <strong>{label}</strong>
+                {state.pending && <p role="status">{state.loaded ? "Yenileniyor…" : "Yükleniyor…"}</p>}
+              </div>
+              <button id={`editor-${kind}-retry`} className="btn btn-ghost"
+                aria-label={state.error ? retry : refresh}
+                aria-describedby={state.error ? `editor-${kind}-error` : undefined}
+                disabled={state.pending} onClick={() => { void loadAuxiliary(kind); }}>
+                {state.pending ? "Yükleniyor…" : state.error ? "Yeniden dene" : "Yenile"}
+              </button>
+              {state.error && <div id={`editor-${kind}-error`} className={styles.readError} role="alert">
+                <p>{label} {cached ? "yenilenemedi" : "yüklenemedi"}. {state.error}</p>
+                <p>{cached ? "Son bilinen veriler korunuyor." : "Bağlantıyı kontrol edip yeniden deneyin."} Yeniden deneme yalnızca verileri okur, yeni işlem başlatmaz.</p>
+              </div>}
+            </div>
+          );
+        })}
+      </section>
+
       <div className={styles.workspace}>
         <section className={styles.stage}>
           {isGenerating || project.status === "failed" || !project.source_url ? (
@@ -287,9 +386,9 @@ export default function EditorPage() {
                 src={view === "output" ? mediaUrl(project.output_url) : mediaUrl(project.source_url)}
                 onTime={setTime}
               />
-              {timeline && <div hidden={view !== "source"}>
-                <Timeline project={project} timeline={timeline} time={time} onSeek={seek} setProject={setProject} onTimeline={setTimeline} notify={notify} />
-              </div>}
+              <div hidden={view !== "source"}>
+                <TimelineWorkspace project={project} time={time} onSeek={seek} setProject={setProject} notify={notify} />
+              </div>
             </>
           )}
           {project.storyboard && storyDraft && <SceneTimeline draft={storyDraft} runtime={project.storyboard} onChange={setStoryDraft}

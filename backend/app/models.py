@@ -64,6 +64,16 @@ class Job(SQLModel, table=True):
     finished_at: Optional[datetime] = None
 
 
+class MutationRequest(SQLModel, table=True):
+    """Durable reservations: an interrupted/ambiguous request must never be replayed."""
+    key: str = Field(primary_key=True)
+    fingerprint: str
+    status_code: Optional[int] = None
+    response_body: Optional[str] = None
+    content_type: str = "application/json"
+    created_at: datetime = Field(default_factory=_now)
+
+
 engine = create_engine(get_settings().db_url, connect_args={"check_same_thread": False})
 
 

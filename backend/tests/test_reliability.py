@@ -371,3 +371,236 @@ def test_provider_error_guidance_reaches_http_and_job_without_sdk_secrets(studio
     assert "SECRET_KEY_AND_PROMPT" not in job.error
     assert "SECRET_KEY_AND_PROMPT" not in caplog.text
     assert len(calls) == 2  # One explicit HTTP request and one explicit worker run, no retry.
+
+
+def test_template_and_undo_reject_old_editor_revision(studio):
+    client, engine, _ = studio
+    pid = _editable_project(engine)
+    url = f"/api/projects/{pid}"
+    before = client.get(url).json()
+    assert client.put(url + "/plan", json={"plan": {"operations": [{"type": "speed", "factor": 1.5}]}}).status_code == 200
+    template = client.get("/api/templates").json()[0]["id"]
+    for endpoint in (f"/apply-template/{template}", "/plan/undo", "/voiceover", "/broll/apply-auto"):
+        data = {"revision": before["edit_revision"]}
+        if endpoint == "/voiceover":
+            data["text"] = "Do not synthesize"
+        assert client.post(url + endpoint, json=data).status_code == 409
+    saved = client.get(url).json()
+    assert saved["plan"]["operations"][0]["factor"] == 1.5
+    assert len(saved["chat"]) == 0
+    assert client.post(url + "/plan/undo", json={"revision": saved["edit_revision"]}).status_code == 200
+
+
+def test_voiceover_conflict_preserves_audio_plan_subtitles_and_chat(studio, monkeypatch):
+    client, engine, _ = studio
+    pid = _editable_project(engine)
+    url = f"/api/projects/{pid}"
+    root = jobs.project_dir(pid)
+    (root / "voiceover.mp3").write_bytes(b"old voice")
+    jobs._save_project(pid, lambda p: setattr(p, "voiceover_file", "voiceover.mp3"))
+    before = client.get(url).json()
+
+    def synthesize(*args, out_path, **kwargs):
+        assert out_path.name != "voiceover.mp3"
+        out_path.write_bytes(b"new voice")
+        assert client.put(url + "/plan", json={"plan": {"operations": [{"type": "speed", "factor": 1.5}]}}).status_code == 200
+        return {"language": "tr", "segments": [], "words": [], "duration": 1}
+
+    monkeypatch.setattr(main.tts, "generate_voiceover", synthesize)
+    response = client.post(url + "/voiceover", json={"text": "Hello", "revision": before["edit_revision"]})
+    assert response.status_code == 409
+    after = client.get(url).json()
+    assert after["voiceover_url"] == before["voiceover_url"]
+    assert after["subtitles"] == before["subtitles"] and after["chat"] == before["chat"]
+    assert after["plan"]["operations"][0]["factor"] == 1.5
+    assert (root / "voiceover.mp3").read_bytes() == b"old voice"
+    assert not list(root.glob("voiceover_*.mp3"))
+
+
+def test_voiceover_publication_uses_immutable_files_and_delete_keeps_old_bytes(studio, monkeypatch):
+    client, engine, _ = studio
+    pid = _editable_project(engine)
+    url = f"/api/projects/{pid}"
+    paths = []
+    def synthesize(*args, out_path, **kwargs):
+        paths.append(out_path)
+        out_path.write_bytes(f"voice-{len(paths)}".encode())
+        return {"language": "tr", "segments": [], "words": [], "duration": 1}
+    monkeypatch.setattr(main.tts, "generate_voiceover", synthesize)
+    for _ in range(2):
+        revision = client.get(url).json()["edit_revision"]
+        assert client.post(url + "/voiceover", json={"text": "Hello", "revision": revision}).status_code == 200
+    assert paths[0] != paths[1] and paths[0].read_bytes() == b"voice-1"
+    saved = client.get(url).json()
+    assert client.request("DELETE", url + "/voiceover", json={"revision": revision}).status_code == 409
+    assert client.request("DELETE", url + "/voiceover", json={"revision": saved["edit_revision"]}).status_code == 200
+    assert paths[1].read_bytes() == b"voice-2"
+
+
+def test_auto_broll_cannot_overwrite_edits_during_suggestion(studio, monkeypatch):
+    client, engine, _ = studio
+    pid = _editable_project(engine)
+    url = f"/api/projects/{pid}"
+    def suggest(*args):
+        client.put(url + "/plan", json={"plan": {"operations": [{"type": "speed", "factor": 1.5}]}})
+        return [{"type": "overlay", "track": "stock:forest", "start": 0, "duration": 2}]
+    monkeypatch.setattr(main.broll, "suggest_broll_for_transcript", suggest)
+    assert client.post(url + "/broll/apply-auto").status_code == 409
+    saved = client.get(url).json()
+    assert saved["plan"]["operations"][0]["factor"] == 1.5 and saved["chat"] == []
+
+
+@pytest.mark.parametrize("kind", ["transcribe", "translate"])
+def test_long_worker_results_do_not_replace_newer_edits(studio, monkeypatch, kind):
+    client, engine, _ = studio
+    pid = _editable_project(engine)
+    transcript = {"language": "tr", "segments": [{"id": 0, "start": 0, "end": 1, "text": "original", "words": []}]}
+    def prepare(p):
+        p.has_audio = True
+        p.transcript = p.subtitles = transcript
+    jobs._save_project(pid, prepare)
+    def provider(*args):
+        jobs._save_project(pid, lambda p: setattr(p, "plan", {"operations": [{"type": "speed", "factor": 1.5}]}))
+        return {"language": "en", "segments": []}
+    monkeypatch.setattr(jobs, "extract_audio", lambda *_: None)
+    monkeypatch.setattr(jobs.ai, "transcribe", provider)
+    monkeypatch.setattr(jobs.ai, "translate", provider)
+    with pytest.raises(ValueError, match="yeni düzenlemeler"):
+        if kind == "transcribe":
+            jobs.task_transcribe(lambda *_: None, pid, None)
+        else:
+            jobs.task_translate(lambda *_: None, pid, "en")
+    saved = client.get(f"/api/projects/{pid}").json()
+    assert saved["subtitles"] == transcript and saved["plan"]["operations"][0]["factor"] == 1.5
+
+
+def test_worker_publication_and_api_plan_save_share_lock(studio):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    client, engine, _ = studio
+    pid = _editable_project(engine)
+    url = f"/api/projects/{pid}"
+    revision = client.get(url).json()["render_revision"]
+    entered, release = Event(), Event()
+    def mutate(p):
+        entered.set()
+        assert release.wait(5)
+        p.plan = {"operations": [{"type": "speed", "factor": 1.5}]}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        worker = pool.submit(jobs._save_project, pid, mutate)
+        assert entered.wait(5)
+        api_write = pool.submit(client.put, url + "/plan", json={"revision": revision, "plan": {"operations": []}})
+        release.set()
+        worker.result(timeout=5)
+        assert api_write.result(timeout=5).status_code == 409
+
+
+def test_idempotency_replays_completed_generation_without_second_project_or_job(studio, monkeypatch):
+    client, engine, _ = studio
+    calls = []
+    class Inline:
+        def submit(self, fn, *args):
+            fn(*args)
+    monkeypatch.setattr(jobs, "_executor", Inline())
+    monkeypatch.setattr(jobs, "task_generate", lambda *args: calls.append(True) or {"ok": True})
+    headers = {"Idempotency-Key": "generate-request-0001"}
+    body = {"prompt": "local test generation", "duration": 8}
+    first = client.post("/api/projects/generate", json=body, headers=headers)
+    assert first.status_code == 200, first.text
+    second = client.post("/api/projects/generate", json=body, headers=headers)
+    assert second.status_code == 200 and second.json() == first.json()
+    assert second.headers["Idempotency-Status"] == "replayed" and len(calls) == 1
+    with Session(engine) as s:
+        assert len(s.exec(select(Project)).all()) == len(s.exec(select(Job)).all()) == 1
+    # A fresh client / startup recovery does not forget the completed request.
+    models.init_db()
+    fresh = TestClient(main.app)
+    try:
+        assert fresh.post("/api/projects/generate", json=body, headers=headers).json() == first.json()
+    finally:
+        fresh.close()
+    assert len(calls) == 1
+
+
+def test_idempotency_rejects_changed_payload_or_route(studio):
+    client, engine, _ = studio
+    pid = _editable_project(engine)
+    url = f"/api/projects/{pid}"
+    headers = {"Idempotency-Key": "rename-request-00001"}
+    assert client.patch(url, json={"name": "First"}, headers=headers).status_code == 200
+    response = client.patch(url, json={"name": "Second"}, headers=headers)
+    assert response.status_code == 409 and response.headers["Idempotency-Status"] == "conflict"
+    assert client.delete(url, headers=headers).status_code == 409
+    assert client.get(url).json()["name"] == "First"
+    assert client.patch(url, json={"name": "Invalid"}, headers={"Idempotency-Key": "short"}).status_code == 422
+
+
+def test_idempotency_concurrent_request_is_reserved_before_provider_and_stays_pending_on_restart(studio, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    client, engine, _ = studio
+    pid = _editable_project(engine)
+    url = f"/api/projects/{pid}/edit"
+    entered, release = Event(), Event()
+    calls = []
+    def planner(*args):
+        from app.edit.schema import EditPlan
+        calls.append(True)
+        entered.set()
+        assert release.wait(5)
+        return EditPlan(), "same"
+    monkeypatch.setattr(main.ai, "plan_edit", planner)
+    monkeypatch.setattr(main, "_context", lambda _: {})
+    headers = {"Idempotency-Key": "concurrent-request-01"}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(client.post, url, json={"prompt": "test"}, headers=headers)
+        assert entered.wait(5)
+        try:
+            second = client.post(url, json={"prompt": "test"}, headers=headers)
+            assert second.status_code == 409 and second.headers["Idempotency-Status"] == "pending"
+        finally:
+            release.set()
+        assert first.result(timeout=5).status_code == 200
+    assert len(calls) == 1
+    # Simulate a crash after reservation (unknown outcome): init must not clear it.
+    with Session(engine) as s:
+        record = s.get(models.MutationRequest, headers["Idempotency-Key"])
+        record.status_code = record.response_body = None
+        s.add(record)
+        s.commit()
+    models.init_db()
+    assert client.post(url, json={"prompt": "test"}, headers=headers).headers["Idempotency-Status"] == "pending"
+    assert len(calls) == 1
+
+
+def test_idempotency_ambiguous_provider_failure_is_never_called_twice(studio, monkeypatch):
+    from app.ai.provider_errors import ProviderFailure
+    client, engine, _ = studio
+    pid = _editable_project(engine)
+    calls = []
+    def provider(*args):
+        calls.append(True)
+        raise ProviderFailure("provider_unavailable", "Safe uncertain failure", "Check job list", 503)
+    monkeypatch.setattr(main.ai, "plan_edit", provider)
+    monkeypatch.setattr(main, "_context", lambda _: {})
+    headers = {"Idempotency-Key": "uncertain-request-01"}
+    url = f"/api/projects/{pid}/edit"
+    assert client.post(url, json={"prompt": "test"}, headers=headers).status_code == 503
+    assert client.post(url, json={"prompt": "test"}, headers=headers).status_code == 409
+    assert len(calls) == 1
+
+
+def test_idempotency_unhandled_exception_leaves_durable_reservation(studio, monkeypatch):
+    client, engine, _ = studio
+    pid = _editable_project(engine)
+    calls = []
+    def interrupted(*args, **kwargs):
+        calls.append(True)
+        raise RuntimeError("interrupted after request started")
+    monkeypatch.setattr(main.tts, "generate_voiceover", interrupted)
+    headers = {"Idempotency-Key": "interrupted-request-01"}
+    url = f"/api/projects/{pid}/voiceover"
+    with pytest.raises(RuntimeError, match="interrupted"):
+        client.post(url, json={"text": "Hello"}, headers=headers)
+    assert client.post(url, json={"text": "Hello"}, headers=headers).status_code == 409
+    assert len(calls) == 1

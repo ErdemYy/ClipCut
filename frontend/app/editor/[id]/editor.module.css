@@ -66,6 +66,37 @@
   gap: 16px;
   align-items: start;
 }
+.reads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin-bottom: 16px;
+}
+.readRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  flex: 1 1 320px;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+.readRow > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.readRow p {
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+.readRow button {
+  min-height: 44px;
+  white-space: normal;
+}
+.readError {
+  grid-column: 1 / -1;
+}
 .stage {
   display: flex;
   flex-direction: column;

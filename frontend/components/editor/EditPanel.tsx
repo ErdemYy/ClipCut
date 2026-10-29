@@ -40,7 +40,7 @@ export default function EditPanel({ project, setProject, notify, disabled }: Pro
     setBusy(true);
     setPrompt("");
     try {
-      const res = await api.edit(project.id, text.trim());
+      const res = await api.edit(project.id, text.trim(), project.edit_revision);
       setProject(res.project);
     } catch (e) {
       notify((e as Error).message, true);
@@ -61,7 +61,7 @@ export default function EditPanel({ project, setProject, notify, disabled }: Pro
 
   const undo = async () => {
     try {
-      setProject(await api.undo(project.id));
+      setProject(await api.undo(project.id, project.edit_revision));
       notify("Son değişiklik geri alındı");
     } catch (e) {
       notify((e as Error).message, true);

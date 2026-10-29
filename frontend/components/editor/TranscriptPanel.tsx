@@ -61,7 +61,7 @@ export default function TranscriptPanel({ project, setProject, jobs, track, noti
   };
   const undo = async () => {
     setPending(true);
-    try { setProject(await api.undo(project.id)); setSelection(null); notify("Son edit adımı geri alındı."); }
+    try { setProject(await api.undo(project.id, project.edit_revision)); setSelection(null); notify("Son edit adımı geri alındı."); }
     catch (error) { notify((error as Error).message, true); }
     finally { setPending(false); }
   };

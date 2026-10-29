@@ -25,6 +25,7 @@ from .edit.schema import EditPlan
 from .edit.timeline import Timeline, build_timeline
 from .ffmpeg import MediaInfo, detect_silences, extract_audio, make_thumbnail, probe
 from .models import Job, Project, engine
+from .project_writes import lock as project_write_lock
 
 log = logging.getLogger("clipcut.jobs")
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="clipcut-job")
@@ -187,11 +188,13 @@ def _run(job_id: str, fn: Callable[..., dict | None], cancel_event: threading.Ev
             _cancels.pop(job_id, None)
 
 
-def _save_project(project_id: str, mutate: Callable[[Project], None]) -> None:
-    with Session(engine) as s:
+def _save_project(project_id: str, mutate: Callable[[Project], None], *, expected_revision: str | None = None) -> None:
+    with project_write_lock, Session(engine) as s:
         p = s.get(Project, project_id)
         if not p:
             raise ValueError("Proje bulunamadı")
+        if expected_revision is not None and edit_revision(p) != expected_revision:
+            raise ValueError("İşlem sürerken proje değişti; yeni düzenlemeler korunarak sonuç uygulanmadı. Güncel projeyi kontrol edin.")
         mutate(p)
         p.updated_at = datetime.now(timezone.utc)
         s.add(p)
@@ -228,6 +231,7 @@ def task_generate(progress, project_id: str, prompt: str, aspect: str, duration:
 
 def task_transcribe(progress, project_id: str, target_language: str | None) -> dict:
     p = _load(project_id)
+    revision = edit_revision(p)
     if not p.source_file:
         raise ValueError("Projede video yok.")
     pdir = project_dir(project_id)
@@ -257,12 +261,13 @@ def task_transcribe(progress, project_id: str, target_language: str | None) -> d
             proj.plan_history = [*proj.plan_history, proj.plan][-50:]
             proj.plan = EditPlan(operations=[*plan.operations, SubtitlesOp()]).model_dump()
 
-    _save_project(project_id, mutate)
+    _save_project(project_id, mutate, expected_revision=revision)
     return {"language": transcript.get("language"), "segments": len(transcript.get("segments", [])), "subtitle_language": target}
 
 
 def task_translate(progress, project_id: str, target: str) -> dict:
     p = _load(project_id)
+    revision = edit_revision(p)
     if not p.transcript:
         raise ValueError("Önce transkripsiyon yapılmalı.")
     progress(0.2, f"Çevriliyor → {target}")
@@ -272,7 +277,7 @@ def task_translate(progress, project_id: str, target: str) -> dict:
         proj.subtitles = subtitles
         proj.subtitle_language = target
 
-    _save_project(project_id, mutate)
+    _save_project(project_id, mutate, expected_revision=revision)
     return {"subtitle_language": target}
 
 
@@ -309,6 +314,13 @@ def task_render(progress, project_id: str, options: dict | None = None) -> dict:
 
     _save_project(project_id, mutate)
     return {"output": media_url(project_id, out_rel), **meta}
+
+
+def edit_revision(p: Project) -> str:
+    """Long edit operations also depend on transcript and subtitle language."""
+    state = {"render": render_revision(p), "transcript": p.transcript,
+             "language": p.subtitle_language, "history": p.plan_history}
+    return hashlib.sha256(json.dumps(state, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 def render_revision(p: Project) -> str:

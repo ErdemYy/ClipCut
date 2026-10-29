@@ -8,6 +8,7 @@ import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Any, Literal, Optional
 from urllib.parse import quote
@@ -20,6 +21,8 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session, select
 
 from . import assets, jobs, output_cleanup
+from .idempotency import protect as protect_mutation
+from .project_writes import lock as project_write_lock
 from .ai import broll, catalog as ai_catalog, services as ai, tts
 from .ai import connection as ai_connection
 from .ai.provider_errors import ProviderFailure
@@ -43,8 +46,26 @@ from .waveform import SourceChangedError, source_waveform
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 settings = get_settings()
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
-_storyboard_lock = threading.Lock()
-_layer_edit_lock = threading.Lock()
+_storyboard_lock = project_write_lock
+_layer_edit_lock = project_write_lock
+
+
+def project_write(fn):
+    """Short API writes share the same publication lock as background jobs."""
+    @wraps(fn)
+    def guarded(*args, **kwargs):
+        with project_write_lock:
+            return fn(*args, **kwargs)
+    return guarded
+
+
+class EditRevisionBody(BaseModel):
+    revision: Optional[str] = Field(None, min_length=64, max_length=64)
+
+
+def check_edit_revision(p: Project, revision: str | None) -> None:
+    if revision is not None and revision != jobs.edit_revision(p):
+        raise HTTPException(409, "Proje değişti; işlem uygulanmadı. Güncel projeyi yükleyip yeniden düzenleyin.")
 
 
 @asynccontextmanager
@@ -57,6 +78,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="ClipCut API", version="0.1.0", lifespan=lifespan)
+app.middleware("http")(protect_mutation)
 
 
 @app.exception_handler(ProviderFailure)
@@ -74,7 +96,7 @@ async def hide_trash_from_media(request: Request, call_next):
 
 app.add_middleware(
     CORSMiddleware, allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
-    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"], expose_headers=["Idempotency-Status"],
 )
 settings.assets_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=settings.storage_dir), name="media")
@@ -107,6 +129,7 @@ def serialize(p: Project, full: bool = True) -> dict[str, Any]:
             "subtitles": p.subtitles, "plan": p.plan, "can_undo": bool(p.plan_history), "chat": p.chat,
             "output_meta": p.output_meta,
             "render_revision": jobs.render_revision(p),
+            "edit_revision": jobs.edit_revision(p),
             "subtitle_revision": subtitle_revision(p.model_dump()),
             "subtitle_time_limit": subtitle_time_limit(p.model_dump()),
             "timeline_revision": timeline_revision(p.model_dump()),
@@ -165,6 +188,37 @@ def work_cleanup_busy(project_id: str, session: Session) -> bool:
                              Job.kind.in_(WORK_JOB_KINDS)).limit(1)
     ).first()
     return row is not None
+
+
+def preview_cleanup_busy(project_id: str, session: Session) -> bool:
+    """Whether a preview job could still be writing an output preview file."""
+    row = session.exec(
+        select(Job.id).where(Job.project_id == project_id, Job.status.in_(("queued", "running")),
+                             Job.kind.in_(("preview", "clip_preview"))).limit(1)
+    ).first()
+    return row is not None
+
+
+def output_preview_references(p: Project, session: Session) -> set[str]:
+    """Preview MP4 paths that must survive cleanup.
+
+    The latest completed preview per job kind is what the editor displays, so it
+    is protected. Older preview job results are provenance, while every non-preview
+    job result and project field is scanned normally.
+    """
+    rows = session.exec(
+        select(Job).where(Job.project_id == p.id).order_by(Job.created_at.desc())
+    ).all()
+    values: list[Any] = [p.model_dump(mode="json")]
+    protected_kinds: set[str] = set()
+    for job in rows:
+        if job.kind in ("preview", "clip_preview"):
+            if job.kind not in protected_kinds and job.status == "done" and job.result:
+                protected_kinds.add(job.kind)
+                values.append(job.result)
+        elif job.result:
+            values.append(job.result)
+    return output_cleanup.preview_references(p.id, values)
 
 
 def output_render_references(p: Project, session: Session) -> set[str]:
@@ -260,11 +314,13 @@ def list_voices() -> list[dict]:
 
 
 @app.post("/api/projects/{project_id}/apply-template/{template_id}")
-def apply_template(project_id: str, template_id: str, session: Session = Depends(get_session)) -> dict:
+@project_write
+def apply_template(project_id: str, template_id: str, body: EditRevisionBody | None = None, session: Session = Depends(get_session)) -> dict:
     tmpl = get_template(template_id)
     if not tmpl:
         raise HTTPException(404, "Şablon bulunamadı")
     p = get_project(project_id, session)
+    check_edit_revision(p, body.revision if body else None)
     if p.status != "ready":
         raise HTTPException(409, "Video henüz hazır değil.")
     plan = EditPlan.model_validate(tmpl["plan"])
@@ -594,6 +650,7 @@ class PatchBody(BaseModel):
 
 
 @app.patch("/api/projects/{project_id}")
+@project_write
 def patch_project(project_id: str, body: PatchBody, session: Session = Depends(get_session)) -> dict:
     p = get_project(project_id, session)
     if body.name:
@@ -606,6 +663,7 @@ def patch_project(project_id: str, body: PatchBody, session: Session = Depends(g
 
 
 @app.delete("/api/projects/{project_id}")
+@project_write
 def delete_project(project_id: str, session: Session = Depends(get_session)) -> dict:
     # Share submit's lock: checking active jobs and deleting must not race a submit
     # in this process. Workers need their project/files until they have finished.
@@ -665,12 +723,15 @@ def output_storage(project_id: str, session: Session = Depends(get_session)) -> 
     render_eligible, render_protected = output_cleanup.scan_renders(
         root, output_render_references(p, session))
     work_eligible, work_protected = output_cleanup.scan_work(root)
+    preview_eligible, preview_protected = output_cleanup.scan_previews(
+        root, output_preview_references(p, session))
     categories, total_bytes = output_cleanup.scan_storage(
         root, (p.source_file, p.thumbnail_file, p.voiceover_file))
     trash = output_cleanup.scan_trash(root)
     eligible_bytes = sum(item["bytes"] for item in eligible)
     render_eligible_bytes = sum(item["bytes"] for item in render_eligible)
     work_eligible_bytes = sum(item["bytes"] for item in work_eligible)
+    preview_eligible_bytes = sum(item["bytes"] for item in preview_eligible)
     return {
         "eligible": eligible, "protected": protected,
         "eligible_bytes": eligible_bytes,
@@ -687,14 +748,21 @@ def output_storage(project_id: str, session: Session = Depends(get_session)) -> 
             "eligible_bytes": work_eligible_bytes,
             "protected_bytes": sum(item["bytes"] for item in work_protected),
         },
+        "previews": {
+            "eligible": preview_eligible,
+            "protected": preview_protected,
+            "eligible_bytes": preview_eligible_bytes,
+            "protected_bytes": sum(item["bytes"] for item in preview_protected),
+        },
         "categories": categories,
         "total_bytes": total_bytes,
-        "reclaimable_bytes": eligible_bytes + render_eligible_bytes + work_eligible_bytes,
+        "reclaimable_bytes": eligible_bytes + render_eligible_bytes + work_eligible_bytes + preview_eligible_bytes,
         "trash": trash,
         "min_age_seconds": output_cleanup.MIN_AGE_SECONDS,
         "busy": publishing_busy(p.id, session),
         "render_busy": render_cleanup_busy(p.id, session),
         "work_busy": work_cleanup_busy(p.id, session),
+        "preview_busy": preview_cleanup_busy(p.id, session),
     }
 
 
@@ -740,6 +808,21 @@ def cleanup_output_work(project_id: str, body: output_cleanup.WorkCleanupBody,
     return result
 
 
+@app.post("/api/projects/{project_id}/outputs/previews/cleanup")
+def cleanup_output_previews(project_id: str, body: output_cleanup.PreviewCleanupBody,
+                            session: Session = Depends(get_session)) -> dict:
+    """Move only old preview MP4s that are not the latest displayed result."""
+    p = get_project(project_id, session)
+    if preview_cleanup_busy(p.id, session):
+        raise HTTPException(409, "Süren bir önizleme işi var; bitince yeniden deneyin.")
+    referenced = output_preview_references(p, session)
+    result = output_cleanup.trash_previews(
+        jobs.project_dir(p.id), referenced, [(item.kind, item.name) for item in body.items])
+    if not result["trashed"]:
+        raise HTTPException(409, "İstenen önizlemeler artık temizlenebilir değil; listeyi yenileyin.")
+    return result
+
+
 @app.post("/api/projects/{project_id}/outputs/trash/restore")
 def restore_output_trash(project_id: str, body: output_cleanup.TrashRestoreBody,
                          session: Session = Depends(get_session)) -> dict:
@@ -769,6 +852,7 @@ class TranscribeBody(BaseModel):
 
 
 @app.post("/api/projects/{project_id}/transcribe")
+@project_write
 def transcribe(project_id: str, body: TranscribeBody, session: Session = Depends(get_session)) -> dict:
     p = get_project(project_id, session)
     if p.status != "ready":
@@ -781,6 +865,7 @@ class TranslateBody(BaseModel):
 
 
 @app.post("/api/projects/{project_id}/translate")
+@project_write
 def translate(project_id: str, body: TranslateBody, session: Session = Depends(get_session)) -> dict:
     p = get_project(project_id, session)
     if not p.transcript:
@@ -789,6 +874,7 @@ def translate(project_id: str, body: TranslateBody, session: Session = Depends(g
 
 
 @app.put("/api/projects/{project_id}/subtitles")
+@project_write
 def update_subtitles(project_id: str, body: SubtitlesBody, session: Session = Depends(get_session)) -> dict:
     """Keep explicit word timings; only legacy changed-text requests redistribute words."""
     p = ready_source(project_id, session)
@@ -834,7 +920,7 @@ def export_subtitles(project_id: str, fmt: Literal["srt", "vtt"], edited: bool =
 
 # ------------------------------------------------------------------ edit planı ----
 
-class EditBody(BaseModel):
+class EditBody(EditRevisionBody):
     prompt: str = Field(..., min_length=1, max_length=2000)
 
 
@@ -864,7 +950,8 @@ def edit_with_prompt(project_id: str, body: EditBody, session: Session = Depends
     if p.status != "ready":
         raise HTTPException(409, "Video henüz hazır değil.")
     current = EditPlan.model_validate(p.plan)
-    revision = jobs.render_revision(p)
+    check_edit_revision(p, body.revision)
+    revision = jobs.edit_revision(p)
     try:
         plan, summary = ai.plan_edit(body.prompt, current, _context(p))
     except ProviderFailure:
@@ -873,7 +960,7 @@ def edit_with_prompt(project_id: str, body: EditBody, session: Session = Depends
         raise HTTPException(502, f"Planlayıcı hatası: {exc}") from exc
     with _layer_edit_lock:
         session.refresh(p)
-        if revision != jobs.render_revision(p):
+        if revision != jobs.edit_revision(p):
             raise HTTPException(409, "Plan hazırlanırken edit veya kaynak değişti; komut uygulanmadı. Güncel projeyi yükleyin.")
         changed = plan.model_dump() != current.model_dump()
         if changed:
@@ -912,10 +999,11 @@ def put_plan(project_id: str, body: PlanBody, session: Session = Depends(get_ses
 
 
 @app.post("/api/projects/{project_id}/plan/undo")
-def undo_plan(project_id: str, session: Session = Depends(get_session)) -> dict:
+def undo_plan(project_id: str, body: EditRevisionBody | None = None, session: Session = Depends(get_session)) -> dict:
     with _layer_edit_lock:
         p = get_project(project_id, session)
         session.refresh(p)
+        check_edit_revision(p, body.revision if body else None)
         if not p.plan_history:
             raise HTTPException(409, "Geri alınacak adım yok.")
         history = list(p.plan_history)
@@ -994,6 +1082,7 @@ def transcript_selection(p: Project, body: TranscriptSelection):
 
 
 @app.post("/api/projects/{project_id}/transcript-edit/cut")
+@project_write
 def cut_transcript(project_id: str, body: TranscriptSelection, session: Session = Depends(get_session)) -> dict:
     p = ready_source(project_id, session)
     timeline, _, rows = transcript_selection(p, body)
@@ -1051,7 +1140,7 @@ class VoiceoverPreviewBody(BaseModel):
     speed: float = 1.0
 
 
-class VoiceoverApplyBody(BaseModel):
+class VoiceoverApplyBody(EditRevisionBody):
     text: str
     voice: str = "tr-TR-EmelNeural"
     speed: float = 1.0
@@ -1082,12 +1171,26 @@ def apply_voiceover(project_id: str, body: VoiceoverApplyBody, session: Session 
         raise HTTPException(409, "Video henüz hazır değil.")
     if not body.text.strip():
         raise HTTPException(400, "Metin boş olamaz.")
+    check_edit_revision(p, body.revision)
+    revision = jobs.edit_revision(p)
 
     pdir = jobs.project_dir(p.id)
-    vo_file = "voiceover.mp3"
+    # Never overwrite the currently referenced audio while synthesis is in flight.
+    vo_file = f"voiceover_{uuid.uuid4().hex}.mp3"
     vo_path = pdir / vo_file
 
     res = tts.generate_voiceover(body.text, voice_id=body.voice, speed=body.speed, out_path=vo_path)
+    with project_write_lock:
+        session.refresh(p)
+        try:
+            check_edit_revision(p, revision)
+        except HTTPException:
+            vo_path.unlink(missing_ok=True)
+            raise
+        return publish_voiceover(p, body, res, vo_file, session)
+
+
+def publish_voiceover(p: Project, body: VoiceoverApplyBody, res: dict, vo_file: str, session: Session) -> dict:
     p.voiceover_file = vo_file
 
     transcript_data = {
@@ -1127,15 +1230,12 @@ def apply_voiceover(project_id: str, body: VoiceoverApplyBody, session: Session 
 
 
 @app.delete("/api/projects/{project_id}/voiceover")
-def delete_voiceover(project_id: str, session: Session = Depends(get_session)) -> dict:
+@project_write
+def delete_voiceover(project_id: str, body: EditRevisionBody | None = None, session: Session = Depends(get_session)) -> dict:
     p = get_project(project_id, session)
+    check_edit_revision(p, body.revision if body else None)
     if p.voiceover_file:
-        vo_path = jobs.project_dir(p.id) / p.voiceover_file
-        if vo_path.exists():
-            try:
-                vo_path.unlink()
-            except Exception:
-                pass
+        # Existing renders/version snapshots may still be reading this immutable file.
         p.voiceover_file = None
         now = datetime.now(timezone.utc).isoformat()
         p.chat = [*p.chat, {"role": "assistant", "text": "🎙️ AI Seslendirme kaldırıldı.", "at": now, "changed": True}][-100:]
@@ -1182,15 +1282,24 @@ def suggest_broll(project_id: str, session: Session = Depends(get_session)) -> d
 
 
 @app.post("/api/projects/{project_id}/broll/apply-auto")
-def apply_auto_broll(project_id: str, session: Session = Depends(get_session)) -> dict:
+def apply_auto_broll(project_id: str, body: EditRevisionBody | None = None, session: Session = Depends(get_session)) -> dict:
     p = get_project(project_id, session)
     if p.status != "ready":
         raise HTTPException(409, "Video henüz hazır değil.")
+    check_edit_revision(p, body.revision if body else None)
+    revision = jobs.edit_revision(p)
     transcript = p.subtitles or p.transcript
     suggestions = broll.suggest_broll_for_transcript(transcript, p.duration)
     if not suggestions:
         raise HTTPException(400, "Uygun B-Roll eşleşmesi bulunamadı.")
 
+    with project_write_lock:
+        session.refresh(p)
+        check_edit_revision(p, revision)
+        return publish_auto_broll(p, suggestions, session)
+
+
+def publish_auto_broll(p: Project, suggestions: list[dict], session: Session) -> dict:
     plan = EditPlan.model_validate(p.plan)
     for s in suggestions:
         plan.operations.append(OverlayOp.model_validate(s))
@@ -1286,6 +1395,7 @@ def download_output(project_id: str, filename: str, session: Session = Depends(g
 
 
 @app.put("/api/projects/{project_id}/thumbnail")
+@project_write
 def select_thumbnail(project_id: str, body: ThumbnailBody, session: Session = Depends(get_session)) -> dict:
     p = ready_source(project_id, session)
     if body.at >= p.duration:

@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api, describeOp, OP_LABELS, type Project, type Template } from "@/lib/api";
+import { useReadList } from "@/lib/use-read-list";
+import ReadListStatus from "./ReadListStatus";
 import styles from "./editor-parts.module.css";
 
 type Props = {
@@ -11,21 +13,20 @@ type Props = {
   disabled: boolean;
 };
 
+const readTemplates = (_scope: string, signal: AbortSignal) => api.templates(signal);
+
 export default function TemplatesPanel({ project, setProject, notify, disabled }: Props) {
-  const [templates, setTemplates] = useState<Template[]>([]);
+  const templatesRead = useReadList(project.id, readTemplates);
+  const templates = templatesRead.items;
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  useEffect(() => {
-    api.templates().then(setTemplates).catch(() => {});
-  }, []);
 
   const apply = async (tmpl: Template) => {
     if (disabled || loading) return;
     setLoading(true);
     setSelectedId(tmpl.id);
     try {
-      const res = await api.applyTemplate(project.id, tmpl.id);
+      const res = await api.applyTemplate(project.id, tmpl.id, project.edit_revision);
       setProject(res.project);
       notify(`“${tmpl.name}” şablonu uygulandı!`);
     } catch (e) {
@@ -43,6 +44,7 @@ export default function TemplatesPanel({ project, setProject, notify, disabled }
         <p>Popüler platformlara uygun optimize edilmiş kurgu, altyazı ve müzik kombinasyonları.</p>
       </div>
 
+      <ReadListStatus id="templates-list" label="Şablon listesi" empty="Kullanılabilir şablon yok." state={templatesRead} />
       <div className={styles.templateList}>
         {templates.map((t) => {
           const ops = t.plan?.operations ?? [];

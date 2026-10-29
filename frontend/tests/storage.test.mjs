@@ -14,8 +14,9 @@ function load(file) {
   return exported;
 }
 const {
-  formatBytes, formatMinAge, formatTrashExpiry, renderProtectionSummary, storageCategoryLabel,
-  storageProtectionSummary, storageTrashLabel, storageUsageSummary, trashBatches, workProtectionSummary,
+  formatBytes, formatMinAge, formatTrashExpiry, previewProtectionSummary, renderProtectionSummary,
+  storageCategoryLabel, storageProtectionSummary, storageTrashLabel, storageUsageSummary,
+  trashBatches, workProtectionSummary,
 } = load("../lib/storage.ts");
 
 test("formatBytes uses readable binary units without hiding small files", () => {
@@ -90,6 +91,19 @@ test("storageTrashLabel keeps render names and abbreviates staging tokens", () =
     "Klip önizlemesi · cccccccc…");
   assert.equal(storageTrashLabel({ kind: "work_waveforms", name: "waveforms" }),
     "Dalga formu önbelleği");
+  assert.equal(storageTrashLabel({ kind: "preview", name: "e".repeat(32) + ".mp4" }),
+    "Önizleme · eeeeeeee…");
+  assert.equal(storageTrashLabel({ kind: "clip_preview", name: "f".repeat(32) + ".mp4" }),
+    "Klip önizlemesi · ffffffff…");
+});
+
+test("previewProtectionSummary keeps the current preview reason visible", () => {
+  const item = (reason) => ({
+    kind: "preview", name: "a".repeat(32) + ".mp4", bytes: 1, files: 1, age_seconds: 7200, reason,
+  });
+  assert.equal(previewProtectionSummary([]), "");
+  assert.equal(previewProtectionSummary([item("referenced"), item("recent")]),
+    "1 en güncel önizleme · 1 yeni oluşturuldu");
 });
 
 test("workProtectionSummary groups scratch protection reasons", () => {

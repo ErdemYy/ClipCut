@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { API_URL, api, mediaUrl, type Library, type LibraryItem, type Operation, type Project } from "@/lib/api";
+import { useReadList } from "@/lib/use-read-list";
+import ReadListStatus from "./ReadListStatus";
 import styles from "./editor-parts.module.css";
 
 type Props = {
@@ -11,8 +13,11 @@ type Props = {
   notify: (t: string, e?: boolean) => void;
 };
 
+const readAudio = (scope: string, signal: AbortSignal) => api.projectAudio(scope, signal);
+
 export default function AudioPanel({ project, setProject, library, notify }: Props) {
-  const [own, setOwn] = useState<LibraryItem[]>([]);
+  const audioRead = useReadList(project.id, readAudio);
+  const own = audioRead.items;
   const [playing, setPlaying] = useState<string | null>(null);
   const [sfxAt, setSfxAt] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -22,7 +27,6 @@ export default function AudioPanel({ project, setProject, library, notify }: Pro
   const volume = ops.find((o) => o.type === "volume") as Operation | undefined;
 
   useEffect(() => {
-    api.projectAudio(project.id).then(setOwn).catch(() => {});
     return () => audioRef.current?.pause();
   }, [project.id]);
 
@@ -63,7 +67,7 @@ export default function AudioPanel({ project, setProject, library, notify }: Pro
   const uploadOwn = async (file: File) => {
     try {
       const item = await api.uploadAudio(project.id, file);
-      setOwn((o) => [...o.filter((x) => x.id !== item.id), item]);
+      if (!audioRead.upsert(item)) return;
       if (await upsert("music", { track: item.id }, { volume: 0.18, ducking: true, fade_in: 1, fade_out: 2 })) {
         notify("Müzik yüklendi ve eklendi");
       }
@@ -76,6 +80,7 @@ export default function AudioPanel({ project, setProject, library, notify }: Pro
 
   return (
     <div className={styles.section}>
+      <ReadListStatus id="audio-list" label="Proje ses dosyaları" empty="Bu projeye yüklenmiş ses dosyası yok." state={audioRead} />
       <div className={styles.planHead}>
         <h4>Fon müziği</h4>
         <button className="btn btn-sm" onClick={() => fileRef.current?.click()} id="audio-upload">

@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { api, downloadUrl, formatTime, mediaUrl, type Job, type JobMap, type PreviewResult, type Project, type RenderOptions } from "@/lib/api";
 import { previewIsStale, previewRange } from "@/lib/render-preview";
+import { checkedTimeline, sourceReadKey, timelineReadKey } from "@/lib/media-reads";
+import { useReadResource } from "@/lib/use-read-resource";
+import ReadResourceStatus from "./ReadResourceStatus";
 import { JobProgress } from "./SubtitlePanel";
 import pub from "./publishing.module.css";
 
@@ -16,21 +19,11 @@ export default function PreviewPanel({ project, options, jobs, track, notify }: 
   const [start, setStart] = useState(0);
   const [duration, setDuration] = useState<5 | 10>(5);
   const [pending, setPending] = useState(false);
-  const [timeline, setTimeline] = useState<{ key: string; total: number; error?: string } | null>(null);
-  const timelineKey = JSON.stringify([project.id, project.source_url, project.duration, project.plan]);
-  const projectId = project.id;
-  useEffect(() => {
-    let cancelled = false;
-    api.timeline(projectId).then((value) => {
-      if (!cancelled) setTimeline({ key: timelineKey, total: value.output_duration });
-    }).catch((error: Error) => {
-      if (!cancelled) setTimeline({ key: timelineKey, total: 0, error: error.message });
-    });
-    return () => { cancelled = true; };
-  }, [projectId, timelineKey]);
-
-  const loaded = timeline?.key === timelineKey;
-  const total = loaded ? timeline.total : 0;
+  const { id, duration: sourceDuration, timeline_revision: revision } = project;
+  const read = useCallback(async (signal: AbortSignal) => checkedTimeline(await api.timeline(id, signal), sourceDuration, revision), [id, sourceDuration, revision]);
+  const timeline = useReadResource(timelineReadKey(project), sourceReadKey(project), read, { enabled: project.status === "ready" });
+  const loaded = timeline.current && !timeline.pending && !timeline.error;
+  const total = timeline.data?.exact_output_duration ?? timeline.data?.output_duration ?? 0;
   const range = previewRange(start, duration, total);
   const job = jobs.preview;
   const running = job?.status === "running" || job?.status === "queued";
@@ -39,6 +32,7 @@ export default function PreviewPanel({ project, options, jobs, track, notify }: 
   const stale = result && previewIsStale(result, project.render_revision, options);
 
   const generate = async () => {
+    if (disabled) return;
     setPending(true);
     try {
       const next = await api.preview(project.id, { ...options, start: range.start, duration });
@@ -49,6 +43,7 @@ export default function PreviewPanel({ project, options, jobs, track, notify }: 
 
   return <section className={pub.cover} aria-labelledby="render-preview-title">
     <h4 id="render-preview-title">Kısa render önizlemesi</h4>
+    <ReadResourceStatus id="preview-timeline-read" label="Önizleme zaman çizelgesi" state={timeline} />
     <p id="render-preview-help" className={pub.note}>Başlangıç, kesme ve hız uygulanmış videonun zamanıdır; kaynak oynatıcının zamanı değildir. Mevcut edit planının kadrajı ve yukarıdaki çözünürlük/kalite kullanılır; platform seçimleri uygulanmaz.</p>
     <fieldset className={pub.settings} disabled={disabled} aria-describedby="render-preview-help">
       <legend>Önizleme aralığı</legend>
@@ -62,9 +57,7 @@ export default function PreviewPanel({ project, options, jobs, track, notify }: 
         </select>
       </label>
     </fieldset>
-    {!loaded ? <p className={pub.note} role="status">Düzenlenmiş süre hesaplanıyor…</p> : timeline.error ?
-      <p className={pub.error} role="alert">{timeline.error}</p> :
-      <p className={pub.note}>Seçim: {range.start.toFixed(2)}–{range.end.toFixed(2)} sn · toplam {formatTime(total)}. Video sonunda kalan süre kullanılır.</p>}
+    {loaded && <p className={pub.note}>Seçim: {range.start.toFixed(2)}–{range.end.toFixed(2)} sn · toplam {formatTime(total)}. Video sonunda kalan süre kullanılır.</p>}
     <p className={pub.note}>Ücretli AI çağrısı yapılmaz. Geç bir aralıkta önceki karelerin işlenmesi gerekebilir; hazırlık sırasında ilerleme bekleyebilir.</p>
     <button id="render-preview-generate" className="btn" disabled={disabled} onClick={generate}>{pending || running ? "Önizleme hazırlanıyor…" : "Kısa önizleme oluştur"}</button>
     {running && <div role="status" aria-live="polite"><JobProgress job={job} /></div>}

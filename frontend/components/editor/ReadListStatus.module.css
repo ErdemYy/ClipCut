@@ -1,0 +1,25 @@
+.status {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.status > div,
+.message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.status p {
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+.status button {
+  min-height: 44px;
+  white-space: normal;
+}
+.message {
+  grid-column: 1 / -1;
+}
