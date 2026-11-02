@@ -12,7 +12,7 @@ export type Project = {
   id: string;
   name: string;
   status: "draft" | "generating" | "ready" | "failed";
-  origin: "upload" | "veo" | "storyboard";
+  origin: "upload" | "veo" | "free" | "storyboard";
   created_at: string;
   updated_at: string;
   duration: number;
@@ -261,6 +261,9 @@ export type StoryScene = {
   id: string; title: string; visual_prompt: string; narration: string; duration: 4 | 6 | 8;
   status: "pending" | "generating" | "ready" | "failed";
   video_url: string | null; actual_duration: number | null; error: string | null; mock: boolean | null;
+  video_provider?: "veo" | "free" | "mock" | null;
+  image_source?: "picsum" | "pexels" | "pixabay" | "pollinations" | "custom" | "local" | null;
+  custom_image_url?: string | null;
   thumbnail_url: string | null; trim_start: number; trim_end: number | null; timeline_duration: number;
   transition: "cut" | "dissolve" | "fade"; transition_duration: number;
 };
@@ -269,6 +272,7 @@ export type Storyboard = {
   style: string; continuity: string; voiceover: boolean; voice_id: string; auto_subtitles: boolean;
   text_model: string; video_model: string;
   scenes: StoryScene[]; revision: string; assembled_revision: string | null; mock_plan: boolean;
+  plan_fallback?: string | null; plan_fallback_message?: string | null;
   pending_scenes: number; planned_duration: number; last_error: string | null;
   timeline_duration: number;
   previous_versions: { index: number; source_url: string; created_at: string; restorable: boolean; has_plan: boolean }[];
@@ -337,7 +341,7 @@ export type Template = {
   plan: Plan;
 };
 
-export type Health = { ok: boolean; mock: boolean; ai_key_configured?: boolean; ffmpeg: string; veo_model: string; video_durations?: number[]; video_model_warning?: string | null };
+export type Health = { ok: boolean; mock: boolean; ai_key_configured?: boolean; free_video?: boolean; ffmpeg: string; veo_model: string; video_durations?: number[]; video_model_warning?: string | null };
 
 export type AIConnectionReport = {
   status: "test" | "unchecked" | "missing_key" | "checked" | "partial" | "error";
@@ -349,16 +353,16 @@ export type AIConnectionReport = {
 };
 export type ModelInfo = {
   id: string; label: string; kind: "text" | "video"; status: "active" | "deprecated" | "closed" | "unpriced";
-  configured: boolean; selectable: boolean; note: string | null; durations: number[];
+  configured: boolean; selectable: boolean; note: string | null; durations: number[]; free?: boolean;
   price_per_second?: number | null; input_per_million?: number | null; output_per_million?: number | null;
 };
 export type ModelCatalog = {
-  mock: boolean; defaults: { text_model: string; video_model: string };
+  mock: boolean; free_video?: boolean; defaults: { text_model: string; video_model: string };
   text: ModelInfo[]; video: ModelInfo[]; pricing_read_at: string; pricing_note: string;
 };
 export type CostComponent = { label: string; detail: string; usd: number | null };
 export type CostEstimate = {
-  mock: boolean; priced: boolean; video_model: ModelInfo; text_model: ModelInfo;
+  mock: boolean; free_video?: boolean; priced: boolean; video_model: ModelInfo; text_model: ModelInfo;
   video_calls: number; video_seconds: number; tts_calls: number; planning_calls: number;
   estimated_usd: number | null; components: CostComponent[]; warnings: string[];
   pricing_read_at: string; pricing_note: string;
@@ -475,6 +479,15 @@ export const api = {
   cancelJob: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   restoreStoryboardVersion: (id: string, body: { version_index: number; confirm: boolean }) =>
     request<Project>(`/api/projects/${id}/storyboard/restore`, json(body)),
+  uploadSceneImage: (id: string, sceneId: string, revision: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("revision", revision);
+    return request<Project>(`/api/projects/${id}/storyboard/scenes/${sceneId}/image`, { method: "POST", body: fd });
+  },
+  deleteSceneImage: (id: string, sceneId: string, revision: string) =>
+    request<Project>(`/api/projects/${id}/storyboard/scenes/${sceneId}/image?revision=${encodeURIComponent(revision)}`,
+      { method: "DELETE" }),
   job: (id: string, signal?: AbortSignal) => request<Job>(`/api/jobs/${id}`, { signal }),
   jobs: (projectId: string, signal?: AbortSignal) => request<Job[]>(`/api/projects/${projectId}/jobs`, { signal }),
   outputStorage: (id: string) => request<OutputStorageInfo>(`/api/projects/${id}/outputs`),

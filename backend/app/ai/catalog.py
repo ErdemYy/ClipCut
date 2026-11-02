@@ -12,26 +12,33 @@ from typing import Optional
 
 from .. import config
 
-PRICING_READ_AT = "2026-10-22"
+PRICING_READ_AT = "2026-11-02"
 PRICING_NOTE = (
-    "Tahmini Google Gemini API liste fiyatları (22 Ekim 2026'da okundu). "
+    "Tahmini Google Gemini API liste fiyatları (2 Kasım 2026'da okundu). "
     "Vergi, kur, bölge, çözünürlük, başarısız/iptal istekler ve sağlayıcı zamları dahil değildir; "
     "kesin fatura değildir. Edge TTS ücretsizdir, ancak konuşma metni Microsoft servisine gönderilir. "
     "Fiyatı bilinmeyen modelde tahmin üretilmez."
 )
 
 TEXT_LABELS = {
-    "gemini-2.5-flash": "Gemini 2.5 Flash",
-    "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
-    "gemini-2.5-pro": "Gemini 2.5 Pro",
+    "gemini-3.8-flash": "Gemini 3.8 Flash",
+    "gemini-2.5-flash": "Gemini 2.5 Flash (eski)",
+    "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite (eski)",
+    "gemini-2.5-pro": "Gemini 2.5 Pro (eski)",
 }
 # USD per 1M tokens: (input, output). Used only for a planning estimate.
 TEXT_PRICES = {
+    "gemini-3.8-flash": (0.75, 3.75),
     "gemini-2.5-flash": (0.30, 2.50),
     "gemini-2.5-flash-lite": (0.10, 0.40),
     "gemini-2.5-pro": (1.25, 10.00),
 }
+# Google no longer serves these to new API users. They stay resolvable for
+# existing projects, but are hidden from the default selector.
+DEPRECATED_TEXT_MODELS = {"gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"}
+FREE_VIDEO_MODEL = "free-ken-burns"
 VIDEO_LABELS = {
+    FREE_VIDEO_MODEL: "Ücretsiz Görsel + Ken Burns",
     "veo-3.0-fast-generate-001": "Veo 3 Fast",
     "veo-3.0-generate-001": "Veo 3 Standard",
     "veo-3.1-fast-generate-001": "Veo 3.1 Fast",
@@ -44,6 +51,7 @@ VIDEO_LABELS = {
 }
 # Conservative USD per output second, 720p with audio where applicable.
 VIDEO_PRICES = {
+    FREE_VIDEO_MODEL: 0.0,
     "veo-3.0-fast-generate-001": 0.15,
     "veo-3.0-generate-001": 0.40,
     "veo-3.1-fast-generate-001": 0.12,
@@ -75,6 +83,7 @@ class ModelInfo:
     selectable: bool
     note: Optional[str]
     durations: list[int]
+    free: bool = False
     price_per_second: Optional[float] = None
     input_per_million: Optional[float] = None
     output_per_million: Optional[float] = None
@@ -113,6 +122,13 @@ def video_model_status(model: str) -> str:
 
 
 def video_model_warning(model: str) -> Optional[str]:
+    if model == FREE_VIDEO_MODEL:
+        return (
+            "Ücretsiz mod: Veo çağrılmaz. FREE_IMAGE_PROVIDER=auto ise tanımlı Pexels/Pixabay "
+            "anahtarıyla, yoksa anahtarsız Picsum ile görsel indirilir; Pollinations açıkça "
+            "seçilebilir. Ardından yerel FFmpeg Ken Burns uygulanır. Tüm görsel servisleri "
+            "başarısızsa renk gradyanı kullanılır. Picsum görselleri promptla eşleşmeyebilir."
+        )
     if model in CLOSED_VIDEO_MODELS:
         return (
             "Seçili Veo 3.1 Preview modeli 22 Ekim 2026'da kapatıldı. Model yalnızca yapılandırmada "
@@ -133,14 +149,24 @@ def _text_model(model_id: str) -> ModelInfo:
     settings = config.get_settings()
     price = TEXT_PRICES.get(model_id)
     configured = model_id == settings.gemini_text_model
+    deprecated = model_id in DEPRECATED_TEXT_MODELS
+    if deprecated:
+        note = (
+            "Google bu modeli yeni API kullanıcılarına kapattı; üretim isteği "
+            "model bulunamadı hatası verebilir. Yeni projelerde Gemini 3.8 Flash kullanın."
+        )
+    elif not price:
+        note = "Bu metin modelinin liste fiyatı katalogda yok."
+    else:
+        note = None
     return ModelInfo(
         id=model_id,
         label=TEXT_LABELS.get(model_id, model_id),
         kind="text",
-        status="active" if price else "unpriced",
+        status="deprecated" if deprecated else ("active" if price else "unpriced"),
         configured=configured,
         selectable=True,
-        note=None if price else "Bu metin modelinin liste fiyatı katalogda yok.",
+        note=note,
         durations=[],
         input_per_million=price[0] if price else None,
         output_per_million=price[1] if price else None,
@@ -159,6 +185,7 @@ def _video_model(model_id: str) -> ModelInfo:
         selectable=True,
         note=video_model_warning(model_id),
         durations=video_durations(model_id, settings.is_mock),
+        free=model_id == FREE_VIDEO_MODEL,
         price_per_second=price,
     )
 
@@ -175,6 +202,7 @@ def model_catalog() -> dict:
     settings = config.get_settings()
     return {
         "mock": settings.is_mock,
+        "free_video": settings.veo_model == FREE_VIDEO_MODEL,
         "defaults": {"text_model": settings.gemini_text_model, "video_model": settings.veo_model},
         "text": [model.public() for model in text_models()],
         "video": [model.public() for model in video_models()],
@@ -186,9 +214,13 @@ def model_catalog() -> dict:
 def resolve_text_model(model_id: Optional[str]) -> ModelInfo:
     target = model_id or config.get_settings().gemini_text_model
     match = next((model for model in text_models() if model.id == target), None)
-    if match is None:
-        raise UnknownModel("Bu metin modeli seçilebilir modeller arasında değil.")
-    return match
+    if match is not None:
+        return match
+    # Existing projects may still store a retired model. Keep their preflight
+    # and display working without offering the retired model to new projects.
+    if target in TEXT_PRICES:
+        return _text_model(target)
+    raise UnknownModel("Bu metin modeli seçilebilir modeller arasında değil.")
 
 
 def resolve_video_model(model_id: Optional[str]) -> ModelInfo:
@@ -235,7 +267,7 @@ def preflight(
         )
 
     video_seconds = sum(durations)
-    if settings.is_mock:
+    if settings.is_mock or video.free:
         video_cost = 0.0
     elif video.price_per_second is not None:
         video_cost = round(video_seconds * video.price_per_second, 6)
@@ -276,6 +308,7 @@ def preflight(
         warnings.append(text.note)
     return {
         "mock": settings.is_mock,
+        "free_video": video.free,
         "priced": priced,
         "video_model": video.public(),
         "text_model": text.public(),

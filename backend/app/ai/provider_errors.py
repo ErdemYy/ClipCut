@@ -20,6 +20,9 @@ def failure_for_status(status: int | None, *, invalid_key: bool = False) -> Prov
     if status == 404:
         return ProviderFailure("model_unavailable", "AI sağlayıcısındaki modele veya istenen kaynağa erişilemiyor.",
                                "Model kimliğini ve kaynak erişimini kontrol edip hesabınızın erişebildiği bir model seçin.", 422)
+    if status == 402:
+        return ProviderFailure("provider_credits_depleted", "AI sağlayıcısı ön ödemeli kredi bakiyesinin tükendiğini bildirdi.",
+                               "Google AI Studio projesinde faturalandırma ve kredi durumunu kontrol edin; kredi yüklenene veya ücretsiz kota yenilenene kadar gerçek AI üretimi yapılamaz.", 402)
     if status == 429:
         return ProviderFailure("provider_quota", "AI sağlayıcısının kota veya istek sınırına ulaşıldı.",
                                "Kota ve faturalandırmayı kontrol edin; yeniden denemeden önce bekleyin. Başlamış bir isteği tekrarlamak ek ücret doğurabilir.", 429)

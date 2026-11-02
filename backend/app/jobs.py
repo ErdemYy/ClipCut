@@ -218,15 +218,15 @@ def task_generate(progress, project_id: str, prompt: str, aspect: str, duration:
     out = pdir / "source.mp4"
     try:
         if model:
-            ai.generate_video(prompt, aspect, duration, negative, out, lambda v, m: progress(v, m), model=model)
+            meta = ai.generate_video(prompt, aspect, duration, negative, out, lambda v, m: progress(v, m), model=model)
         else:
-            ai.generate_video(prompt, aspect, duration, negative, out, lambda v, m: progress(v, m))
+            meta = ai.generate_video(prompt, aspect, duration, negative, out, lambda v, m: progress(v, m))
         progress(0.97, "Video analiz ediliyor")
         _save_project(project_id, lambda p: ingest_source(p, out))
     except Exception:
         _save_project(project_id, lambda p: setattr(p, "status", "failed"))
         raise
-    return {"source": "source.mp4"}
+    return {"source": "source.mp4", "video_provider": (meta or {}).get("provider", "mock" if get_settings().is_mock else "veo")}
 
 
 def task_transcribe(progress, project_id: str, target_language: str | None) -> dict:

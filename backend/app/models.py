@@ -27,7 +27,7 @@ class Project(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_now)
     # draft | generating | ready | failed
     status: str = "draft"
-    origin: str = "upload"  # upload | veo | storyboard
+    origin: str = "upload"  # upload | veo | free | storyboard
     generation_prompt: Optional[str] = None
 
     source_file: Optional[str] = None  # proje klasörüne göre

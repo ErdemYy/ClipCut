@@ -31,7 +31,7 @@ from .config import get_settings
 from .edit.schema import EditPlan, OverlayOp, SubtitlesOp, dsl_reference
 from .edit.layers import LayerTimingsBody, timeline_revision, update_layer_timings
 from .edit.templates import TEMPLATES, get_template
-from .ffmpeg import ffmpeg_exe, make_thumbnail, probe
+from .ffmpeg import ffmpeg_exe, make_thumbnail, probe, run_ffmpeg
 from .models import Job, Project, get_session, init_db
 from .publishing import BatchExportBody, ClipAnalyzeBody, ClipExportBody, ClipPreviewBody, PreviewBody, RenderOptions, ThumbnailBody, clip_cover_time, preview_window
 from .storyboard import (StoryboardCreateBody, StoryboardGenerateBody, StoryboardSaveBody,
@@ -47,6 +47,9 @@ from .waveform import SourceChangedError, source_waveform
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 settings = get_settings()
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+SCENE_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+SCENE_IMAGE_MIME = {"image/jpeg", "image/png", "image/webp"}
+MAX_SCENE_IMAGE_BYTES = 20 * 1024 * 1024
 _storyboard_lock = project_write_lock
 _layer_edit_lock = project_write_lock
 
@@ -258,7 +261,9 @@ def health() -> dict:
         ff = ffmpeg_exe()
     except Exception as exc:
         ff = f"HATA: {exc}"
-    return {"ok": True, "mock": settings.is_mock, "ai_key_configured": bool(settings.gemini_api_key.strip()), "ffmpeg": ff, "veo_model": settings.veo_model,
+    return {"ok": True, "mock": settings.is_mock, "ai_key_configured": bool(settings.gemini_api_key.strip()),
+            "free_video": settings.veo_model == ai_catalog.FREE_VIDEO_MODEL,
+            "ffmpeg": ff, "veo_model": settings.veo_model,
             "text_model": settings.gemini_text_model, **ai.video_model_constraints()}
 
 
@@ -414,15 +419,19 @@ def generate_project(body: GenerateBody, session: Session = Depends(get_session)
     except ai_catalog.UnknownModel as exc:
         raise HTTPException(422, str(exc)) from exc
     if body.duration not in model.durations:
-        raise HTTPException(422, f"{model.label} için 8 saniyelik sahne seçin.")
+        allowed = ", ".join(str(value) for value in model.durations)
+        raise HTTPException(422, f"{model.label} için {allowed} saniyelik sahne seçin.")
     if body.max_cost_usd is not None:
         estimate = ai_catalog.preflight(video_model=model.id, scene_durations=[body.duration])
         blocked = ai_catalog.budget_error(estimate, body.max_cost_usd)
         if blocked:
             raise HTTPException(422, blocked)
     if not settings.is_mock and not body.confirm_api_usage:
+        if model.free:
+            raise HTTPException(422, "Ücretsiz modda harici görsel servisi ve yerel FFmpeg kullanılır; açık onay gerekli.")
         raise HTTPException(422, "Gerçek video üretimi ücretli olabilir; açık API kullanım onayı gerekli.")
-    p = Project(name=body.name.strip() or body.prompt[:48], origin="veo", status="generating", generation_prompt=body.prompt)
+    p = Project(name=body.name.strip() or body.prompt[:48], origin="free" if model.free else "veo",
+                status="generating", generation_prompt=body.prompt)
     session.add(p)
     session.commit()
     session.refresh(p)
@@ -522,6 +531,122 @@ def scene_thumbnail(project_id: str, scene_id: str, session: Session = Depends(g
     return FileResponse(thumb, media_type="image/jpeg")
 
 
+def _reset_scene_media(scene: dict, custom_image: str | None) -> None:
+    """Özel görsel değişince eski video/parmak izi önbelleğini geçersiz kıl."""
+    if custom_image:
+        scene["custom_image"] = custom_image
+    else:
+        scene.pop("custom_image", None)
+    for key in ("file", "fingerprint", "raw_file", "raw_fingerprint", "actual_duration",
+                "transcript", "mock", "video_provider", "image_source"):
+        scene.pop(key, None)
+    scene.update({"status": "pending", "error": None})
+
+
+@app.post("/api/projects/{project_id}/storyboard/scenes/{scene_id}/image")
+def upload_scene_image(project_id: str, scene_id: str, revision: str = Form(...),
+                       file: UploadFile = File(...), session: Session = Depends(get_session)) -> dict:
+    """Sahne için JPEG/PNG/WebP yükle; sağlayıcı görseli yerine yerel Ken Burns girdisi olur."""
+    if len(revision) != 12 or any(char not in "0123456789abcdef" for char in revision):
+        raise HTTPException(422, "Sahne planı revizyonu geçersiz.")
+    content_type = (file.content_type or "").lower()
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in SCENE_IMAGE_EXT and content_type not in SCENE_IMAGE_MIME:
+        raise HTTPException(400, "Yalnızca JPEG, PNG veya WebP görsel yükleyin.")
+    with _storyboard_lock:
+        p = get_project(project_id, session)
+        session.refresh(p)
+        if not p.storyboard:
+            raise HTTPException(409, "Projede sahne planı yok.")
+        if p.status == "generating":
+            raise HTTPException(409, "Üretim sürerken sahne görseli değiştirilemez.")
+        if revision != p.storyboard["revision"]:
+            raise HTTPException(409, "Sahne planı değişti; sayfayı yenileyin.")
+        scene = next((item for item in p.storyboard["scenes"] if item["id"] == scene_id), None)
+        if not scene:
+            raise HTTPException(404, "Sahne bulunamadı.")
+        pdir = jobs.project_dir(p.id)
+        folder = pdir / "storyboard" / "scenes" / scene_id / "custom"
+        token = uuid.uuid4().hex[:12]
+        raw = folder / f"upload_{token}{suffix if suffix in SCENE_IMAGE_EXT else '.img'}"
+        normalized = folder / f"{token}.jpg"
+        saved = False
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            size = 0
+            with raw.open("wb") as out:
+                while chunk := file.file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_SCENE_IMAGE_BYTES:
+                        raise HTTPException(413, "Görsel en fazla 20 MB olabilir.")
+                    out.write(chunk)
+            if size == 0:
+                raise HTTPException(400, "Boş görsel yüklenemez.")
+            try:
+                run_ffmpeg(["-i", str(raw), "-frames:v", "1", "-q:v", "2", str(normalized)], timeout=60)
+            except Exception as exc:
+                raise HTTPException(400, "Görsel okunamadı veya desteklenmiyor.") from exc
+            if not normalized.is_file() or normalized.stat().st_size == 0:
+                raise HTTPException(400, "Geçerli bir görsel bulunamadı.")
+            spec = copy.deepcopy(p.storyboard)
+            target = next(item for item in spec["scenes"] if item["id"] == scene_id)
+            _reset_scene_media(target, normalized.relative_to(pdir).as_posix())
+            spec["revision"] = uuid.uuid4().hex[:12]
+            spec["last_error"] = None
+            p.storyboard = spec
+            p.name = spec["title"]
+            if p.status == "failed":
+                p.status = "ready" if p.source_file else "draft"
+            touch(p)
+            session.add(p)
+            session.commit()
+            saved = True
+            session.refresh(p)
+            return serialize(p)
+        except HTTPException:
+            raise
+        except OSError as exc:
+            raise HTTPException(507, "Görsel kaydedilemedi; disk alanını ve yazma izinlerini kontrol edin.") from exc
+        finally:
+            raw.unlink(missing_ok=True)
+            if not saved:
+                normalized.unlink(missing_ok=True)
+
+
+@app.delete("/api/projects/{project_id}/storyboard/scenes/{scene_id}/image")
+def delete_scene_image(project_id: str, scene_id: str, revision: str,
+                       session: Session = Depends(get_session)) -> dict:
+    """Sahnedeki özel görseli kaldır; eski dosya korunur, yeni üretim sağlayıcıya döner."""
+    if len(revision) != 12 or any(char not in "0123456789abcdef" for char in revision):
+        raise HTTPException(422, "Sahne planı revizyonu geçersiz.")
+    with _storyboard_lock:
+        p = get_project(project_id, session)
+        session.refresh(p)
+        if not p.storyboard:
+            raise HTTPException(409, "Projede sahne planı yok.")
+        if p.status == "generating":
+            raise HTTPException(409, "Üretim sürerken sahne görseli değiştirilemez.")
+        if revision != p.storyboard["revision"]:
+            raise HTTPException(409, "Sahne planı değişti; sayfayı yenileyin.")
+        scene = next((item for item in p.storyboard["scenes"] if item["id"] == scene_id), None)
+        if not scene:
+            raise HTTPException(404, "Sahne bulunamadı.")
+        if not scene.get("custom_image"):
+            raise HTTPException(409, "Bu sahnede özel görsel yok.")
+        spec = copy.deepcopy(p.storyboard)
+        target = next(item for item in spec["scenes"] if item["id"] == scene_id)
+        _reset_scene_media(target, None)
+        spec["revision"] = uuid.uuid4().hex[:12]
+        spec["last_error"] = None
+        p.storyboard = spec
+        p.name = spec["title"]
+        touch(p)
+        session.add(p)
+        session.commit()
+        session.refresh(p)
+        return serialize(p)
+
+
 @app.post("/api/projects/{project_id}/storyboard/preflight")
 def storyboard_preflight(project_id: str, body: StoryboardGenerateBody, session: Session = Depends(get_session)) -> dict:
     """Estimate exactly the ready-file-aware pending set without changing it or creating jobs."""
@@ -573,7 +698,9 @@ def generate_storyboard(project_id: str, body: StoryboardGenerateBody, session: 
             if blocked:
                 raise HTTPException(422, blocked)
         if pending and not settings.is_mock and not body.confirm_api_usage:
-            raise HTTPException(422, f"{len(pending)} sahne için gerçek video/ses API kullanımı onayı gerekli.")
+            free_video = (spec.get("video_model") or settings.veo_model) == ai_catalog.FREE_VIDEO_MODEL
+            reason = "ücretsiz görsel servisi ve yerel FFmpeg" if free_video else "gerçek video/ses API kullanımı"
+            raise HTTPException(422, f"{len(pending)} sahne için {reason} onayı gerekli.")
         if p.source_file and not body.confirm_replace_source:
             raise HTTPException(422, "Yeni birleştirme edit kaynağını değiştirir; önceki sürümü koruyarak değiştirme onayı gerekli.")
         previous_status = p.status

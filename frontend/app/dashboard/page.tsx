@@ -133,6 +133,7 @@ export default function DashboardPage() {
                 )}
                 {p.duration > 0 && <span className={styles.duration}>{formatTime(p.duration)}</span>}
                 {p.origin === "veo" && <span className={styles.veo}>✦ Veo</span>}
+                {p.origin === "free" && <span className={styles.veo}>✦ Ücretsiz</span>}
               </Link>
               <div className={styles.meta}>
                 <div className={styles.titleRow}>

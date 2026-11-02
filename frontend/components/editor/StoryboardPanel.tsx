@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { approveProduction } from "@/lib/production-review";
 import { api, mediaUrl, type Health, type Job, type JobMap, type ModelCatalog, type Project, type Storyboard, type StoryScene, type Voice } from "@/lib/api";
@@ -15,6 +16,10 @@ function editable(s: Storyboard) {
       ({ id, title, visual_prompt, narration, duration, trim_start, trim_end, transition, transition_duration })) };
 }
 const STATUS = { pending: "Bekliyor", generating: "Üretiliyor", ready: "Hazır", failed: "Başarısız" };
+const IMAGE_SOURCE_LABELS: Record<string, string> = {
+  picsum: "Picsum", pexels: "Pexels", pixabay: "Pixabay", pollinations: "Pollinations",
+  custom: "özel görsel", local: "yerel gradyan",
+};
 
 export default function StoryboardPanel({ project, setProject, draft, setDraft, pending, setPending, jobs, track, notify }: {
   project: Project; setProject: (p: Project) => void; jobs: JobMap;
@@ -27,6 +32,8 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [budget, setBudget] = useState("");
   const submitting = useRef(false);
+  const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
+  const [uploadingScene, setUploadingScene] = useState<string | null>(null);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [approved, setApproved] = useState(false);
   const [replaceApproved, setReplaceApproved] = useState(false);
@@ -38,6 +45,7 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
   const busy = pending || project.status === "generating" || job?.status === "queued" || job?.status === "running";
   const running = job?.status === "running" || job?.status === "queued";
   const invalid = !draft.title.trim() || !draft.style.trim() || draft.scenes.some((s) => !s.title.trim() || s.visual_prompt.trim().length < 3 || (draft.voiceover && !s.narration.trim()));
+  const freeVideo = draft.video_model === "free-ken-burns" || (!draft.video_model && health?.veo_model === "free-ken-burns");
 
   useEffect(() => {
     api.health().then(setHealth).catch((e: Error) => notify(e.message, true));
@@ -61,6 +69,33 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
   const move = (index: number, direction: number) => {
     const scenes = [...draft.scenes]; [scenes[index], scenes[index + direction]] = [scenes[index + direction], scenes[index]];
     setDraft({ ...draft, scenes });
+  };
+  const uploadImage = async (sceneId: string, file: File) => {
+    if (dirty) { notify("Önce kaydedilmemiş değişiklikleri kaydedin.", true); return; }
+    if (file.size > 20 * 1024 * 1024) { notify("Görsel en fazla 20 MB olabilir.", true); return; }
+    if (!/\.(jpe?g|png|webp)$/i.test(file.name) && !["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      notify("Yalnızca JPEG, PNG veya WebP görsel yükleyin.", true);
+      return;
+    }
+    setUploadingScene(sceneId);
+    setPending(true);
+    try {
+      const updated = await api.uploadSceneImage(project.id, sceneId, story.revision, file);
+      setProject(updated);
+      notify("Özel sahne görseli yüklendi; sahne yeniden üretilmeyi bekliyor.");
+    } catch (e) { notify((e as Error).message, true); }
+    finally { setUploadingScene(null); setPending(false); }
+  };
+  const removeImage = async (sceneId: string) => {
+    if (dirty) { notify("Önce kaydedilmemiş değişiklikleri kaydedin.", true); return; }
+    setUploadingScene(sceneId);
+    setPending(true);
+    try {
+      const updated = await api.deleteSceneImage(project.id, sceneId, story.revision);
+      setProject(updated);
+      notify("Özel görsel kaldırıldı; sahne sağlayıcı görseliyle yeniden üretilebilir.");
+    } catch (e) { notify((e as Error).message, true); }
+    finally { setUploadingScene(null); setPending(false); }
   };
   const save = async () => {
     setPending(true);
@@ -110,6 +145,7 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
   const active = story.scenes.find((s) => s.status === "generating");
   const remaining = story.scenes.filter((s) => s.status !== "ready").length;
   const canGenerate = !busy && !dirty && !invalid && !!health && (!project.source_url || replaceApproved);
+  const canCustomImage = !busy && !dirty && uploadingScene === null;
   const selectedVideo = catalog?.video.find((model) => model.id === draft.video_model);
   const durations = selectedVideo?.durations?.length ? selectedVideo.durations : [4, 6, 8];
   const pendingDurations = story.scenes.filter((scene) => scene.status !== "ready").map((scene) => scene.duration);
@@ -124,7 +160,11 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
   return <div className={styles.panel}>
     <header className={styles.intro}><h3>Sahne planı</h3>
       <p>Görsel zaman çizelgesinden sıralama, kırpma ve geçişleri yönetebilirsiniz. Önce kaydedin, ardından yerel olarak yeniden birleştirin. Kırpma/sıralama/geçiş yeni AI üretimi başlatmaz. Üretim ayarı değiştirilen sahnenin kırpması sıfırlanır. Geçiş süresi kısa sahnelerde otomatik olarak sınırlanır.</p>
-      {story.mock_plan && <p className={styles.note}>Bu plan test sağlayıcısıyla mekanik olarak oluşturuldu; gerçek AI senaryo yazımı veya çeviri değildir.</p>}
+      {story.plan_fallback && <p className={styles.note} role="status">
+        AI planlama sağlayıcısına erişilemediği için bu plan yerel taslak olarak oluşturuldu; gerçek AI senaryo yazımı veya çeviri değildir.
+        {story.plan_fallback_message ? ` Sağlayıcı: ${story.plan_fallback_message}` : ""}
+      </p>}
+      {story.mock_plan && !story.plan_fallback && <p className={styles.note}>Bu plan test sağlayıcısıyla mekanik olarak oluşturuldu; gerçek AI senaryo yazımı veya çeviri değildir.</p>}
     </header>
     <div className={styles.formGrid}>
       <label className={styles.wide}>Video başlığı<input className="input" maxLength={120} value={draft.title} disabled={busy} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></label>
@@ -159,6 +199,14 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
         <div className={styles.actions}>
           <button className="btn btn-sm" disabled={busy || index === 0} onClick={() => move(index, -1)} aria-label={`Sahne ${index + 1} yukarı`}>↑ Yukarı</button>
           <button className="btn btn-sm" disabled={busy || index === draft.scenes.length - 1} onClick={() => move(index, 1)} aria-label={`Sahne ${index + 1} aşağı`}>↓ Aşağı</button>
+          {freeVideo && <>
+            <input ref={(element) => { fileInputs.current[scene.id] = element; }} type="file" accept="image/jpeg,image/png,image/webp" hidden
+              onChange={(e) => { const file = e.currentTarget.files?.[0]; e.currentTarget.value = ""; if (file) void uploadImage(scene.id, file); }} />
+            <button type="button" className="btn btn-sm" disabled={!canCustomImage} onClick={() => fileInputs.current[scene.id]?.click()}>
+              {uploadingScene === scene.id ? "Görsel yükleniyor…" : state.custom_image_url ? "Görseli değiştir" : "Görsel yükle"}
+            </button>
+            {state.custom_image_url && <button type="button" className="btn btn-sm" disabled={!canCustomImage} onClick={() => removeImage(scene.id)}>Özel görseli kaldır</button>}
+          </>}
         </div>
         {index > 0 && <div className={styles.formGrid}>
           <label>Önceki sahneden geçiş<select className="select" value={scene.transition} disabled={busy}
@@ -179,7 +227,10 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
         </select></label>
         {draft.voiceover && scene.narration.split(/\s+/).length > scene.duration * 3 && <p className={styles.note}>Anlatım bu süre için uzun olabilir. Metni kısaltın; gerekirse son kare anlatım bitene kadar tutulur.</p>}
         {state.video_url && <video controls preload="none" src={mediaUrl(state.video_url)} aria-label={`${scene.title} önizlemesi`} />}
+        {state.custom_image_url && <Image className={styles.customImage} src={mediaUrl(state.custom_image_url)!} alt={`${scene.title} özel görseli`} width={1280} height={720} unoptimized />}
         {state.mock && <small className={styles.note}>Sentetik test görseli / {draft.voiceover ? "konuşma yerine sentetik ton" : "test sesi"}</small>}
+        {state.video_provider === "free" && <small className={styles.note}>{state.image_source === "custom" ? "Özel görsel" : `Ücretsiz görsel (${IMAGE_SOURCE_LABELS[state.image_source ?? "picsum"] ?? "Picsum"})`} + Ken Burns; Veo kullanılmadı.</small>}
+        {state.custom_image_url && <small className={styles.note}>{freeVideo ? "Özel görsel bu sahne için dış görsel sağlayıcısını atlar; sahne yeniden üretildiğinde yerel Ken Burns uygulanır." : "Özel görsel yalnızca ücretsiz Ken Burns modelinde kullanılır; mevcut modelde yok sayılır."}</small>}
         {state.actual_duration && <small className={styles.note}>Gerçek sahne süresi: {state.actual_duration.toFixed(1)} sn</small>}
         {state.error && <p className={styles.error} role="alert">{state.error}</p>}
         <button className="btn btn-sm" disabled={!canGenerate || (!health?.mock && !approved)} onClick={() => generate(scene.id)}>
@@ -193,7 +244,9 @@ export default function StoryboardPanel({ project, setProject, draft, setDraft, 
     {health?.video_model_warning && <p className={styles.note}>{health.video_model_warning}</p>}
     {health?.mock ? <p className={styles.note}>Test sağlayıcısı gerçek API çağrısı yapmaz. Gerçek üretimde seslendirme başarısızsa işlem durur; konuşma yerine sentetik ton konmaz.</p> : health && <label className={styles.check}>
       <input type="checkbox" checked={approved} disabled={busy} onChange={(e) => setApproved(e.target.checked)} />
-      Eksik sahneler için planlanan {story.pending_scenes} video üretimini ve seçili seslendirmeyi onaylıyorum. Görsel promptlar Google’a, seslendirme metinleri açıksa Edge TTS servisine gönderilir. Tek sahne yeniden üretimi ek 1 video üretimi başlatır. Sonucu alınamayan istek sağlayıcıda ücretlenmiş olabilir; yeniden deneme ek ücret doğurabilir. Kesin tutar sağlayıcıya bağlıdır.
+      {freeVideo
+        ? <>Eksik sahneler için planlanan {story.pending_scenes} ücretsiz görseli ve seçili seslendirmeyi onaylıyorum. Görseller seçili ücretsiz görsel sağlayıcısından alınır; özel görsel yüklü sahnelerde sağlayıcı atlanır. Pollinations seçiliyse görsel promptu sağlayıcıya gönderilir. Ken Burns hareketi yerel FFmpeg ile uygulanır; Veo çağrılmaz. Planlama promptu Google’a, seslendirme metinleri açıksa Edge TTS servisine gönderilir.</>
+        : <>Eksik sahneler için planlanan {story.pending_scenes} video üretimini ve seçili seslendirmeyi onaylıyorum. Görsel promptlar Google’a, seslendirme metinleri açıksa Edge TTS servisine gönderilir. Tek sahne yeniden üretimi ek 1 video üretimi başlatır. Sonucu alınamayan istek sağlayıcıda ücretlenmiş olabilir; yeniden deneme ek ücret doğurabilir. Kesin tutar sağlayıcıya bağlıdır.</>}
     </label>}
     {project.source_url && <label className={styles.check}>
       <input type="checkbox" checked={replaceApproved} disabled={busy} onChange={(e) => setReplaceApproved(e.target.checked)} />

@@ -290,6 +290,7 @@ export default function EditorPage() {
         )}
         <StatusBadge status={project.status} />
         {project.origin === "veo" && <span className="chip">✦ Veo</span>}
+        {project.origin === "free" && <span className="chip">✦ Ücretsiz</span>}
         {project.origin === "storyboard" && <span className="chip">▤ Çok sahneli</span>}
         <div className={styles.topActions}>
           <button

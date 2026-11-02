@@ -9,8 +9,9 @@ from app.ai.provider_errors import ProviderFailure, normalize_provider_errors
 
 @pytest.mark.parametrize("status,reason,code", [(400, "API_KEY_INVALID", "invalid_api_key"),
     (401, None, "invalid_api_key"), (403, None, "provider_permission_denied"),
-    (404, None, "model_unavailable"), (429, None, "provider_quota"),
-    (400, None, "provider_invalid_request"), (503, None, "provider_unavailable")])
+    (402, None, "provider_credits_depleted"), (404, None, "model_unavailable"),
+    (429, None, "provider_quota"), (400, None, "provider_invalid_request"),
+    (503, None, "provider_unavailable")])
 def test_sdk_failures_are_actionable_sanitized_and_never_retried(status, reason, code):
     calls = []
     @normalize_provider_errors

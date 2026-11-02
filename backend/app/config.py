@@ -17,13 +17,22 @@ class Settings(BaseSettings):
     # "auto": anahtar yoksa mock, varsa gerçek API. "true"/"false" ile zorlanabilir.
     mock_ai: str = "auto"
 
-    gemini_text_model: str = "gemini-2.5-flash"
-    gemini_transcribe_model: str = "gemini-2.5-flash"
+    gemini_text_model: str = "gemini-3.8-flash"
+    gemini_transcribe_model: str = "gemini-3.8-flash"
     veo_model: str = "veo-3.0-fast-generate-001"
     # Virgülle ayrılmış ek modeller. Yapılandırılmış model her zaman listeye eklenir.
     # Model erişimi sağlayıcı hesabına bağlıdır; seçim garanti değildir.
-    text_model_options: str = "gemini-2.5-flash,gemini-2.5-pro"
+    text_model_options: str = "gemini-3.8-flash"
     veo_model_options: str = "veo-3.0-fast-generate-001,veo-3.0-generate-001"
+
+    # Ücretsiz video görselleri: auto | picsum | pexels | pixabay | pollinations
+    # auto, anahtarı tanımlı ücretsiz stok sağlayıcısını (Pexels/Pixabay) dener;
+    # anahtar yoksa hızlı ve anahtarsız Picsum'a düşer. Pollinations yalnızca
+    # açıkça seçilirse kullanılır (ücretsiz kotası yavaştır).
+    free_image_provider: str = "auto"
+    pexels_api_key: str = ""
+    pixabay_api_key: str = ""
+    pollinations_token: str = ""
 
     storage_dir: Path = ROOT_DIR / "storage"
     assets_dir: Path = ROOT_DIR / "assets"

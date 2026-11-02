@@ -54,9 +54,9 @@ export default function Navbar() {
           ) : health ? (
             <span
               className="badge badge-generating"
-              title={health.mock ? "Test sağlayıcısı etkin: gerçek AI çağrısı yapılmaz. Gerçek üretim için GEMINI_API_KEY ayarlayın." : "Anahtarın tanımlı olması bağlantıyı doğrulamaz. Yeni Video sayfasındaki AI bağlantısı panelinden kontrol edin."}
+              title={health.mock ? "Test sağlayıcısı etkin: gerçek AI çağrısı yapılmaz. Gerçek üretim için GEMINI_API_KEY ayarlayın." : health.free_video ? "AI metin/planlama etkin; video sahneleri stok görsel + yerel Ken Burns ile ücretsiz üretilir. Veo çağrılmaz." : "Anahtarın tanımlı olması bağlantıyı doğrulamaz. Yeni Video sayfasındaki AI bağlantısı panelinden kontrol edin."}
             >
-              <span className="dot" /> {health.mock ? "Test sağlayıcısı" : health.ai_key_configured === false ? "AI anahtarı yok" : "AI yapılandırıldı"}
+              <span className="dot" /> {health.mock ? "Test sağlayıcısı" : health.ai_key_configured === false ? "AI anahtarı yok" : health.free_video ? "AI + ücretsiz video" : "AI yapılandırıldı"}
             </span>
           ) : null}
           <Link href="/create" className="btn btn-primary btn-sm" id="nav-cta">

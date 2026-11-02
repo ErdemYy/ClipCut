@@ -142,7 +142,8 @@ def translate(transcript: dict, target: str) -> dict:
             "Anlamı ve tonu koru, doğal ve akıcı ol, altyazı için kısa tut. Her segmentin id değerini aynen koru, "
             "segment birleştirme veya bölme yapma.\n\n" + payload
         )
-        resp = _client().models.generate_content(
+        client = _client()
+        resp = client.models.generate_content(
             model=get_settings().gemini_text_model,
             contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=_Translation, temperature=0.3),
@@ -215,12 +216,22 @@ def video_model_constraints(model: str | None = None) -> dict:
 def generate_video(
     prompt: str, aspect_ratio: str, duration: int, negative_prompt: Optional[str], out_path: Path,
     on_progress: Callable[[float, str], None], model: str | None = None,
-) -> None:
+    image_path: Path | None = None,
+) -> dict | None:
     settings = get_settings()
     target = model or settings.veo_model
     if settings.is_mock:
         mock.generate_video(prompt, aspect_ratio, duration, out_path, on_progress)
-        return
+        return None
+    from .catalog import FREE_VIDEO_MODEL
+
+    if target == FREE_VIDEO_MODEL:
+        from . import free_video
+
+        if image_path is not None:
+            return free_video.generate_video(prompt, aspect_ratio, duration, out_path, on_progress,
+                                             image_path=image_path)
+        return free_video.generate_video(prompt, aspect_ratio, duration, out_path, on_progress)
     if duration not in video_model_constraints(target)["video_durations"]:
         raise AIError("Seçili Veo modeli için 8 saniyelik sahne seçin. Video çağrısı yapılmadı.")
     from google.genai import types

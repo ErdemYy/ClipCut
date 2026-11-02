@@ -75,6 +75,10 @@ def check(settings: Settings) -> dict:
                     model = item["id"]
                     if model in outcomes:
                         continue  # Text and transcription commonly use the same model.
+                    if model == catalog.FREE_VIDEO_MODEL:
+                        outcomes[model] = {"status": "available", "reason": None,
+                                           "message": "Ücretsiz yerel mod; sağlayıcı sorgusu yapılmadı."}
+                        continue
                     if stop:
                         outcomes[model] = {"status": "unknown", "reason": "not_checked",
                                            "message": "Önceki bağlantı hatası nedeniyle kontrol edilmedi."}

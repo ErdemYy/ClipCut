@@ -155,6 +155,7 @@ def task_generate_storyboard(progress, project_id: str, scene_id: str | None = N
             progress(index / max(1, len(target)) * 0.85, f"Sahne {index + 1}/{len(target)} · ses ve video hazırlanıyor")
             narration, transcript = None, None
             spoken_duration = 0.0
+            video_meta = {"provider": scene.get("video_provider"), "image_source": scene.get("image_source")}
             if spec["voiceover"]:
                 narration = folder / "narration.mp3"
                 result = tts.generate_voiceover(scene["narration"], voice_id=spec["voice_id"], out_path=narration,
@@ -169,12 +170,25 @@ def task_generate_storyboard(progress, project_id: str, scene_id: str | None = N
                 if spec["voiceover"]:
                     prompt += "\nNo dialogue, no on-screen text. Narration will be added separately."
                 kwargs = {"model": spec["video_model"]} if spec.get("video_model") else {}
-                ai.generate_video(prompt, spec["aspect_ratio"], scene["duration"], None, raw,
-                                  lambda v, m: progress((index + v * 0.7) / max(1, len(target)) * 0.85, f"{scene['title']} · {m}"),
-                                  **kwargs)
+                from .ai.catalog import FREE_VIDEO_MODEL
+
+                target_model = spec.get("video_model") or settings.veo_model
+                if scene.get("custom_image") and target_model == FREE_VIDEO_MODEL:
+                    custom = scene_file(p.id, scene["custom_image"])
+                    if custom is None:
+                        raise ValueError("Özel sahne görseli bulunamadı; yeniden yükleyin.")
+                    kwargs["image_path"] = custom
+                video_meta = ai.generate_video(
+                    prompt, spec["aspect_ratio"], scene["duration"], None, raw,
+                    lambda v, m: progress((index + v * 0.7) / max(1, len(target)) * 0.85, f"{scene['title']} · {m}"),
+                    **kwargs,
+                ) or video_meta
                 if not probe(raw).has_video:
                     raise ValueError("Video üretimi geçerli bir video dosyası döndürmedi.")
-                _checkpoint(p.id, scene["id"], {"raw_file": raw.relative_to(pdir).as_posix(), "raw_fingerprint": visual_key, "fingerprint": key})
+                _checkpoint(p.id, scene["id"], {
+                    "raw_file": raw.relative_to(pdir).as_posix(), "raw_fingerprint": visual_key, "fingerprint": key,
+                    "video_provider": video_meta.get("provider"), "image_source": video_meta.get("image_source"),
+                })
             output = folder / "scene.mp4"
             duration = normalize_scene(raw, output, scene["duration"], spec["aspect_ratio"], narration, spoken_duration,
                                         lambda v: progress((index + 0.7 + v * 0.3) / max(1, len(target)) * 0.85, f"{scene['title']} · sahne işleniyor"))
@@ -184,7 +198,9 @@ def task_generate_storyboard(progress, project_id: str, scene_id: str | None = N
                 raise ValueError("Yeni sahne mevcut kırpma aralığından kısa; kırpmayı sıfırlayıp devam edin. Ham video korunmuştur.") from exc
             _checkpoint(p.id, scene["id"], {
                 "status": "ready", "file": output.relative_to(pdir).as_posix(), "fingerprint": key,
-                "actual_duration": duration, "transcript": transcript, "mock": settings.is_mock, "error": None,
+                "actual_duration": duration, "transcript": transcript, "mock": settings.is_mock,
+                "video_provider": video_meta.get("provider"), "image_source": video_meta.get("image_source"),
+                "error": None,
             })
         current_scene = None
         progress(0.86, "Sahneler kontrol ediliyor")

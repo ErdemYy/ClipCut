@@ -105,6 +105,8 @@ def fingerprint(spec: dict, scene: dict) -> str:
         "voice_id": spec["voice_id"] if spec["voiceover"] else None,
         "mock": settings.is_mock, "model": spec.get("video_model") or settings.veo_model, "pipeline": 1,
     }
+    if scene.get("custom_image"):
+        data["custom_image"] = scene["custom_image"]
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]
 
 
@@ -114,6 +116,8 @@ def visual_fingerprint(spec: dict, scene: dict) -> str:
             "continuity": spec.get("continuity", ""), "aspect": spec["aspect_ratio"],
             "no_dialogue": spec["voiceover"], "mock": settings.is_mock,
             "model": spec.get("video_model") or settings.veo_model, "pipeline": 1}
+    if scene.get("custom_image"):
+        data["custom_image"] = scene["custom_image"]
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]
 
 
@@ -177,14 +181,21 @@ def public_storyboard(project_id: str, spec: dict | None) -> dict | None:
     data = StoryboardInput.model_validate(spec).model_dump()
     settings = get_settings()
     data.update({"revision": spec["revision"], "assembled_revision": spec.get("assembled_revision"),
-                 "mock_plan": spec.get("mock_plan", False), "last_error": spec.get("last_error"),
+                 "mock_plan": spec.get("mock_plan", False),
+                 "plan_fallback": spec.get("plan_fallback"),
+                 "plan_fallback_message": spec.get("plan_fallback_message"),
+                 "last_error": spec.get("last_error"),
                  "text_model": spec.get("text_model") or settings.gemini_text_model,
                  "video_model": spec.get("video_model") or settings.veo_model})
     for public, scene in zip(data["scenes"], spec["scenes"]):
         ready = scene_ready(project_id, spec, scene)
+        custom = scene_file(project_id, scene.get("custom_image"))
         public.update({"status": "ready" if ready else (scene.get("status") if scene.get("status") in {"generating", "failed"} else "pending"),
                        "video_url": f"/media/projects/{project_id}/{scene['file']}" if ready else None,
                        "thumbnail_url": f"/api/projects/{project_id}/storyboard/scenes/{scene['id']}/thumbnail?v={Path(scene['file']).parent.name}" if ready else None,
+                       "custom_image_url": f"/media/projects/{project_id}/{scene['custom_image']}" if custom else None,
+                       "video_provider": scene.get("video_provider") if ready else None,
+                       "image_source": scene.get("image_source") if ready else None,
                        "actual_duration": scene.get("actual_duration") if ready else None,
                        "timeline_duration": round(trim_range(scene)[1] - trim_range(scene)[0], 3) if ready else scene["duration"],
                        "error": scene.get("error"), "mock": scene.get("mock") if ready else None})
@@ -216,6 +227,9 @@ def merge_saved_spec(old: dict, edited: StoryboardSaveBody) -> dict:
     previous = {s["id"]: s for s in old["scenes"]}
     for scene in data["scenes"]:
         prior = previous.get(scene["id"])
+        if prior and prior.get("custom_image"):
+            # Özel görsel sunucuya aittir; istemci gövdesinde taşınmaz ama düzenlemede korunur.
+            scene["custom_image"] = prior["custom_image"]
         if scene["trim_start"] != 0 or scene["trim_end"] is not None:
             if (not prior or prior.get("status") != "ready" or not prior.get("actual_duration")
                     or prior.get("fingerprint") != fingerprint(old, prior) or fingerprint(data, scene) != fingerprint(old, prior)):
@@ -228,6 +242,9 @@ def merge_saved_spec(old: dict, edited: StoryboardSaveBody) -> dict:
             if prior and visual_fingerprint(data, scene) == visual_fingerprint(old, prior):
                 scene.update({k: prior[k] for k in ("raw_file", "raw_fingerprint") if k in prior})
     data.update({"revision": revision(), "assembled_revision": old.get("assembled_revision"),
-                 "mock_plan": old.get("mock_plan", False), "previous_versions": old.get("previous_versions", []),
+                 "mock_plan": old.get("mock_plan", False),
+                 "plan_fallback": old.get("plan_fallback"),
+                 "plan_fallback_message": old.get("plan_fallback_message"),
+                 "previous_versions": old.get("previous_versions", []),
                  "source_spec": old.get("source_spec")})
     return data

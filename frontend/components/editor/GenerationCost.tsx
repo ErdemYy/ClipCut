@@ -67,7 +67,7 @@ export default function GenerationCost(props: Props) {
   return <section className={styles.cost} aria-labelledby={`${budgetId}-title`}>
     <header className={styles.head}>
       <h4 id={`${budgetId}-title`}>Model ve maliyet</h4>
-      <span className={styles.badge}>{catalog?.mock ? "Test sağlayıcısı · ücretsiz" : "Tahmini liste fiyatı"}</span>
+      <span className={styles.badge}>{catalog?.mock ? "Test sağlayıcısı · ücretsiz" : catalog?.free_video ? "Ücretsiz görsel modu" : "Tahmini liste fiyatı"}</span>
     </header>
     <div className={styles.models}>
       {onVideoModel && <label>Video modeli
@@ -94,7 +94,7 @@ export default function GenerationCost(props: Props) {
       <ul>
         {estimate.components.map((component) => <li key={component.label}>
           <span>{component.label} · <small>{component.detail}</small></span>
-          <strong>{estimate.mock ? "ücretsiz" : dollars(component.usd)}</strong>
+          <strong>{estimate.mock || (estimate.free_video && component.label === "Video üretimi") ? "ücretsiz" : dollars(component.usd)}</strong>
         </li>)}
         {!estimate.components.length && <li><span>Henüz üretim çağrısı planlanmadı.</span><strong>$0.0000</strong></li>}
       </ul>

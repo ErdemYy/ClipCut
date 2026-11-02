@@ -76,6 +76,13 @@ def test_plan_is_saved_before_any_video_call(studio):
     assert client.get(f"/api/projects/{p['id']}").json()["storyboard"]["revision"] == p["storyboard"]["revision"]
 
 
+def test_planner_schema_leaves_scene_duration_to_the_request():
+    import json
+    from app.ai.storyboard import _ScenePlan
+
+    assert '"duration"' not in json.dumps(_ScenePlan.model_json_schema())
+
+
 def test_schema_rejects_invalid_durations_voice_and_duplicate_ids(studio):
     client, _, _, _ = studio
     p = create(client)
@@ -108,6 +115,61 @@ def test_real_api_calls_require_explicit_consent(studio):
     assert client.post(f"/api/projects/{p['id']}/storyboard/generate", json=payload).status_code == 409
     assert len(captures) == 1
     assert client.put(f"/api/projects/{p['id']}/storyboard", json=p["storyboard"]).status_code == 409
+
+
+def test_planner_uses_local_draft_when_provider_credits_fail(studio, monkeypatch):
+    from google.genai.errors import ClientError
+    from app.ai import storyboard as planner
+
+    client, settings, _, _ = studio
+    settings.mock_ai = "false"
+    settings.veo_model = "free-ken-burns"
+
+    class Models:
+        def generate_content(self, **_kwargs):
+            raise ClientError(402, {"error": {"message": "PRIVATE_UPSTREAM", "status": "RESOURCE_EXHAUSTED"}})
+
+    class FakeClient:
+        models = Models()
+
+    monkeypatch.setattr(planner, "_client", lambda: FakeClient())
+    p = create(client, confirm_api_usage=True)
+    story = p["storyboard"]
+    assert story["mock_plan"] is False
+    assert story["plan_fallback"] == "provider_credits_depleted"
+    assert "kredi" in story["plan_fallback_message"]
+    assert "PRIVATE_UPSTREAM" not in story["plan_fallback_message"]
+    assert len(story["scenes"]) == 2
+    assert all(scene["status"] == "pending" for scene in story["scenes"])
+
+    story["scenes"][0]["narration"] += " ek"
+    saved = client.put(f"/api/projects/{p['id']}/storyboard", json=story)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["storyboard"]["plan_fallback"] == "provider_credits_depleted"
+
+
+def test_planner_does_not_hide_an_invalid_provider_request(studio, monkeypatch):
+    from google.genai.errors import ClientError
+    from app.ai import storyboard as planner
+
+    client, settings, _, _ = studio
+    settings.mock_ai = "false"
+    settings.veo_model = "free-ken-burns"
+
+    class Models:
+        def generate_content(self, **_kwargs):
+            raise ClientError(400, {"error": {"message": "bad schema", "status": "INVALID_ARGUMENT"}})
+
+    class FakeClient:
+        models = Models()
+
+    monkeypatch.setattr(planner, "_client", lambda: FakeClient())
+    response = client.post("/api/projects/storyboard", json={
+        "brief": "Kahve hazırlığı. Taze çekirdekleri öğütün. Sıcak su ile yavaşça demleyin.",
+        "scene_count": 2, "scene_duration": 4, "aspect_ratio": "16:9", "confirm_api_usage": True,
+    })
+    assert response.status_code == 422
+    assert response.json()["code"] == "provider_invalid_request"
 
 
 def test_legacy_veo_duration_fails_before_provider_call(studio, tmp_path):
@@ -215,6 +277,70 @@ def test_real_voiceover_fails_instead_of_synthetic_fallback(studio, tmp_path, mo
     assert not (tmp_path / "voice.mp3").exists()
 
 
+def test_scene_custom_image_upload_delete_and_revision_guard(studio, tmp_path):
+    from app import jobs
+    from app.ffmpeg import run_ffmpeg
+
+    client, _, _, _ = studio
+    p = create(client)
+    scene_id = p["storyboard"]["scenes"][0]["id"]
+    url = f"/api/projects/{p['id']}/storyboard/scenes/{scene_id}/image"
+    source = tmp_path / "custom.jpg"
+    run_ffmpeg(["-f", "lavfi", "-i", "color=c=red:s=64x64:d=1", "-frames:v", "1", str(source)])
+    image = source.read_bytes()
+    revision = p["storyboard"]["revision"]
+
+    wrong = client.post(url, data={"revision": "0" * 12}, files={"file": ("custom.jpg", image, "image/jpeg")})
+    assert wrong.status_code == 409
+    invalid = client.post(url, data={"revision": revision}, files={"file": ("bad.jpg", b"not-an-image", "image/jpeg")})
+    assert invalid.status_code == 400
+    missing = client.post(f"/api/projects/{p['id']}/storyboard/scenes/abcdef123456/image",
+                          data={"revision": revision}, files={"file": ("custom.jpg", image, "image/jpeg")})
+    assert missing.status_code == 404
+
+    response = client.post(url, data={"revision": revision}, files={"file": ("custom.jpg", image, "image/jpeg")})
+    assert response.status_code == 200, response.text
+    uploaded = response.json()
+    scene = uploaded["storyboard"]["scenes"][0]
+    assert scene["status"] == "pending"
+    assert scene["custom_image_url"].startswith(f"/media/projects/{p['id']}/storyboard/")
+    assert uploaded["storyboard"]["revision"] != revision
+    internal = jobs._load(p["id"]).storyboard
+    assert internal["scenes"][0]["custom_image"]
+    assert "fingerprint" not in internal["scenes"][0] and "file" not in internal["scenes"][0]
+    assert not internal["scenes"][1].get("custom_image")
+
+    # Saving an edit must not drop the server-owned custom image.
+    public = client.get(f"/api/projects/{p['id']}").json()["storyboard"]
+    public["scenes"][0]["narration"] += " ek"
+    saved = client.put(f"/api/projects/{p['id']}/storyboard", json=public)
+    assert saved.status_code == 200, saved.text
+    assert jobs._load(p["id"]).storyboard["scenes"][0]["custom_image"] == internal["scenes"][0]["custom_image"]
+
+    removed = client.delete(url, params={"revision": saved.json()["storyboard"]["revision"]})
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["storyboard"]["scenes"][0]["custom_image_url"] is None
+    assert "custom_image" not in jobs._load(p["id"]).storyboard["scenes"][0]
+
+
+def test_custom_image_invalidates_only_its_scene_fingerprints(studio):
+    from app import jobs
+    from app.storyboard import fingerprint, visual_fingerprint
+
+    client, _, _, _ = studio
+    p = create(client)
+    spec = copy.deepcopy(jobs._load(p["id"]).storyboard)
+    first, second = spec["scenes"]
+    plain_fingerprint, plain_visual = fingerprint(spec, first), visual_fingerprint(spec, first)
+    other_fingerprint, other_visual = fingerprint(spec, second), visual_fingerprint(spec, second)
+
+    first["custom_image"] = "storyboard/scenes/test/custom/image.jpg"
+    assert fingerprint(spec, first) != plain_fingerprint
+    assert visual_fingerprint(spec, first) != plain_visual
+    assert fingerprint(spec, second) == other_fingerprint
+    assert visual_fingerprint(spec, second) == other_visual
+
+
 def test_failure_checkpoint_reuses_ready_scenes_and_raw_video(studio, monkeypatch):
     from app import jobs, storyboard_jobs as worker
 
@@ -252,6 +378,53 @@ def test_failure_checkpoint_reuses_ready_scenes_and_raw_video(studio, monkeypatc
     fail = False
     result = worker.task_generate_storyboard(lambda *_: None, p["id"])
     assert result["assembled"] and len(calls) == 2  # No duplicate video generation.
+
+
+def test_custom_image_is_passed_to_free_storyboard_generation(studio, tmp_path, monkeypatch):
+    from app import jobs, storyboard_jobs as worker
+    from app.ai import free_video
+    from app.ffmpeg import MediaInfo, run_ffmpeg
+
+    client, settings, _, _ = studio
+    settings.veo_model = free_video.FREE_VIDEO_MODEL
+    p = create(client)
+    source = tmp_path / "custom.jpg"
+    run_ffmpeg(["-f", "lavfi", "-i", "color=c=green:s=64x64:d=1", "-frames:v", "1", str(source)])
+    scene_id = p["storyboard"]["scenes"][0]["id"]
+    response = client.post(f"/api/projects/{p['id']}/storyboard/scenes/{scene_id}/image",
+                           data={"revision": p["storyboard"]["revision"]},
+                           files={"file": ("custom.jpg", source.read_bytes(), "image/jpeg")})
+    assert response.status_code == 200, response.text
+    custom = jobs._load(p["id"]).storyboard["scenes"][0]["custom_image"]
+
+    calls = []
+    def generate(prompt, aspect, duration, negative, dst, progress, **kwargs):
+        calls.append(kwargs.get("image_path"))
+        dst.write_bytes(b"raw")
+        return {"provider": "free", "image_source": "custom" if kwargs.get("image_path") else "picsum"}
+    monkeypatch.setattr(worker.ai, "generate_video", generate)
+    monkeypatch.setattr(worker, "probe", lambda path: MediaInfo(4, 160, 90, 30, True, True))
+
+    def normalize(raw, dst, *args):
+        dst.write_bytes(b"ready")
+        return 4
+    monkeypatch.setattr(worker, "normalize_scene", normalize)
+
+    def assemble(files, dst, *args):
+        dst.write_bytes(b"assembled")
+        return [4.0 * i for i in range(len(files))]
+    monkeypatch.setattr(worker, "assemble_scenes", assemble)
+    monkeypatch.setattr(jobs, "ingest_source", lambda project, path, **kwargs: (
+        setattr(project, "source_file", path.relative_to(jobs.project_dir(project.id)).as_posix()),
+        setattr(project, "status", "ready")))
+
+    result = worker.task_generate_storyboard(lambda *_: None, p["id"])
+    assert result["assembled"]
+    assert len(calls) == 2
+    assert calls[0] is not None and calls[0].name == Path(custom).name
+    assert calls[1] is None
+    public = client.get(f"/api/projects/{p['id']}").json()["storyboard"]["scenes"][0]
+    assert public["video_provider"] == "free" and public["image_source"] == "custom"
 
 
 def test_local_multiscene_video_and_shifted_subtitles(studio, monkeypatch):
@@ -887,7 +1060,7 @@ def test_real_preflight_estimates_and_unknown_models_are_rejected(studio):
     assert response.status_code == 200, response.text
     estimate = response.json()
     assert estimate["estimated_usd"] == pytest.approx(1.2)
-    assert estimate["pricing_read_at"] == "2026-10-22"
+    assert estimate["pricing_read_at"] == "2026-11-02"
 
     assert client.post("/api/ai/preflight", json={"video_model": "not-a-real-model"}).status_code == 422
     assert client.post("/api/projects/storyboard", json={"brief": "A brief", "video_model": "not-a-real-model"}).status_code == 422
